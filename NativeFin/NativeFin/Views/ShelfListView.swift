@@ -7,12 +7,15 @@ import SwiftUI
 /// Where a home-screen shelf's heading leads: the full list behind that shelf.
 enum ShelfDestination: Hashable {
     case continueWatching
+    /// The next episode of each show being watched.
+    case nextUp
     /// Everything recently added to a library (episodes for TV, movies for film).
     case recentlyAdded(Library)
 
     var title: String {
         switch self {
         case .continueWatching: String(localized: "Continue Watching")
+        case .nextUp: String(localized: "Up Next")
         case .recentlyAdded(let library): String(localized: "Recently Added \(library.name)")
         }
     }
@@ -92,7 +95,10 @@ struct ShelfListView: View {
         // Either change clears the resume position, so on Continue Watching the item leaves the list.
         return ItemRowActions(
             markWatched: {
-                update(item, removesRow: isContinueWatching, isPlayed: true) { try await $0.markWatched(item) }
+                // On Up Next, a watched episode is replaced by the one after it, so it leaves the list too.
+                update(item, removesRow: isContinueWatching || destination == .nextUp, isPlayed: true) {
+                    try await $0.markWatched(item)
+                }
             },
             markUnwatched: {
                 update(item, removesRow: isContinueWatching, isPlayed: false) { try await $0.markUnwatched(item) }
@@ -165,6 +171,8 @@ struct ShelfListView: View {
         switch destination {
         case .continueWatching:
             return try await service.resumeItems(offset: offset, limit: Self.pageSize)
+        case .nextUp:
+            return try await service.nextUpItems(offset: offset, limit: Self.pageSize)
         case .recentlyAdded(let library):
             return try await service.recentlyAddedPage(in: library, offset: offset, limit: Self.pageSize)
         }

@@ -20,6 +20,12 @@ struct AvatarView: View {
                 image
                     .resizable()
                     .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+                    // Same faint outline as `ArtworkView`, so a picture with a plain background keeps its edge.
+                    .overlay {
+                        Circle().strokeBorder(.primary.opacity(0.15), lineWidth: 1)
+                    }
             default:
                 Image(systemName: "person.crop.circle")
                     .resizable()

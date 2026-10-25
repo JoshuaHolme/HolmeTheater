@@ -152,6 +152,15 @@ nonisolated struct MockMediaService: MediaService {
         return Array(Self.movies.filter { $0.playedFraction != nil }.dropFirst(offset).prefix(limit))
     }
 
+    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem] {
+        try await simulateLatency()
+        // The first unwatched episode of each sample show.
+        let next = Self.shows.compactMap { show in
+            Self.episodes(of: show).first { !$0.isPlayed && $0.playedFraction == nil }
+        }
+        return Array(next.dropFirst(offset).prefix(limit))
+    }
+
     func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {
         try await simulateLatency()
         return Array((library.kind == .tvShows ? Self.shows : Self.movies).prefix(8))

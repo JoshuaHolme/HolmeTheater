@@ -4,7 +4,7 @@
 
 import SwiftUI
 
-/// Continue Watching plus a "Recently Added" shelf for each movie / TV library.
+/// Continue Watching, Up Next, plus a "Recently Added" shelf for each movie / TV library.
 ///
 /// Instead of a system navigation title, it draws its own large "Home" heading with the profile
 /// button beside it, as part of the scrolling content, so the two scroll away together.
@@ -23,6 +23,7 @@ struct HomeView: View {
 
     private struct HomeData {
         let resume: [MediaItem]
+        let nextUp: [MediaItem]
         let rows: [Row]
     }
 
@@ -39,11 +40,14 @@ struct HomeView: View {
                         if !data.resume.isEmpty {
                             MediaShelf(title: ShelfDestination.continueWatching.title, items: data.resume, destination: .continueWatching)
                         }
+                        if !data.nextUp.isEmpty {
+                            MediaShelf(title: ShelfDestination.nextUp.title, items: data.nextUp, destination: .nextUp)
+                        }
                         ForEach(data.rows) { row in
                             let destination = ShelfDestination.recentlyAdded(row.library)
                             MediaShelf(title: destination.title, items: row.items, destination: destination)
                         }
-                        if data.resume.isEmpty && data.rows.isEmpty {
+                        if data.resume.isEmpty && data.nextUp.isEmpty && data.rows.isEmpty {
                             ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
                         }
                     }
@@ -76,6 +80,7 @@ struct HomeView: View {
     private func loadHome() async throws -> HomeData {
         let service = appModel.service
         async let resume = service.resumeItems(offset: 0, limit: Self.shelfLimit)
+        async let nextUp = service.nextUpItems(offset: 0, limit: Self.shelfLimit)
         let libraries = try await service.libraries().filter { $0.kind == .movies || $0.kind == .tvShows }
 
         // Fetch every library's shelf at once rather than one after another.
@@ -92,11 +97,12 @@ struct HomeView: View {
             .sorted { $0.0 < $1.0 }
             .compactMap { index, items in items.isEmpty ? nil : Row(library: libraries[index], items: items) }
         let resumeItems = try await resume
+        let nextUpItems = try await nextUp
 
         // Start downloading every poster now, so they're already cached by the time you scroll to them.
-        ImageCache.shared.prefetch((resumeItems + rows.flatMap(\.items)).compactMap(\.posterURL))
+        ImageCache.shared.prefetch((resumeItems + nextUpItems + rows.flatMap(\.items)).compactMap(\.posterURL))
 
-        return HomeData(resume: resumeItems, rows: rows)
+        return HomeData(resume: resumeItems, nextUp: nextUpItems, rows: rows)
     }
 }
 

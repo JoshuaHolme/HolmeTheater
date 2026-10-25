@@ -191,6 +191,22 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
+    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+        let request = Paths.getNextUp(parameters: .init(
+            userID: session.userID,
+            startIndex: offset,
+            limit: limit,
+            fields: Self.itemFields,
+            enableUserData: true,
+            // Partly watched episodes already show under Continue Watching, and a show you've finished
+            // shouldn't come back around.
+            enableResumable: false,
+            enableRewatching: false
+        ))
+        return try await mapItems(send(request, with: client), client: client)
+    }
+
     func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
         let request = Paths.getLatestMedia(parameters: .init(

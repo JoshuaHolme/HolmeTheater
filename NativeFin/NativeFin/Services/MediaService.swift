@@ -84,6 +84,16 @@ nonisolated protocol MediaService: Sendable {
     /// - Returns: Up to `limit` items. A page shorter than `limit` is the last one.
     func resumeItems(offset: Int, limit: Int) async throws -> [MediaItem]
 
+    /// Fetches one page of "Up Next": for each show the user has been watching, the next episode to watch.
+    ///
+    /// Episodes that are partly watched are left out, since they're in ``resumeItems(offset:limit:)``.
+    ///
+    /// - Parameters:
+    ///   - offset: The number of items already loaded; 0 for the first page.
+    ///   - limit: The maximum number of items to return.
+    /// - Returns: Up to `limit` episodes, most recently watched show first. A page shorter than `limit` is the last one.
+    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem]
+
     /// Fetches a handful of the most recently added items in a library, for a home-screen shelf.
     ///
     /// - Parameter library: The library to look in.

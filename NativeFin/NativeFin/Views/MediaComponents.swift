@@ -90,6 +90,13 @@ extension View {
             .navigationDestination(for: ShelfDestination.self) { ShelfListView(destination: $0) }
     }
 
+    /// Gives something drawn over artwork (a badge, a progress bar) a faint edge, so it doesn't vanish into
+    /// artwork of a similar color. This plays the role `ArtworkView`'s outline does for the artwork itself;
+    /// a soft shadow suits small shapes better than a stroke.
+    func artworkOverlayEdge() -> some View {
+        shadow(color: .black.opacity(0.4), radius: 2)
+    }
+
     /// Link style that keeps cards looking like cards (and focusable on tvOS).
     @ViewBuilder
     func cardLinkStyle() -> some View {
@@ -131,6 +138,13 @@ struct ArtworkView: View {
                 .allowsHitTesting(false)
             }
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            // A faint outline gives artwork whose background matches the screen's (white or black) an edge.
+            // It's inset, and the primary color flips with light and dark mode, so it stays subtle on artwork
+            // that already stands out.
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(.primary.opacity(0.15), lineWidth: 1)
+            }
     }
 }
 
@@ -173,6 +187,7 @@ struct PosterCard: View {
                 .overlay(alignment: .bottom) {
                     if let fraction = item.playedFraction {
                         ProgressView(value: fraction)
+                            .artworkOverlayEdge()
                             .padding(6)
                     }
                 }
@@ -180,6 +195,7 @@ struct PosterCard: View {
                     if item.showsWatchedBadge {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.white, .green)
+                            .artworkOverlayEdge()
                             .padding(6)
                             .accessibilityLabel("Watched")
                     }
