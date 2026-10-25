@@ -5,6 +5,9 @@
 import SwiftUI
 
 /// The signed-in app: one tab per top-level area, each with its own navigation stack.
+///
+/// The account screen isn't a tab. Home puts a profile button in its own scrolling header;
+/// Libraries and Search have one in the navigation bar. Both open the account screen in a sheet.
 struct MainView: View {
     var body: some View {
         TabView {
@@ -19,6 +22,7 @@ struct MainView: View {
                 NavigationStack {
                     LibrariesView()
                         .mediaNavigationDestinations()
+                        .accountButton()
                 }
             }
 
@@ -26,14 +30,14 @@ struct MainView: View {
                 NavigationStack {
                     SearchView()
                         .mediaNavigationDestinations()
-                }
-            }
-
-            Tab("Account", systemImage: "person.crop.circle") {
-                NavigationStack {
-                    AccountView()
+                        .accountButton()
                 }
             }
         }
     }
+}
+
+#Preview {
+    MainView()
+        .environment(AppModel.preview())
 }

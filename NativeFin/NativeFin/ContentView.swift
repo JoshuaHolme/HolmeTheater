@@ -20,7 +20,17 @@ struct ContentView: View {
     }
 }
 
-#Preview {
+#Preview("Signed Out") {
+    ContentView()
+        .environment(AppModel.preview(signedIn: false))
+}
+
+#Preview("Signed In") {
+    ContentView()
+        .environment(AppModel.preview())
+}
+
+#Preview("Launching") {
     ContentView()
         .environment(AppModel(service: MockMediaService()))
 }

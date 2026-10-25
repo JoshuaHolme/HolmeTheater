@@ -45,7 +45,8 @@ struct SearchView: View {
         }
 
         isSearching = true
-        defer { isSearching = false }
+        // A cancelled run has been replaced by a newer one that's still searching, so leave the flag to it.
+        defer { if !Task.isCancelled { isSearching = false } }
 
         // Debounce typing.
         try? await Task.sleep(for: .milliseconds(300))
@@ -59,4 +60,12 @@ struct SearchView: View {
             errorMessage = error.localizedDescription
         }
     }
+}
+
+#Preview {
+    NavigationStack {
+        SearchView()
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
 }

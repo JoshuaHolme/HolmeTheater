@@ -19,7 +19,10 @@ actor JellyfinMediaService: MediaService {
     private static let ticksPerSecond = 10_000_000.0
 
     /// Maximum artwork widths requested from the server, in pixels.
-    private static let posterWidth = 600
+    ///
+    /// Posters are shown at about 130 pt wide (220 pt on tvOS), so 450 px is sharp on a 3× phone screen.
+    /// Asking for more only costs memory (a decoded image takes width × height × 4 bytes) and bandwidth.
+    private static let posterWidth = 450
     private static let backdropWidth = 1280
 
     private let identity: ClientIdentity
@@ -119,6 +122,21 @@ actor JellyfinMediaService: MediaService {
         session = nil
     }
 
+    func refreshProfile() async throws -> UserSession {
+        let (client, session) = try signedIn()
+        let user = try await send(Paths.getCurrentUser, with: client)
+
+        let updated = UserSession(
+            server: session.server,
+            userID: session.userID,
+            username: user.name ?? session.username,
+            accessToken: session.accessToken,
+            avatarURL: Self.avatarURL(userID: session.userID, tag: user.primaryImageTag, client: client)
+        )
+        self.session = updated
+        return updated
+    }
+
     // MARK: - Browsing
 
     func libraries() async throws -> [Library] {
@@ -160,11 +178,12 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
-    func resumeItems() async throws -> [MediaItem] {
+    func resumeItems(offset: Int, limit: Int) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
         let request = Paths.getResumeItems(parameters: .init(
             userID: session.userID,
-            limit: 16,
+            startIndex: offset,
+            limit: limit,
             fields: Self.itemFields,
             mediaTypes: [.video],
             enableUserData: true
@@ -172,7 +191,7 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
-    func latestItems(in library: Library) async throws -> [MediaItem] {
+    func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
         let request = Paths.getLatestMedia(parameters: .init(
             userID: session.userID,
@@ -181,9 +200,34 @@ actor JellyfinMediaService: MediaService {
             enableUserData: true,
             limit: 16
         ))
-        // Unlike the other endpoints, "latest" returns a bare array rather than a query result.
+        // Jellyfin calls this endpoint "latest media" but it returns what was added most recently, not what was
+        // released most recently. Unlike the other endpoints, it returns a bare array rather than a query result.
         let dtos = try await send(request, with: client)
         return dtos.compactMap { Self.makeItem(from: $0, client: client) }
+    }
+
+    func recentlyAddedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+
+        // Flatten to the individual playable items (episodes or movies) rather than series.
+        let includeTypes: [BaseItemKind]? = switch library.kind {
+        case .movies: [.movie]
+        case .tvShows: [.episode]
+        case .music, .other: nil
+        }
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            startIndex: offset,
+            limit: limit,
+            isRecursive: includeTypes != nil,
+            sortOrder: [.descending],
+            parentID: library.id,
+            fields: Self.itemFields,
+            includeItemTypes: includeTypes,
+            sortBy: [.dateCreated],
+            enableUserData: true
+        ))
+        return try await mapItems(send(request, with: client), client: client)
     }
 
     func children(of item: MediaItem) async throws -> [MediaItem] {
@@ -369,14 +413,26 @@ actor JellyfinMediaService: MediaService {
             throw MediaServiceError.underlying("The server's sign-in response was incomplete.")
         }
         let url = client.configuration.url
+
         let session = UserSession(
             server: server ?? ServerInfo(id: result.serverID ?? "", name: url.host() ?? "Jellyfin", url: url),
             userID: userID,
             username: result.user?.name ?? "",
-            accessToken: token
+            accessToken: token,
+            avatarURL: Self.avatarURL(userID: userID, tag: result.user?.primaryImageTag, client: client)
         )
         self.session = session
         return session
+    }
+
+    /// The URL of a user's profile picture, or nil if they haven't set one.
+    ///
+    /// The server only reports an image tag if the user has uploaded a picture, and the tag changes
+    /// whenever the picture does, so the URL changes with it and caches stay correct.
+    /// Like item artwork, no token is needed to fetch it.
+    private static func avatarURL(userID: String, tag: String?, client: JellyfinClient) -> URL? {
+        guard let tag else { return nil }
+        return client.url(path: "/UserImage?userId=\(userID)&tag=\(tag)")
     }
 
     /// Sends a request and unwraps its value, converting SDK errors to `MediaServiceError`.
@@ -399,13 +455,17 @@ actor JellyfinMediaService: MediaService {
         case is URLError:
             .serverUnreachable
         case APIError.unacceptableStatusCode(let code) where code == 401:
-            .notSignedIn
+            // Only ever sent with a token, so a 401 means the server no longer accepts it.
+            .sessionExpired
         default:
             .underlying(error.localizedDescription)
         }
     }
 
     /// "jellyfin.local:8096" → https://… then http://…; an explicit scheme is used as-is.
+    ///
+    /// Falling back to HTTP is what makes LAN servers work without typing a scheme, but it means the
+    /// connection may be unencrypted. The sign-in screen warns when it is.
     private static func candidateURLs(from address: String) -> [URL] {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -418,12 +478,21 @@ actor JellyfinMediaService: MediaService {
     }
 
     /// AVPlayer can't attach auth headers to every HLS segment request, so the token goes in the URL.
+    ///
+    /// Works on the percent-encoded query so the server's own parameters are passed through byte for byte.
     private static func addingAccessToken(_ token: String?, to url: URL) -> URL {
-        guard let token, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
-        var items = components.queryItems ?? []
+        guard let token,
+              // `&`, `=` and `+` are legal in a query but would change its meaning inside a value.
+              let encodedToken = token.addingPercentEncoding(
+                  withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=+"))
+              ),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return url }
+
+        var items = components.percentEncodedQueryItems ?? []
         let hasKey = items.contains { $0.name.caseInsensitiveCompare("ApiKey") == .orderedSame }
-        if !hasKey { items.append(URLQueryItem(name: "ApiKey", value: token)) }
-        components.queryItems = items
+        if !hasKey { items.append(URLQueryItem(name: "ApiKey", value: encodedToken)) }
+        components.percentEncodedQueryItems = items
         return components.url ?? url
     }
 
@@ -465,6 +534,7 @@ actor JellyfinMediaService: MediaService {
             runtime: runtime,
             posterURL: posterURL(for: dto, id: id, client: client),
             backdropURL: backdropURL(for: dto, id: id, client: client),
+            thumbnailURL: thumbnailURL(for: dto, id: id, client: client),
             playedFraction: playedFraction,
             isPlayed: dto.userData?.isPlayed ?? false,
             seriesTitle: dto.seriesName,
@@ -478,15 +548,29 @@ actor JellyfinMediaService: MediaService {
         client.url(path: "/Items/\(itemID)/Images/\(type.rawValue)?maxWidth=\(width)&tag=\(tag)")
     }
 
-    /// The item's own poster, falling back to its series' poster (e.g. for episodes without a thumbnail).
+    /// The portrait poster.
+    ///
+    /// An episode uses its show's poster, because its own image is a widescreen still that looks wrong in a
+    /// poster slot (see `thumbnailURL(for:id:client:)`). Everything else uses its own poster, falling back to
+    /// its series' poster if it has none.
     private static func posterURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
+        var ownPoster: URL?
         if let tag = dto.imageTags?[ImageType.primary.rawValue] {
-            return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
+            ownPoster = imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
         }
+
+        var seriesPoster: URL?
         if let seriesID = dto.seriesID, let tag = dto.seriesPrimaryImageTag {
-            return imageURL(itemID: seriesID, type: .primary, tag: tag, width: posterWidth, client: client)
+            seriesPoster = imageURL(itemID: seriesID, type: .primary, tag: tag, width: posterWidth, client: client)
         }
-        return nil
+
+        return dto.type == .episode ? (seriesPoster ?? ownPoster) : (ownPoster ?? seriesPoster)
+    }
+
+    /// An episode's own widescreen still, or nil for anything that isn't an episode.
+    private static func thumbnailURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
+        guard dto.type == .episode, let tag = dto.imageTags?[ImageType.primary.rawValue] else { return nil }
+        return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
     }
 
     /// The item's own backdrop, falling back to its parent's.

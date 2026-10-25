@@ -40,6 +40,37 @@ extension MediaItem {
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
+
+    /// e.g. "Season 1 Episode 3"; nil unless the item has an episode number.
+    var seasonEpisodeText: String? {
+        switch (seasonNumber, episodeNumber) {
+        case let (season?, episode?): String(localized: "Season \(season) Episode \(episode)")
+        case let (nil, episode?): String(localized: "Episode \(episode)")
+        default: nil
+        }
+    }
+
+    /// The artwork `ItemRow` shows: an episode's widescreen still, otherwise the portrait poster.
+    var rowArtworkURL: URL? {
+        kind == .episode ? (thumbnailURL ?? posterURL) : posterURL
+    }
+
+    /// The text shown with an item's artwork, most important first:
+    /// - movies and series: title, then release year
+    /// - episodes: show title, then episode title, then "Season X Episode X"
+    /// - seasons: show title, then season name
+    var captionLines: [String] {
+        switch kind {
+        case .episode:
+            [seriesTitle, title, seasonEpisodeText].compactMap { $0 }
+        case .season:
+            [seriesTitle, title].compactMap { $0 }
+        case .movie, .series:
+            [title, year.map(String.init)].compactMap { $0 }
+        case .other:
+            [title]
+        }
+    }
 }
 
 extension View {
@@ -47,6 +78,7 @@ extension View {
     func mediaNavigationDestinations() -> some View {
         navigationDestination(for: MediaItem.self) { ItemDetailView(item: $0) }
             .navigationDestination(for: Library.self) { LibraryView(library: $0) }
+            .navigationDestination(for: ShelfDestination.self) { ShelfListView(destination: $0) }
     }
 
     /// Link style that keeps cards looking like cards (and focusable on tvOS).
@@ -72,7 +104,7 @@ struct ArtworkView: View {
         Color.secondary.opacity(0.2)
             .aspectRatio(aspectRatio, contentMode: .fit)
             .overlay {
-                AsyncImage(url: url) { phase in
+                CachedAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
                         image.resizable().scaledToFill()
@@ -84,12 +116,45 @@ struct ArtworkView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                // The image is purely visual. A fill-scaled image overflows its frame (a widescreen
+                // episode still in a portrait slot, say). Clipping hides the overflow but doesn't stop
+                // it receiving taps, so without this it would steal taps from neighboring cards.
+                .allowsHitTesting(false)
             }
             .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
-/// A poster with a progress bar (if partly watched), a watched checkmark, and the title beneath.
+/// The text beneath an item's artwork: its first caption line as a title, then the rest as detail lines.
+/// See `MediaItem.captionLines` for what each kind of item shows.
+struct ItemCaption: View {
+    let item: MediaItem
+
+    /// Pads with blank lines up to this many, so cards of different kinds in one row are the same height.
+    /// Without it, the row's tallest card squeezes the artwork of the shorter ones.
+    var reservedLines = 0
+
+    var body: some View {
+        let lines = item.captionLines
+
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                Text(line)
+                    .font(index == 0 ? .subheadline.weight(.medium) : .caption)
+                    .foregroundStyle(index == 0 ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+
+            ForEach(lines.count..<max(lines.count, reservedLines), id: \.self) { _ in
+                Text(" ")
+                    .font(.caption)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+}
+
+/// A poster with a progress bar (if partly watched), a watched checkmark, and the item's caption beneath.
 struct PosterCard: View {
     let item: MediaItem
 
@@ -107,32 +172,31 @@ struct PosterCard: View {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.white, .green)
                             .padding(6)
+                            .accessibilityLabel("Watched")
                     }
                 }
 
-            Text(item.title)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-
-            if let subtitle = item.subtitle {
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            // Three lines is the most any item shows (an episode); reserving them keeps every card the same height.
+            ItemCaption(item: item, reservedLines: 3)
         }
+        // Make the whole card tappable, including the gaps between the artwork and text.
+        .contentShape(Rectangle())
     }
 }
 
 /// Horizontally scrolling row of posters under a heading. Each poster navigates to its item.
+///
+/// If a `destination` is given, the heading is a button (with a chevron) that opens the full list.
 struct MediaShelf: View {
     let title: String
     let items: [MediaItem]
 
+    /// Where tapping the heading leads. Nil makes the heading plain text.
+    var destination: ShelfDestination?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.title2.bold())
+            heading
                 .padding(.horizontal)
 
             ScrollView(.horizontal) {
@@ -150,38 +214,89 @@ struct MediaShelf: View {
             .scrollIndicators(.hidden)
         }
     }
+
+    @ViewBuilder
+    private var heading: some View {
+        if let destination {
+            NavigationLink(value: destination) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.title2.bold())
+                    Image(systemName: "chevron.right")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .cardLinkStyle()
+            .accessibilityLabel("\(title), show all")
+        } else {
+            Text(title)
+                .font(.title2.bold())
+        }
+    }
 }
 
 /// Compact list row: thumbnail plus title and details.
 struct ItemRow: View {
     let item: MediaItem
 
+    /// An episode's image is a widescreen still; everything else is a portrait poster.
+    private var isEpisode: Bool { item.kind == .episode }
+
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkView(url: item.posterURL, aspectRatio: 2.0 / 3.0)
-                .frame(width: 50)
+            ArtworkView(url: item.rowArtworkURL, aspectRatio: isEpisode ? 16.0 / 9.0 : 2.0 / 3.0)
+                .frame(width: isEpisode ? 100 : 50)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .lineLimit(2)
-                if let subtitle = item.subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let metadata = item.metadataLine {
-                    Text(metadata)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            ItemCaption(item: item)
 
             Spacer()
 
             if item.isPlayed {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
+                    .accessibilityLabel("Watched")
             }
         }
     }
+}
+
+#Preview("PosterCard") {
+    HStack(alignment: .top) {
+        PosterCard(item: .previewMovie)
+        PosterCard(item: .previewPartlyWatched)
+        PosterCard(item: .previewWatched)
+        PosterCard(item: .previewEpisode)
+    }
+    .padding()
+}
+
+#Preview("MediaShelf") {
+    NavigationStack {
+        MediaShelf(title: "Continue Watching", items: MediaItem.previewMovies)
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}
+
+/// An episode (which has a subtitle) between cards that don't: all three should get equal artwork.
+#Preview("MediaShelf mixed subtitles") {
+    NavigationStack {
+        MediaShelf(
+            title: "Recently Added Shows",
+            items: [.previewMovie, .previewEpisode, .previewWatched],
+            destination: .continueWatching
+        )
+        .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}
+
+#Preview("ItemRow") {
+    List(MediaItem.previewMovies + [.previewEpisode]) { ItemRow(item: $0) }
+}
+
+#Preview("ArtworkView") {
+    ArtworkView(url: nil, aspectRatio: 16.0 / 9.0)
+        .padding()
 }

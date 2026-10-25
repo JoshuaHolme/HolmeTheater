@@ -10,7 +10,13 @@ struct AccountView: View {
 
     var body: some View {
         List {
-            if case .signedIn(let session) = appModel.state {
+            if let session = appModel.session {
+                Section {
+                    AvatarView(url: session.avatarURL, size: 96)
+                        .frame(maxWidth: .infinity)
+                        .listRowBackground(Color.clear)
+                }
+
                 Section("Account") {
                     LabeledContent("User", value: session.username)
                     LabeledContent("Server", value: session.server.name)
@@ -26,4 +32,11 @@ struct AccountView: View {
         }
         .navigationTitle("Account")
     }
+}
+
+#Preview {
+    NavigationStack {
+        AccountView()
+    }
+    .environment(AppModel.preview())
 }

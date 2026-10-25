@@ -18,9 +18,11 @@ nonisolated struct ClientIdentity: Sendable {
     /// Stable per install so the server doesn't accumulate duplicate devices.
     let deviceID: String
 
-    /// The identity for the current install, generating and persisting a device ID on first use.
+    /// Returns the identity for the current install, generating and saving a device ID on first use.
     ///
-    /// Reads UIKit state, so it has to run on the main actor.
+    /// This reads UIKit state, so it has to run on the main actor.
+    ///
+    /// - Returns: The app's name and version, this device's name, and its persistent device ID.
     @MainActor
     static func current() -> ClientIdentity {
         let defaults = UserDefaults.standard
