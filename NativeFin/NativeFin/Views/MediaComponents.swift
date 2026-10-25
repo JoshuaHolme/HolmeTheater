@@ -54,6 +54,23 @@ extension MediaItem {
     /// progress, even if the server also flags it as played.
     var showsWatchedBadge: Bool { isPlayed && playedFraction == nil }
 
+    /// The widescreen image for the landscape shelf grid, falling back through the backdrop to the poster.
+    var gridArtworkURL: URL? { thumbnailURL ?? backdropURL ?? posterURL }
+
+    /// The line over a grid card's image, e.g. "S4, E6 · 46m left" or "1h 53m". Nil if there's nothing to say.
+    var gridStatusLine: String? {
+        var parts: [String] = []
+        if kind == .episode, let episodeNumber {
+            parts.append(seasonNumber.map { "S\($0), E\(episodeNumber)" } ?? "E\(episodeNumber)")
+        }
+        if let runtime {
+            let remaining = playedFraction.map { runtime * (1 - $0) } ?? runtime
+            let time = Duration.seconds(remaining).formatted(.units(allowed: [.hours, .minutes], width: .narrow))
+            parts.append(playedFraction == nil ? time : String(localized: "\(time) left"))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     /// Whether `ItemRow` shows widescreen artwork (episodes and movies) rather than a portrait poster.
     var hasWidescreenRowArtwork: Bool {
         (kind == .episode || kind == .movie) && thumbnailURL != nil
@@ -177,6 +194,19 @@ struct ItemCaption: View {
     }
 }
 
+/// The green checkmark in the corner of watched artwork.
+struct WatchedBadge: View {
+    var body: some View {
+        Image(systemName: "checkmark.circle.fill")
+            // Large enough to spot at a glance on a busy poster.
+            .font(.title)
+            .foregroundStyle(.white, .green)
+            .artworkOverlayEdge()
+            .padding(6)
+            .accessibilityLabel("Watched")
+    }
+}
+
 /// A poster with a progress bar (if partly watched), a watched checkmark, and the item's caption beneath.
 struct PosterCard: View {
     let item: MediaItem
@@ -193,11 +223,7 @@ struct PosterCard: View {
                 }
                 .overlay(alignment: .topTrailing) {
                     if item.showsWatchedBadge {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.white, .green)
-                            .artworkOverlayEdge()
-                            .padding(6)
-                            .accessibilityLabel("Watched")
+                        WatchedBadge()
                     }
                 }
 
@@ -306,34 +332,110 @@ struct ItemRow: View {
             }
 
             if let actions {
-                Menu {
-                    // A partly watched item offers both, so the user can finish it or start it over.
-                    if !item.showsWatchedBadge {
-                        Button("Mark as Watched", systemImage: "checkmark.circle", action: actions.markWatched)
-                    }
-                    if item.isPlayed || item.playedFraction != nil {
-                        Button("Mark as Unwatched", systemImage: "arrow.uturn.backward.circle", action: actions.markUnwatched)
-                    }
-                    if let remove = actions.removeFromContinueWatching {
-                        Button("Remove from Continue Watching", systemImage: "minus.circle", action: remove)
-                    }
-                    if let showWatched = actions.removeShowWatched, let showUnwatched = actions.removeShowUnwatched {
-                        Menu("Remove from Up Next", systemImage: "minus.circle") {
-                            Button("Mark All Episodes as Watched", systemImage: "checkmark.circle", action: showWatched)
-                            Button("Mark All Episodes as Unwatched", systemImage: "arrow.uturn.backward.circle", action: showUnwatched)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .foregroundStyle(.secondary)
-                        .padding(8)
-                        .contentShape(Rectangle())
-                }
-                // Plain leaves the label's color alone. Tinting the menu instead would gray its items' icons too.
-                .buttonStyle(.plain)
-                .accessibilityLabel("More")
+                ItemActionsMenu(item: item, actions: actions)
             }
         }
+    }
+}
+
+/// The "more" (…) button and the menu of watch-state actions it opens.
+struct ItemActionsMenu: View {
+    let item: MediaItem
+    let actions: ItemRowActions
+
+    /// Whether the button sits on top of artwork, where it's white so it reads against any image.
+    var overArtwork = false
+
+    var body: some View {
+        Menu {
+            // A partly watched item offers both, so the user can finish it or start it over.
+            if !item.showsWatchedBadge {
+                Button("Mark as Watched", systemImage: "checkmark.circle", action: actions.markWatched)
+            }
+            if item.isPlayed || item.playedFraction != nil {
+                Button("Mark as Unwatched", systemImage: "arrow.uturn.backward.circle", action: actions.markUnwatched)
+            }
+            if let remove = actions.removeFromContinueWatching {
+                Button("Remove from Continue Watching", systemImage: "minus.circle", action: remove)
+            }
+            if let showWatched = actions.removeShowWatched, let showUnwatched = actions.removeShowUnwatched {
+                Menu("Remove from Up Next", systemImage: "minus.circle") {
+                    Button("Mark All Episodes as Watched", systemImage: "checkmark.circle", action: showWatched)
+                    Button("Mark All Episodes as Unwatched", systemImage: "arrow.uturn.backward.circle", action: showUnwatched)
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .foregroundStyle(overArtwork ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                .padding(8)
+                .contentShape(Rectangle())
+        }
+        // Plain leaves the label's color alone. Tinting the menu instead would gray its items' icons too.
+        .buttonStyle(.plain)
+        .accessibilityLabel("More")
+    }
+}
+
+/// A widescreen card for the landscape shelf grid: the image with a status line and the "more" button along
+/// its bottom edge, and the item's caption beneath. It doesn't navigate; the grid puts a link behind it.
+struct ShelfGridCard: View {
+    let item: MediaItem
+    var actions: ItemRowActions?
+
+    private static let progressWidth: CGFloat = 36
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ArtworkView(url: item.gridArtworkURL, aspectRatio: 16.0 / 9.0)
+                .overlay(alignment: .bottom) { statusBar }
+                .overlay(alignment: .topTrailing) {
+                    if item.showsWatchedBadge {
+                        WatchedBadge()
+                    }
+                }
+                // The status bar's gradient is square; clip it to the image's rounded corners.
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            ItemCaption(item: item)
+        }
+        // Make the whole card tappable, including the gaps between the artwork and text.
+        .contentShape(Rectangle())
+    }
+
+    /// Play icon, progress, episode and time left, and the menu button, over a fade so they read on any image.
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "play.fill")
+                .accessibilityHidden(true)
+
+            if let fraction = item.playedFraction {
+                Capsule()
+                    .fill(.white.opacity(0.3))
+                    .frame(width: Self.progressWidth, height: 3)
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(.white)
+                            .frame(width: Self.progressWidth * fraction)
+                    }
+                    .accessibilityHidden(true)
+            }
+
+            if let status = item.gridStatusLine {
+                Text(status)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            if let actions {
+                ItemActionsMenu(item: item, actions: actions, overArtwork: true)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .padding(.top, 20)
+        .background(LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
     }
 }
 

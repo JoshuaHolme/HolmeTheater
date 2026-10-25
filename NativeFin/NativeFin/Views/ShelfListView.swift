@@ -54,37 +54,15 @@ struct ShelfListView: View {
     private static let pageSize = 30
 
     var body: some View {
-        List {
-            ForEach(items) { item in
-                ItemRow(item: item, actions: actions(for: item))
-                    // A link in the background gives the row navigation without a disclosure chevron, and
-                    // leaves the row's menu button free to take its own taps.
-                    .background {
-                        NavigationLink(value: item) { EmptyView() }
-                            .opacity(0)
-                    }
-            }
-
-            if let errorMessage {
-                Section {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
-                    Button("Retry") { Task { await loadMore() } }
-                }
-            } else if hasMore {
-                // Scrolling this into view loads the next page; it also loads the first one.
-                HStack {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                }
-                #if !os(tvOS)
-                .listRowSeparator(.hidden)
-                #endif
-                .task { await loadMore() }
+        // A grid of widescreen cards when the screen is wider than it is tall (landscape iPhone or iPad),
+        // otherwise a list of compact rows.
+        GeometryReader { proxy in
+            if proxy.size.width > proxy.size.height {
+                grid
+            } else {
+                list
             }
         }
-        .listStyle(.plain)
         .overlay {
             if items.isEmpty && !hasMore && errorMessage == nil {
                 ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
@@ -121,6 +99,73 @@ struct ShelfListView: View {
             } else {
                 Text("Every episode of \(removal.showTitle) will be marked as unwatched, in all your Jellyfin apps. This resets their play counts and watch dates, and can't be undone.")
             }
+        }
+    }
+
+    private var list: some View {
+        List {
+            ForEach(items) { item in
+                ItemRow(item: item, actions: actions(for: item))
+                    // A link in the background gives the row navigation without a disclosure chevron, and
+                    // leaves the row's menu button free to take its own taps.
+                    .background {
+                        NavigationLink(value: item) { EmptyView() }
+                            .opacity(0)
+                    }
+            }
+
+            if let errorMessage {
+                Section {
+                    Text(errorMessage)
+                        .foregroundStyle(.red)
+                    Button("Retry") { Task { await loadMore() } }
+                }
+            } else if hasMore {
+                // Scrolling this into view loads the next page; it also loads the first one.
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                }
+                #if !os(tvOS)
+                .listRowSeparator(.hidden)
+                #endif
+                .task { await loadMore() }
+            }
+        }
+        .listStyle(.plain)
+    }
+
+    private var grid: some View {
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 16, alignment: .top)], spacing: 16) {
+                    ForEach(items) { item in
+                        ShelfGridCard(item: item, actions: actions(for: item))
+                            // The link sits behind the card, so the card's menu button takes its own taps.
+                            // `contentShape` makes the clear label tappable.
+                            .background {
+                                NavigationLink(value: item) { Color.clear.contentShape(Rectangle()) }
+                                    .cardLinkStyle()
+                            }
+                    }
+                }
+
+                if let errorMessage {
+                    VStack {
+                        Text(errorMessage)
+                            .foregroundStyle(.red)
+                        Button("Retry") { Task { await loadMore() } }
+                    }
+                } else if hasMore {
+                    // Scrolling this into view loads the next page. Keying on the count asks again if a page
+                    // doesn't fill the screen and this is still in view.
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .task(id: items.count) { await loadMore() }
+                }
+            }
+            .padding()
         }
     }
 
