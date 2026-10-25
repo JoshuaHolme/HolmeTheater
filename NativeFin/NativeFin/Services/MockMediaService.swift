@@ -146,12 +146,12 @@ nonisolated struct MockMediaService: MediaService {
         return Self.movies.filter { $0.playedFraction != nil }
     }
 
-    func latestItems(in library: Library) async throws -> [MediaItem] {
+    func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {
         try await simulateLatency()
         return Array((library.kind == .tvShows ? Self.shows : Self.movies).prefix(8))
     }
 
-    func recentlyAdded(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
+    func recentlyAddedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
         try await simulateLatency()
         // Episodes for TV libraries, movies otherwise. The sample shows have 48 episodes between them,
         // so paging has something to do.

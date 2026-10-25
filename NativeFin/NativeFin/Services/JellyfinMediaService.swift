@@ -190,7 +190,7 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
-    func latestItems(in library: Library) async throws -> [MediaItem] {
+    func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
         let request = Paths.getLatestMedia(parameters: .init(
             userID: session.userID,
@@ -199,12 +199,13 @@ actor JellyfinMediaService: MediaService {
             enableUserData: true,
             limit: 16
         ))
-        // Unlike the other endpoints, "latest" returns a bare array rather than a query result.
+        // Jellyfin calls this endpoint "latest media" but it returns what was added most recently, not what was
+        // released most recently. Unlike the other endpoints, it returns a bare array rather than a query result.
         let dtos = try await send(request, with: client)
         return dtos.compactMap { Self.makeItem(from: $0, client: client) }
     }
 
-    func recentlyAdded(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
+    func recentlyAddedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
 
         // Flatten to the individual playable items (episodes or movies) rather than series.

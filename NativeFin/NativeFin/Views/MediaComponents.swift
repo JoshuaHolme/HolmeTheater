@@ -281,7 +281,7 @@ struct ItemRow: View {
 #Preview("MediaShelf mixed subtitles") {
     NavigationStack {
         MediaShelf(
-            title: "Latest in Shows",
+            title: "Recently Added Shows",
             items: [.previewMovie, .previewEpisode, .previewWatched],
             destination: .continueWatching
         )

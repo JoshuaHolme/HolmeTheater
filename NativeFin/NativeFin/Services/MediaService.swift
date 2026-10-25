@@ -55,13 +55,13 @@ nonisolated protocol MediaService: Sendable {
     func resumeItems() async throws -> [MediaItem]
 
     /// The most recently added items in a library, a handful for a home-screen shelf.
-    func latestItems(in library: Library) async throws -> [MediaItem]
+    func recentlyAddedItems(in library: Library) async throws -> [MediaItem]
 
     /// One page of everything in a library, newest first: episodes for a TV library, movies for a movie library.
     ///
     /// Page through it by passing the number of items already loaded as `offset`. A page shorter than
     /// `limit` is the last one.
-    func recentlyAdded(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem]
+    func recentlyAddedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem]
 
     /// Seasons of a series, or episodes of a season. Empty for anything else.
     func children(of item: MediaItem) async throws -> [MediaItem]

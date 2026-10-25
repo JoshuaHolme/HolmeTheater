@@ -4,14 +4,14 @@
 
 import SwiftUI
 
-/// Continue Watching plus a "latest" shelf for each movie / TV library.
+/// Continue Watching plus a "Recently Added" shelf for each movie / TV library.
 ///
 /// Instead of a system navigation title, it draws its own large "Home" heading with the profile
 /// button beside it, as part of the scrolling content, so the two scroll away together.
 struct HomeView: View {
     @Environment(AppModel.self) private var appModel
 
-    /// One "Latest in …" shelf.
+    /// One "Recently Added …" shelf.
     private struct Row: Identifiable {
         let library: Library
         let items: [MediaItem]
@@ -37,7 +37,7 @@ struct HomeView: View {
                             MediaShelf(title: ShelfDestination.continueWatching.title, items: data.resume, destination: .continueWatching)
                         }
                         ForEach(data.rows) { row in
-                            let destination = ShelfDestination.latest(row.library)
+                            let destination = ShelfDestination.recentlyAdded(row.library)
                             MediaShelf(title: destination.title, items: row.items, destination: destination)
                         }
                         if data.resume.isEmpty && data.rows.isEmpty {
@@ -69,7 +69,7 @@ struct HomeView: View {
         .padding(.horizontal)
     }
 
-    /// Fetches the resume list and each movie/TV library's latest items.
+    /// Fetches the resume list and each movie/TV library's recently added items.
     /// Music and other libraries are skipped, since the app doesn't play them yet.
     private func loadHome() async throws -> HomeData {
         let service = appModel.service
@@ -78,7 +78,7 @@ struct HomeView: View {
 
         var rows: [Row] = []
         for library in libraries where library.kind == .movies || library.kind == .tvShows {
-            let items = try await service.latestItems(in: library)
+            let items = try await service.recentlyAddedItems(in: library)
             if !items.isEmpty { rows.append(Row(library: library, items: items)) }
         }
         let resumeItems = try await resume

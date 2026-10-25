@@ -8,12 +8,12 @@ import SwiftUI
 enum ShelfDestination: Hashable {
     case continueWatching
     /// Everything recently added to a library (episodes for TV, movies for film).
-    case latest(Library)
+    case recentlyAdded(Library)
 
     var title: String {
         switch self {
         case .continueWatching: "Continue Watching"
-        case .latest(let library): "Latest in \(library.name)"
+        case .recentlyAdded(let library): "Recently Added \(library.name)"
         }
     }
 }
@@ -101,15 +101,15 @@ struct ShelfListView: View {
         case .continueWatching:
             // The server returns the whole resume list at once, so there's only ever one page.
             return offset == 0 ? try await service.resumeItems() : []
-        case .latest(let library):
-            return try await service.recentlyAdded(in: library, offset: offset, limit: Self.pageSize)
+        case .recentlyAdded(let library):
+            return try await service.recentlyAddedPage(in: library, offset: offset, limit: Self.pageSize)
         }
     }
 }
 
-#Preview("Latest in TV Shows") {
+#Preview("Recently Added TV Shows") {
     NavigationStack {
-        ShelfListView(destination: .latest(Library(id: "lib-shows", name: "TV Shows", kind: .tvShows)))
+        ShelfListView(destination: .recentlyAdded(Library(id: "lib-shows", name: "TV Shows", kind: .tvShows)))
             .mediaNavigationDestinations()
     }
     .environment(AppModel.preview())
