@@ -11,6 +11,9 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppModel.self) private var appModel
 
+    /// How many items a home shelf shows; the shelf's heading opens the full list.
+    private static let shelfLimit = 16
+
     /// One "Recently Added …" shelf.
     private struct Row: Identifiable {
         let library: Library
@@ -64,7 +67,6 @@ struct HomeView: View {
             Spacer()
 
             AccountButton()
-                .font(.title)
         }
         .padding(.horizontal)
     }
@@ -73,14 +75,22 @@ struct HomeView: View {
     /// Music and other libraries are skipped, since the app doesn't play them yet.
     private func loadHome() async throws -> HomeData {
         let service = appModel.service
-        async let resume = service.resumeItems()
-        let libraries = try await service.libraries()
+        async let resume = service.resumeItems(offset: 0, limit: Self.shelfLimit)
+        let libraries = try await service.libraries().filter { $0.kind == .movies || $0.kind == .tvShows }
 
-        var rows: [Row] = []
-        for library in libraries where library.kind == .movies || library.kind == .tvShows {
-            let items = try await service.recentlyAddedItems(in: library)
-            if !items.isEmpty { rows.append(Row(library: library, items: items)) }
+        // Fetch every library's shelf at once rather than one after another.
+        let shelves = try await withThrowingTaskGroup(of: (Int, [MediaItem]).self) { group in
+            for (index, library) in libraries.enumerated() {
+                group.addTask { (index, try await service.recentlyAddedItems(in: library)) }
+            }
+            var results: [(Int, [MediaItem])] = []
+            for try await result in group { results.append(result) }
+            return results
         }
+        // They finish in any order; put them back in the server's library order.
+        let rows = shelves
+            .sorted { $0.0 < $1.0 }
+            .compactMap { index, items in items.isEmpty ? nil : Row(library: libraries[index], items: items) }
         let resumeItems = try await resume
 
         // Start downloading every poster now, so they're already cached by the time you scroll to them.

@@ -4,6 +4,14 @@
 
 import Foundation
 
+extension URL {
+    /// The placeholder server address used by ``MockMediaService`` and SwiftUI previews.
+    ///
+    /// It's on the reserved `example.com` domain, so nothing real is ever contacted. `URL(string:)` can't fail
+    /// for this literal; the file-URL fallback exists only so the constant needs no force unwrap.
+    nonisolated static let exampleServer = URL(string: "https://jellyfin.example.com") ?? URL(filePath: "/")
+}
+
 /// Canned data for building and previewing UI without a Jellyfin server.
 ///
 /// Every call succeeds after a short simulated delay. Run the app with the `-UseMockService`
@@ -12,12 +20,10 @@ nonisolated struct MockMediaService: MediaService {
     /// How long each simulated network call takes.
     var latency: Duration = .milliseconds(300)
 
-    private static let server = ServerInfo(
-        id: "mock-server",
-        name: "Mock Server",
-        url: URL(string: "https://jellyfin.example.com")!
-    )
+    /// The server every ``connect(to:)`` "succeeds" against, whatever address is typed.
+    private static let server = ServerInfo(id: "mock-server", name: "Mock Server", url: .exampleServer)
 
+    /// The session every sign-in method returns.
     private static let session = UserSession(
         server: server,
         userID: "mock-user",
@@ -141,9 +147,9 @@ nonisolated struct MockMediaService: MediaService {
         return library.kind == .tvShows ? Self.shows : Self.movies
     }
 
-    func resumeItems() async throws -> [MediaItem] {
+    func resumeItems(offset: Int, limit: Int) async throws -> [MediaItem] {
         try await simulateLatency()
-        return Self.movies.filter { $0.playedFraction != nil }
+        return Array(Self.movies.filter { $0.playedFraction != nil }.dropFirst(offset).prefix(limit))
     }
 
     func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {

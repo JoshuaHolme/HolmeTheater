@@ -43,17 +43,31 @@ struct SignInView: View {
                 }
 
                 if let server {
-                    Section("Sign in to \(server.name)") {
+                    Section {
+                        // Content types let password managers and iCloud Keychain offer AutoFill.
                         TextField("Username", text: $username)
+                            .textContentType(.username)
                             #if os(iOS)
                             .textInputAutocapitalization(.never)
                             #endif
                             .autocorrectionDisabled()
                         SecureField("Password", text: $password)
+                            .textContentType(.password)
                             .onSubmit { Task { await signIn() } }
 
                         Button("Sign In") { Task { await signIn() } }
                             .disabled(username.isEmpty || isWorking)
+                    } header: {
+                        Text("Sign in to \(server.name)")
+                    } footer: {
+                        // Plain HTTP is common for home servers, but the user should know before typing a password.
+                        if server.url.scheme?.lowercased() == "http" {
+                            Label(
+                                "This connection isn't encrypted. Your password and what you watch can be seen by others on the same network.",
+                                systemImage: "lock.open"
+                            )
+                            .foregroundStyle(.orange)
+                        }
                     }
 
                     Section("Quick Connect") {
@@ -90,12 +104,17 @@ struct SignInView: View {
 
     /// Checks the typed address and, on success, reveals the sign-in options.
     private func connect() async {
+        let submitted = address
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }
         do {
-            server = try await appModel.connect(to: address)
+            let connected = try await appModel.connect(to: submitted)
+            // The address was edited while connecting, so this result belongs to the old one.
+            guard address == submitted else { return }
+            server = connected
         } catch {
+            guard address == submitted else { return }
             server = nil
             errorMessage = error.localizedDescription
         }
@@ -120,6 +139,9 @@ struct SignInView: View {
             } catch {
                 if !Task.isCancelled { errorMessage = error.localizedDescription }
             }
+            // A cancelled attempt was already cleaned up by `cancelQuickConnect()`, and a newer attempt
+            // may be running now; clearing state here would hide its code.
+            guard !Task.isCancelled else { return }
             quickConnectCode = nil
             quickConnectTask = nil
         }

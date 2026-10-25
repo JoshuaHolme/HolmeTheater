@@ -7,7 +7,7 @@ import SwiftUI
 
 /// Full-screen AVPlayer for one item.
 ///
-/// Shows a small debug readout (play method, status, position) so it's easy to see what the
+/// Debug builds show a small readout (play method, status, position) so it's easy to see what the
 /// server decided and whether playback is healthy.
 struct PlayerView: View {
     let item: MediaItem
@@ -25,6 +25,7 @@ struct PlayerView: View {
             if let session {
                 VideoPlayer(player: session.player)
                     .ignoresSafeArea()
+                    #if DEBUG
                     .overlay(alignment: .topLeading) {
                         Text(session.debugText)
                             .font(.caption.monospaced())
@@ -34,6 +35,7 @@ struct PlayerView: View {
                             .padding()
                             .allowsHitTesting(false)
                     }
+                    #endif
             } else if let errorMessage {
                 ContentUnavailableView {
                     Label("Can't Play", systemImage: "exclamationmark.triangle")
@@ -59,6 +61,7 @@ struct PlayerView: View {
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(.white, .black.opacity(0.5))
             }
+            .accessibilityLabel("Close")
             .padding()
         }
         #endif
@@ -85,19 +88,23 @@ struct PlayerView: View {
 /// Owns the AVPlayer for one playback and keeps the server informed:
 /// started, progress every 10 seconds, stopped.
 ///
-/// Call `start()` once, and `stop()` when the player goes away (calling `stop()` more than once is harmless).
+/// Call `start()` once, and `stop()` when the player goes away. `stop()` may be called at any point,
+/// even while `start()` is still running, and more than once.
 @Observable
 final class PlaybackSession {
     let player: AVPlayer
 
-    /// A short status string for the on-screen debug overlay; refreshed every second while playing.
+    /// A short status string for the debug overlay; refreshed every second while playing (debug builds only).
     private(set) var debugText = "Loading…"
 
     @ObservationIgnored private let item: MediaItem
     @ObservationIgnored private let info: PlaybackInfo
     @ObservationIgnored private let service: any MediaService
     @ObservationIgnored private var progressTask: Task<Void, Never>?
-    @ObservationIgnored private var hasStarted = false
+
+    /// The "started" report, once sent. "Stopped" waits for it, so the server never sees them out of order
+    /// (which would leave a phantom "now playing" session on the server).
+    @ObservationIgnored private var startReport: Task<Void, Never>?
     @ObservationIgnored private var isStopped = false
 
     init(item: MediaItem, info: PlaybackInfo, service: any MediaService) {
@@ -122,16 +129,20 @@ final class PlaybackSession {
         if info.resumePosition > 1 {
             await player.seek(to: CMTime(seconds: info.resumePosition, preferredTimescale: 600))
         }
+        // Closed while seeking: don't start playing with nothing on screen.
+        guard !isStopped else { return }
         player.play()
 
-        hasStarted = true
-        await service.report(.started, for: item, info: info, position: position, isPaused: false)
+        let (service, item, info, position) = (service, item, info, position)
+        startReport = Task { await service.report(.started, for: item, info: info, position: position, isPaused: false) }
 
         progressTask = Task { [weak self] in
             var ticks = 0
             while !Task.isCancelled {
                 guard let self else { return }
+                #if DEBUG
                 self.refreshDebugText()
+                #endif
                 ticks += 1
                 // The loop ticks every second; report to the server every tenth tick.
                 if ticks % 10 == 0 {
@@ -148,20 +159,27 @@ final class PlaybackSession {
         }
     }
 
-    /// Pauses playback, stops the progress loop, and reports "stopped" with the final position
-    /// (only if playback actually started).
+    /// Stops playback and the progress loop, releases the stream, and reports "stopped" with the final
+    /// position (only if "started" was reported).
     func stop() {
         guard !isStopped else { return }
         isStopped = true
         progressTask?.cancel()
-        player.pause()
 
-        guard hasStarted else { return }
         let (service, item, info, position) = (service, item, info, position)
+        player.pause()
+        // Drop the item so AVPlayer closes its network connection now rather than when it's deallocated.
+        player.replaceCurrentItem(with: nil)
+
+        guard let startReport else { return }
         // Unstructured so the report still goes out after the view's task is cancelled.
-        Task { await service.report(.stopped, for: item, info: info, position: position, isPaused: true) }
+        Task {
+            await startReport.value
+            await service.report(.stopped, for: item, info: info, position: position, isPaused: true)
+        }
     }
 
+    #if DEBUG
     private func refreshDebugText() {
         let method = switch info.method {
         case .directPlay: "Direct Play"
@@ -180,6 +198,7 @@ final class PlaybackSession {
         }
         debugText = text
     }
+    #endif
 }
 
 #Preview {

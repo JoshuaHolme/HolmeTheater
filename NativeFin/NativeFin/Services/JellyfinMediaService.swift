@@ -178,11 +178,12 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
-    func resumeItems() async throws -> [MediaItem] {
+    func resumeItems(offset: Int, limit: Int) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
         let request = Paths.getResumeItems(parameters: .init(
             userID: session.userID,
-            limit: 16,
+            startIndex: offset,
+            limit: limit,
             fields: Self.itemFields,
             mediaTypes: [.video],
             enableUserData: true
@@ -454,13 +455,17 @@ actor JellyfinMediaService: MediaService {
         case is URLError:
             .serverUnreachable
         case APIError.unacceptableStatusCode(let code) where code == 401:
-            .notSignedIn
+            // Only ever sent with a token, so a 401 means the server no longer accepts it.
+            .sessionExpired
         default:
             .underlying(error.localizedDescription)
         }
     }
 
     /// "jellyfin.local:8096" → https://… then http://…; an explicit scheme is used as-is.
+    ///
+    /// Falling back to HTTP is what makes LAN servers work without typing a scheme, but it means the
+    /// connection may be unencrypted. The sign-in screen warns when it is.
     private static func candidateURLs(from address: String) -> [URL] {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -473,12 +478,21 @@ actor JellyfinMediaService: MediaService {
     }
 
     /// AVPlayer can't attach auth headers to every HLS segment request, so the token goes in the URL.
+    ///
+    /// Works on the percent-encoded query so the server's own parameters are passed through byte for byte.
     private static func addingAccessToken(_ token: String?, to url: URL) -> URL {
-        guard let token, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
-        var items = components.queryItems ?? []
+        guard let token,
+              // `&`, `=` and `+` are legal in a query but would change its meaning inside a value.
+              let encodedToken = token.addingPercentEncoding(
+                  withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=+"))
+              ),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return url }
+
+        var items = components.percentEncodedQueryItems ?? []
         let hasKey = items.contains { $0.name.caseInsensitiveCompare("ApiKey") == .orderedSame }
-        if !hasKey { items.append(URLQueryItem(name: "ApiKey", value: token)) }
-        components.queryItems = items
+        if !hasKey { items.append(URLQueryItem(name: "ApiKey", value: encodedToken)) }
+        components.percentEncodedQueryItems = items
         return components.url ?? url
     }
 

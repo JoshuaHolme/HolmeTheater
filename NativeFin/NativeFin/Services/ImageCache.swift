@@ -4,6 +4,7 @@
 
 import CryptoKit
 import Foundation
+import OSLog
 #if canImport(UIKit)
 import UIKit
 /// The platform's native image type.
@@ -27,6 +28,8 @@ typealias PlatformImage = NSImage
 /// stale and nothing needs to be invalidated.
 nonisolated final class ImageCache: @unchecked Sendable {
     static let shared = ImageCache()
+
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NativeFin", category: "ImageCache")
 
     /// Decoded images are kept up to roughly this many bytes. NSCache treats it as a hint, and the system
     /// also evicts under memory pressure.
@@ -63,6 +66,19 @@ nonisolated final class ImageCache: @unchecked Sendable {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         trimDiskCacheInBackground()
+    }
+
+    /// Forgets every cached image, in memory and on disk.
+    ///
+    /// Called on sign-out, so a shared device (an Apple TV in a living room, say) doesn't keep the previous
+    /// user's artwork and profile picture.
+    func removeAll() {
+        memory.removeAllObjects()
+        let directory = directory
+        Task.detached(priority: .utility) {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
     }
 
     // MARK: - Reading
@@ -215,9 +231,7 @@ nonisolated final class ImageCache: @unchecked Sendable {
         }
 
         var total = entries.reduce(0) { $0 + $1.size }
-        #if DEBUG
-        print("ImageCache: \(entries.count) files, \(total / 1024 / 1024) MB on disk (limit \(maxDiskBytes / 1024 / 1024) MB)")
-        #endif
+        logger.debug("Disk cache: \(entries.count) files, \(total / 1024 / 1024) MB (limit \(maxDiskBytes / 1024 / 1024) MB)")
         guard total > maxDiskBytes else { return }
 
         for entry in entries.sorted(by: { $0.date < $1.date }) {

@@ -12,8 +12,8 @@ enum ShelfDestination: Hashable {
 
     var title: String {
         switch self {
-        case .continueWatching: "Continue Watching"
-        case .recentlyAdded(let library): "Recently Added \(library.name)"
+        case .continueWatching: String(localized: "Continue Watching")
+        case .recentlyAdded(let library): String(localized: "Recently Added \(library.name)")
         }
     }
 }
@@ -99,8 +99,7 @@ struct ShelfListView: View {
         let service = appModel.service
         switch destination {
         case .continueWatching:
-            // The server returns the whole resume list at once, so there's only ever one page.
-            return offset == 0 ? try await service.resumeItems() : []
+            return try await service.resumeItems(offset: offset, limit: Self.pageSize)
         case .recentlyAdded(let library):
             return try await service.recentlyAddedPage(in: library, offset: offset, limit: Self.pageSize)
         }

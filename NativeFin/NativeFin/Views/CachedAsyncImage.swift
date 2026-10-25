@@ -4,17 +4,26 @@
 
 import SwiftUI
 
-/// A drop-in replacement for `AsyncImage` that loads through `ImageCache`.
+/// A drop-in replacement for `AsyncImage` that loads through ``ImageCache``.
 ///
 /// If the image is already in memory it's shown on the very first frame, with no placeholder flash, which is
-/// what makes recycled cards in a scrolling row look right. Otherwise it behaves like `AsyncImage`: `.empty`
-/// while loading, then `.success` or `.failure`.
+/// what makes recycled cards in a scrolling row look right. Otherwise it behaves like `AsyncImage`:
+/// `.empty` while loading, then `.success` or `.failure`.
 struct CachedAsyncImage<Content: View>: View {
+    /// The image to load, or `nil` to stay in the `.empty` phase.
     let url: URL?
+
+    /// Builds the view for the current loading phase.
     @ViewBuilder let content: (AsyncImagePhase) -> Content
 
+    /// The current loading phase.
     @State private var phase: AsyncImagePhase
 
+    /// Creates a view that loads an image through the shared cache.
+    ///
+    /// - Parameters:
+    ///   - url: The image to load, or `nil` to stay in the `.empty` phase.
+    ///   - content: A closure that builds the view for each loading phase.
     init(url: URL?, @ViewBuilder content: @escaping (AsyncImagePhase) -> Content) {
         self.url = url
         self.content = content
@@ -33,6 +42,7 @@ struct CachedAsyncImage<Content: View>: View {
             .task(id: url) { await load() }
     }
 
+    /// Loads the image for the current URL and updates the phase.
     private func load() async {
         guard let url else {
             phase = .empty
@@ -59,7 +69,9 @@ struct CachedAsyncImage<Content: View>: View {
 }
 
 extension Image {
-    /// An image from the platform's native image type.
+    /// Creates an image from the platform's native image type.
+    ///
+    /// - Parameter platformImage: A `UIImage`, or an `NSImage` on macOS.
     init(platformImage: PlatformImage) {
         #if canImport(UIKit)
         self.init(uiImage: platformImage)

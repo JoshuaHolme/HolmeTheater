@@ -2,11 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-#if DEBUG
 import Foundation
 
-// Sample data for SwiftUI previews. Debug-only so none of it ships in release builds.
-// Images are left nil so previews never touch the network and show the artwork placeholder.
+// Sample data for SwiftUI previews. Images are left nil so previews never touch the network and show
+// the artwork placeholder.
+//
+// Deliberately not wrapped in `#if DEBUG`: `#Preview` bodies are compiled in Release builds too, so
+// hiding this data from Release breaks the Release build (and therefore App Store archives).
 
 extension MediaItem {
     /// A movie that hasn't been started.
@@ -115,12 +117,14 @@ extension MediaItem {
 }
 
 extension Library {
+    /// A movie library.
     static let previewMovies = Library(id: "lib-movies", name: "Movies", kind: .movies)
 }
 
 extension UserSession {
+    /// A signed-in user on a placeholder server, without a profile picture.
     static let preview = UserSession(
-        server: ServerInfo(id: "preview-server", name: "Preview Server", url: URL(string: "https://jellyfin.example.com")!),
+        server: ServerInfo(id: "preview-server", name: "Preview Server", url: .exampleServer),
         userID: "preview-user",
         username: "demo",
         accessToken: "preview-token"
@@ -128,8 +132,12 @@ extension UserSession {
 }
 
 extension AppModel {
-    /// A model backed by `MockMediaService`, signed in or out. Safe to use interactively:
-    /// it never touches the real app's saved session.
+    /// Creates a model backed by ``MockMediaService`` for use in previews.
+    ///
+    /// Safe to use interactively: signing in or out inside a preview never touches the real app's saved session.
+    ///
+    /// - Parameter signedIn: Whether the model starts signed in as ``UserSession/preview``, or signed out.
+    /// - Returns: A new model, so each preview gets its own state.
     static func preview(signedIn: Bool = true) -> AppModel {
         AppModel(
             service: MockMediaService(latency: .milliseconds(150)),
@@ -137,4 +145,3 @@ extension AppModel {
         )
     }
 }
-#endif

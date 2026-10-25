@@ -44,8 +44,8 @@ extension MediaItem {
     /// e.g. "Season 1 Episode 3"; nil unless the item has an episode number.
     var seasonEpisodeText: String? {
         switch (seasonNumber, episodeNumber) {
-        case let (season?, episode?): "Season \(season) Episode \(episode)"
-        case let (nil, episode?): "Episode \(episode)"
+        case let (season?, episode?): String(localized: "Season \(season) Episode \(episode)")
+        case let (nil, episode?): String(localized: "Episode \(episode)")
         default: nil
         }
     }
@@ -172,6 +172,7 @@ struct PosterCard: View {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.white, .green)
                             .padding(6)
+                            .accessibilityLabel("Watched")
                     }
                 }
 
@@ -254,6 +255,7 @@ struct ItemRow: View {
             if item.isPlayed {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
+                    .accessibilityLabel("Watched")
             }
         }
     }

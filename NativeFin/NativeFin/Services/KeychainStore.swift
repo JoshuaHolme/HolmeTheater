@@ -5,20 +5,25 @@
 import Foundation
 import Security
 
-/// Minimal generic-password keychain wrapper for storing Codable values (e.g. the saved session).
+/// A minimal generic-password keychain wrapper for storing `Codable` values, such as the saved session.
 ///
-/// Items are scoped by `service` plus a per-item `account` name, and are readable after the
-/// first unlock so background work can use them.
+/// Items are scoped by ``service`` plus a per-item `account` name. They're readable after the first
+/// unlock since boot, and are tied to this device: they're never synced, or restored onto another
+/// device from a backup.
 nonisolated struct KeychainStore: Sendable {
-    /// A failed Keychain call, carrying the raw `OSStatus`.
+    /// An error from a failed Keychain call.
     nonisolated struct KeychainError: LocalizedError {
+        /// The result code the Keychain returned.
         let status: OSStatus
+
+        /// A message that includes the raw result code, for diagnostics.
         var errorDescription: String? { "Keychain error (\(status))." }
     }
 
-    /// Namespace for every item this store reads and writes; typically the bundle identifier.
+    /// The namespace for every item this store reads and writes; typically the bundle identifier.
     let service: String
 
+    /// The attributes that identify one item: its class, this store's service, and the account name.
     private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
@@ -27,22 +32,36 @@ nonisolated struct KeychainStore: Sendable {
         ]
     }
 
-    /// Encodes `value` as JSON and stores it under `account`, replacing any existing item.
+    /// Encodes a value as JSON and stores it, replacing any existing value for the same account.
+    ///
+    /// - Parameters:
+    ///   - value: The value to store.
+    ///   - account: The name to store it under.
+    /// - Throws: An `EncodingError` if the value can't be encoded, or a ``KeychainError`` if the Keychain
+    ///   rejects the write.
     func save<T: Encodable>(_ value: T, account: String) throws {
-        let data = try JSONEncoder().encode(value)
+        let attributes: [String: Any] = [
+            kSecValueData as String: try JSONEncoder().encode(value),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
 
-        // Replace any existing item so save is an upsert.
-        SecItemDelete(baseQuery(account: account) as CFDictionary)
-
-        var query = baseQuery(account: account)
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-
-        let status = SecItemAdd(query as CFDictionary, nil)
+        // Update in place when the item exists, so there's never a moment with nothing saved.
+        var status = SecItemUpdate(baseQuery(account: account) as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            let query = baseQuery(account: account).merging(attributes) { _, new in new }
+            status = SecItemAdd(query as CFDictionary, nil)
+        }
         guard status == errSecSuccess else { throw KeychainError(status: status) }
     }
 
-    /// Loads and decodes the value stored under `account`, or `nil` if there isn't one.
+    /// Loads and decodes the value stored for an account.
+    ///
+    /// - Parameters:
+    ///   - type: The type to decode the stored value as.
+    ///   - account: The name the value was stored under.
+    /// - Returns: The decoded value, or `nil` if nothing is stored for `account`.
+    /// - Throws: A ``KeychainError`` if the Keychain can't be read, or a `DecodingError` if the stored
+    ///   value isn't a `type`.
     func load<T: Decodable>(_ type: T.Type, account: String) throws -> T? {
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
@@ -57,7 +76,9 @@ nonisolated struct KeychainStore: Sendable {
         return try JSONDecoder().decode(type, from: data)
     }
 
-    /// Removes the item stored under `account`, if any.
+    /// Removes the value stored for an account, if there is one.
+    ///
+    /// - Parameter account: The name the value was stored under.
     func delete(account: String) {
         SecItemDelete(baseQuery(account: account) as CFDictionary)
     }

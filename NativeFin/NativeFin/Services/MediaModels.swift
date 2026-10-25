@@ -12,79 +12,142 @@ import Foundation
 
 /// A Jellyfin server the app has successfully connected to.
 nonisolated struct ServerInfo: Codable, Hashable, Sendable {
-    /// The server's unique ID (empty if the server didn't report one).
+    /// The server's unique ID, or an empty string if the server didn't report one.
     let id: String
+
     /// The server's display name, as configured by its administrator.
     let name: String
+
     /// The base URL the server was reached at, including scheme and port.
     let url: URL
 }
 
-/// A signed-in user on a particular server. This is what gets persisted in the keychain.
+/// A signed-in user on a particular server.
+///
+/// This is what's saved in the keychain, so the app is still signed in at the next launch.
+/// Printing a session redacts its access token.
 nonisolated struct UserSession: Codable, Hashable, Sendable {
+    /// The server the user is signed in to.
     let server: ServerInfo
+
+    /// The user's unique ID on the server.
     let userID: String
+
+    /// The user's display name.
     let username: String
-    /// The Jellyfin access token. Treat as a secret.
+
+    /// The Jellyfin access token that authorizes every request. Treat as a secret.
     let accessToken: String
-    /// The user's profile picture, or nil if they haven't set one.
+
+    /// The user's profile picture, or `nil` if they haven't set one.
     ///
-    /// Optional with a default so sessions saved before this field existed still decode.
+    /// Optional with a default so sessions saved before this property existed still decode.
     var avatarURL: URL? = nil
 }
 
-/// Progress of a Quick Connect sign-in. See ``MediaService/quickConnect()``.
+// Keep the access token out of logs and debugger output: printing a session shows everything but the token.
+extension UserSession: CustomStringConvertible, CustomDebugStringConvertible {
+    /// A textual description of the session, with the access token redacted.
+    var description: String {
+        "UserSession(user: \(username) [\(userID)], server: \(server.url.absoluteString), accessToken: <redacted>)"
+    }
+
+    /// The same as ``description``, so the debugger never shows the access token either.
+    var debugDescription: String { description }
+}
+
+/// A step in a Quick Connect sign-in. See ``MediaService/quickConnect()``.
 nonisolated enum QuickConnectEvent: Sendable {
-    /// Show this code to the user so they can approve this device from another signed-in Jellyfin client.
+    /// A code to show the user, so they can approve this device from another signed-in Jellyfin client.
     case code(String)
-    /// The code was approved and sign-in finished.
+
+    /// The code was approved, and sign-in finished with this session.
     case signedIn(UserSession)
 }
 
 /// A top-level collection on the server, such as "Movies" or "TV Shows".
 nonisolated struct Library: Identifiable, Hashable, Sendable {
+    /// The kind of content a library holds.
     nonisolated enum Kind: Hashable, Sendable {
-        case movies, tvShows, music, other
+        /// A library of movies.
+        case movies
+        /// A library of TV series.
+        case tvShows
+        /// A library of music.
+        case music
+        /// Any other kind of library, such as photos or home videos.
+        case other
     }
 
+    /// The library's unique ID on the server.
     let id: String
+
+    /// The library's display name.
     let name: String
+
+    /// The kind of content the library holds.
     let kind: Kind
 }
 
 /// Something browsable or playable: a movie, series, season, or episode.
 nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
+    /// The kind of item.
     nonisolated enum Kind: Hashable, Sendable {
-        case movie, series, season, episode
+        /// A movie, which can be played.
+        case movie
+        /// A TV series, which contains seasons.
+        case series
+        /// A season of a series, which contains episodes.
+        case season
+        /// An episode of a series, which can be played.
+        case episode
         /// Anything the app doesn't specifically handle (music, photos, collections, …).
         case other
     }
 
+    /// The item's unique ID on the server.
     let id: String
+
+    /// The item's name: a movie or series title, a season name, or an episode title.
     let title: String
+
+    /// The kind of item.
     let kind: Kind
+
+    /// A synopsis, if the server has one.
     let overview: String?
-    /// Production year.
+
+    /// The production year.
     let year: Int?
-    /// Total runtime in seconds.
+
+    /// The total runtime, in seconds.
     let runtime: TimeInterval?
-    /// Ready-to-load artwork URLs, resolved against the server by the service.
+
+    /// Portrait poster artwork, ready to load.
     ///
-    /// `posterURL` is always portrait: for an episode it's the show's poster, so it sits comfortably
-    /// in a poster slot. An episode's own widescreen still is in `thumbnailURL`.
+    /// For an episode this is its show's poster, so it sits comfortably in a poster slot.
+    /// An episode's own widescreen still is ``thumbnailURL``.
     let posterURL: URL?
+
+    /// Widescreen background artwork, ready to load. Falls back to the parent's (e.g. the series') backdrop.
     let backdropURL: URL?
-    /// An episode's own widescreen still; nil for everything else.
+
+    /// An episode's own widescreen still, or `nil` for anything that isn't an episode.
     var thumbnailURL: URL? = nil
-    /// 0...1 for partially watched items, nil otherwise.
+
+    /// How much of the item has been watched, from 0 to 1, or `nil` if it hasn't been started.
     let playedFraction: Double?
-    /// Whether the user has finished watching this item.
+
+    /// Whether the user has finished watching the item.
     let isPlayed: Bool
 
-    // Episode context (nil for everything else)
-
+    /// The title of the series an episode or season belongs to.
     let seriesTitle: String?
+
+    /// An episode's season number.
     let seasonNumber: Int?
+
+    /// An episode's number within its season.
     let episodeNumber: Int?
 }
 
@@ -92,49 +155,90 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
 nonisolated enum PlaybackMethod: Sendable {
     /// The original file, untouched.
     case directPlay
-    /// The original video/audio streams, repackaged into a different container (e.g. HLS).
+
+    /// The original video and audio streams, repackaged into a different container (e.g. HLS).
     case directStream
+
     /// Re-encoded by the server.
     case transcode
 }
 
-/// Everything the player needs to start an item, and everything the service needs back
-/// to report progress for it.
+/// Everything the player needs to start an item, and everything the service needs back to report
+/// progress for it.
+///
+/// Printing playback info redacts its URL, which contains the access token.
 nonisolated struct PlaybackInfo: Hashable, Sendable {
-    /// A URL AVPlayer can load directly. Authentication is embedded in the URL.
+    /// A URL AVPlayer can load directly. The access token is embedded in its query.
     let url: URL
-    /// Where to start, in seconds.
+
+    /// Where to start playing, in seconds.
     let resumePosition: TimeInterval
-    /// Echoed back in progress reports so the server can track the session.
+
+    /// The server's ID for this playback, echoed back in progress reports.
     let playSessionID: String?
+
+    /// The ID of the version of the item being played (an item can have several, e.g. 4K and HD).
     let mediaSourceID: String?
+
+    /// How the server is delivering the stream.
     let method: PlaybackMethod
+}
+
+// `url` carries the access token in its query, so printing playback info omits it.
+extension PlaybackInfo: CustomStringConvertible, CustomDebugStringConvertible {
+    /// A textual description of the playback info, with the stream URL redacted.
+    var description: String {
+        "PlaybackInfo(method: \(method), host: \(url.host() ?? "?"), resumePosition: \(resumePosition), url: <redacted>)"
+    }
+
+    /// The same as ``description``, so the debugger never shows the access token either.
+    var debugDescription: String { description }
 }
 
 /// A stage of playback to report to the server.
 nonisolated enum PlaybackEvent: Sendable {
+    /// Playback began.
     case started
+
+    /// Playback is ongoing; sent periodically with the current position.
     case progress
+
+    /// Playback ended or the player was closed.
     case stopped
 }
 
-/// Errors surfaced by a `MediaService`. Each case has a user-presentable description.
+/// The errors a ``MediaService`` throws. Each has a description that can be shown to the user.
 nonisolated enum MediaServiceError: LocalizedError, Sendable {
+    /// The address couldn't be turned into a URL.
     case invalidServerURL
+
+    /// The server couldn't be reached.
     case serverUnreachable
+
+    /// The username or password was wrong.
     case invalidCredentials
+
+    /// There's no session to make the request with.
     case notSignedIn
+
+    /// The server rejected the saved access token (it expired, or was revoked from the server's dashboard).
+    case sessionExpired
+
+    /// The server offered no stream this device can play.
     case itemNotPlayable
-    /// Anything else; the associated value is already user-presentable.
+
+    /// Anything else; the associated message is already user-presentable.
     case underlying(String)
 
+    /// A localized message describing what went wrong.
     var errorDescription: String? {
         switch self {
-        case .invalidServerURL: "That doesn't look like a valid server address."
-        case .serverUnreachable: "Couldn't reach the server."
-        case .invalidCredentials: "Incorrect username or password."
-        case .notSignedIn: "You're not signed in."
-        case .itemNotPlayable: "This item can't be played."
+        case .invalidServerURL: String(localized: "That doesn't look like a valid server address.")
+        case .serverUnreachable: String(localized: "Couldn't reach the server.")
+        case .invalidCredentials: String(localized: "Incorrect username or password.")
+        case .notSignedIn: String(localized: "You're not signed in.")
+        case .sessionExpired: String(localized: "Your session has expired. Sign in again.")
+        case .itemNotPlayable: String(localized: "This item can't be played.")
         case .underlying(let message): message
         }
     }
