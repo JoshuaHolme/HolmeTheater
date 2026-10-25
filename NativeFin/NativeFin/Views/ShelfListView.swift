@@ -37,6 +37,20 @@ struct ShelfListView: View {
     /// Set when marking played or removing an item fails; shown in an alert.
     @State private var actionError: String?
 
+    /// A show the user chose to remove from Up Next, waiting on their confirmation.
+    @State private var pendingRemoval: ShowRemoval?
+
+    /// Removing a show from Up Next rewrites the watch state of all its episodes, so it's confirmed first.
+    private struct ShowRemoval: Identifiable {
+        let item: MediaItem
+        let seriesID: String
+        /// Whether every episode gets marked watched (true) or unwatched (false).
+        let markWatched: Bool
+
+        var id: String { "\(seriesID)-\(markWatched)" }
+        var showTitle: String { item.seriesTitle ?? item.title }
+    }
+
     private static let pageSize = 30
 
     var body: some View {
@@ -85,6 +99,29 @@ struct ShelfListView: View {
         } message: {
             Text(actionError ?? "")
         }
+        // An alert, not a confirmation dialog: on iPad a dialog becomes a popover that has to point at a
+        // view, and attached to the whole list it points at an arbitrary row.
+        .alert(
+            "Remove from Up Next?",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            presenting: pendingRemoval
+        ) { removal in
+            if removal.markWatched {
+                Button("Mark All Episodes as Watched") { remove(removal) }
+            } else {
+                Button("Mark All Episodes as Unwatched", role: .destructive) { remove(removal) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { removal in
+            if removal.markWatched {
+                Text("Every episode of \(removal.showTitle) will be marked as watched, in all your Jellyfin apps. Their watched dates will be set to now.")
+            } else {
+                Text("Every episode of \(removal.showTitle) will be marked as unwatched, in all your Jellyfin apps. This resets their play counts and watch dates, and can't be undone.")
+            }
+        }
     }
 
     /// The row menu for an item, or nil for things that can't be watched (series and seasons).
@@ -105,8 +142,38 @@ struct ShelfListView: View {
             },
             removeFromContinueWatching: isContinueWatching ? {
                 update(item, removesRow: true) { try await $0.removeFromContinueWatching(item) }
-            } : nil
+            } : nil,
+            removeShowWatched: upNextRemoval(for: item, markWatched: true),
+            removeShowUnwatched: upNextRemoval(for: item, markWatched: false)
         )
+    }
+
+    /// Asks to remove an episode's show from Up Next, or nil off the Up Next list or if the show is unknown.
+    private func upNextRemoval(for item: MediaItem, markWatched: Bool) -> (() -> Void)? {
+        guard destination == .nextUp, let seriesID = item.seriesID else { return nil }
+        return { pendingRemoval = ShowRemoval(item: item, seriesID: seriesID, markWatched: markWatched) }
+    }
+
+    /// Marks every episode of the show watched or unwatched, then drops its rows from the list.
+    ///
+    /// Like `update`, the list only changes once the server has confirmed.
+    private func remove(_ removal: ShowRemoval) {
+        let service = appModel.service
+        Task {
+            do {
+                if removal.markWatched {
+                    try await service.markSeriesWatched(seriesID: removal.seriesID)
+                } else {
+                    try await service.markSeriesUnwatched(seriesID: removal.seriesID)
+                }
+                let before = items.count
+                items.removeAll { $0.seriesID == removal.seriesID }
+                // Those rows are gone, so the next page starts earlier on the server too.
+                nextOffset = max(nextOffset - (before - items.count), 0)
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
     }
 
     /// Runs a server change to `item`'s watch state, then reflects it in the list.

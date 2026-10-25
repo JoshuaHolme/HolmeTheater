@@ -157,6 +157,20 @@ nonisolated protocol MediaService: Sendable {
     /// - Parameter item: A movie or episode.
     func markUnwatched(_ item: MediaItem) async throws
 
+    /// Marks every episode of a series as watched, so it has nothing left to offer in "Up Next".
+    ///
+    /// The server stamps every episode with the current time as its watched date, overwriting real dates.
+    ///
+    /// - Parameter seriesID: The ID of the series, from ``MediaItem/seriesID``.
+    func markSeriesWatched(seriesID: String) async throws
+
+    /// Marks every episode of a series as not watched, which removes it from "Up Next" until it's watched again.
+    ///
+    /// The server also resets each episode's play count and watched date, so this can't be undone.
+    ///
+    /// - Parameter seriesID: The ID of the series, from ``MediaItem/seriesID``.
+    func markSeriesUnwatched(seriesID: String) async throws
+
     /// Forgets how far through an item the user got, so it no longer appears in "Continue Watching".
     ///
     /// This doesn't change whether the item counts as watched.

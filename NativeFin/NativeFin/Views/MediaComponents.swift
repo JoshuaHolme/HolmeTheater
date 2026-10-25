@@ -268,6 +268,11 @@ struct ItemRowActions {
 
     /// Takes the item out of Continue Watching. Nil where that doesn't apply, which hides the menu entry.
     var removeFromContinueWatching: (() -> Void)?
+
+    /// The two ways to take an episode's show out of Up Next: mark all of its episodes watched, or unwatched.
+    /// Both are nil where that doesn't apply, which hides the "Remove from Up Next" submenu.
+    var removeShowWatched: (() -> Void)?
+    var removeShowUnwatched: (() -> Void)?
 }
 
 /// Compact list row: thumbnail plus title and details.
@@ -311,6 +316,12 @@ struct ItemRow: View {
                     }
                     if let remove = actions.removeFromContinueWatching {
                         Button("Remove from Continue Watching", systemImage: "minus.circle", action: remove)
+                    }
+                    if let showWatched = actions.removeShowWatched, let showUnwatched = actions.removeShowUnwatched {
+                        Menu("Remove from Up Next", systemImage: "minus.circle") {
+                            Button("Mark All Episodes as Watched", systemImage: "checkmark.circle", action: showWatched)
+                            Button("Mark All Episodes as Unwatched", systemImage: "arrow.uturn.backward.circle", action: showUnwatched)
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis")

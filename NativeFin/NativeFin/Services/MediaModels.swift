@@ -150,6 +150,9 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
 
     /// An episode's number within its season.
     let episodeNumber: Int?
+
+    /// The ID of the series an episode or season belongs to, or `nil` for anything else.
+    var seriesID: String? = nil
 }
 
 /// How the server is delivering a video stream.

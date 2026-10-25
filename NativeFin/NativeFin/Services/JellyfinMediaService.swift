@@ -380,6 +380,18 @@ actor JellyfinMediaService: MediaService {
         _ = try await send(Paths.markUnplayedItem(itemID: item.id, userID: session.userID), with: client)
     }
 
+    // The server applies a series' watched state to every episode in it, so one call covers the whole show.
+
+    func markSeriesWatched(seriesID: String) async throws {
+        let (client, session) = try signedIn()
+        _ = try await send(Paths.markPlayedItem(itemID: seriesID, userID: session.userID), with: client)
+    }
+
+    func markSeriesUnwatched(seriesID: String) async throws {
+        let (client, session) = try signedIn()
+        _ = try await send(Paths.markUnplayedItem(itemID: seriesID, userID: session.userID), with: client)
+    }
+
     func removeFromContinueWatching(_ item: MediaItem) async throws {
         let (client, session) = try signedIn()
         // The resume list is every item with a saved position, so zeroing it is what removes the item.
@@ -578,7 +590,8 @@ actor JellyfinMediaService: MediaService {
             isPlayed: dto.userData?.isPlayed ?? false,
             seriesTitle: dto.seriesName,
             seasonNumber: dto.parentIndexNumber,
-            episodeNumber: dto.indexNumber
+            episodeNumber: dto.indexNumber,
+            seriesID: dto.seriesID
         )
     }
 

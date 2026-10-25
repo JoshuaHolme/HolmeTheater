@@ -87,7 +87,8 @@ nonisolated struct MockMediaService: MediaService {
                 isPlayed: number < 3,
                 seriesTitle: series.title,
                 seasonNumber: 1,
-                episodeNumber: number
+                episodeNumber: number,
+                seriesID: series.id
             )
         }
     }
@@ -209,6 +210,14 @@ nonisolated struct MockMediaService: MediaService {
     }
 
     func markUnwatched(_ item: MediaItem) async throws {
+        try await simulateLatency()
+    }
+
+    func markSeriesWatched(seriesID: String) async throws {
+        try await simulateLatency()
+    }
+
+    func markSeriesUnwatched(seriesID: String) async throws {
         try await simulateLatency()
     }
 
