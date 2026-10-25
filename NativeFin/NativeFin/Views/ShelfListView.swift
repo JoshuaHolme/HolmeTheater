@@ -54,7 +54,9 @@ struct ShelfListView: View {
                     ProgressView()
                     Spacer()
                 }
+                #if !os(tvOS)
                 .listRowSeparator(.hidden)
+                #endif
                 .task { await loadMore() }
             }
         }
@@ -83,6 +85,9 @@ struct ShelfListView: View {
             let known = Set(items.map(\.id))
             items += page.filter { !known.contains($0.id) }
             nextOffset += page.count
+
+            // Cache this page's artwork now so rows already have their pictures when you scroll to them.
+            ImageCache.shared.prefetch(page.compactMap(\.rowArtworkURL))
             hasMore = page.count >= Self.pageSize
         } catch {
             guard !Task.isCancelled else { return }

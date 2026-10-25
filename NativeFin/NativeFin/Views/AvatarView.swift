@@ -14,7 +14,7 @@ struct AvatarView: View {
     let size: CGFloat
 
     var body: some View {
-        AsyncImage(url: url) { phase in
+        CachedAsyncImage(url: url) { phase in
             switch phase {
             case .success(let image):
                 image

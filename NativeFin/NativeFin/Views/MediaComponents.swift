@@ -50,6 +50,11 @@ extension MediaItem {
         }
     }
 
+    /// The artwork `ItemRow` shows: an episode's widescreen still, otherwise the portrait poster.
+    var rowArtworkURL: URL? {
+        kind == .episode ? (thumbnailURL ?? posterURL) : posterURL
+    }
+
     /// The text shown with an item's artwork, most important first:
     /// - movies and series: title, then release year
     /// - episodes: show title, then episode title, then "Season X Episode X"
@@ -99,7 +104,7 @@ struct ArtworkView: View {
         Color.secondary.opacity(0.2)
             .aspectRatio(aspectRatio, contentMode: .fit)
             .overlay {
-                AsyncImage(url: url) { phase in
+                CachedAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
                         image.resizable().scaledToFill()
@@ -239,10 +244,7 @@ struct ItemRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkView(
-                url: isEpisode ? (item.thumbnailURL ?? item.posterURL) : item.posterURL,
-                aspectRatio: isEpisode ? 16.0 / 9.0 : 2.0 / 3.0
-            )
+            ArtworkView(url: item.rowArtworkURL, aspectRatio: isEpisode ? 16.0 / 9.0 : 2.0 / 3.0)
                 .frame(width: isEpisode ? 100 : 50)
 
             ItemCaption(item: item)

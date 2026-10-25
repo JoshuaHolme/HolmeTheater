@@ -19,7 +19,10 @@ actor JellyfinMediaService: MediaService {
     private static let ticksPerSecond = 10_000_000.0
 
     /// Maximum artwork widths requested from the server, in pixels.
-    private static let posterWidth = 600
+    ///
+    /// Posters are shown at about 130 pt wide (220 pt on tvOS), so 450 px is sharp on a 3× phone screen.
+    /// Asking for more only costs memory (a decoded image takes width × height × 4 bytes) and bandwidth.
+    private static let posterWidth = 450
     private static let backdropWidth = 1280
 
     private let identity: ClientIdentity

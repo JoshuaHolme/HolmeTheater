@@ -26,7 +26,7 @@ struct LibraryView: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.items(in: library) }) { items in
+        AsyncContent(load: loadItems) { items in
             if items.isEmpty {
                 ContentUnavailableView("Empty Library", systemImage: "film.stack")
             } else {
@@ -47,6 +47,16 @@ struct LibraryView: View {
             }
         }
         .navigationTitle(library.name)
+    }
+
+    /// Fetches the library and starts caching its posters in the background.
+    private func loadItems() async throws -> [MediaItem] {
+        let items = try await appModel.service.items(in: library)
+
+        // Only the first screens' worth: a huge library shouldn't flood the network and memory.
+        // Posters further down still load as you scroll, and are then cached for next time.
+        ImageCache.shared.prefetch(items.prefix(60).compactMap(\.posterURL))
+        return items
     }
 }
 

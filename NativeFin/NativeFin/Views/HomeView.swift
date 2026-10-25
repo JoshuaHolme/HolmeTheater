@@ -81,7 +81,12 @@ struct HomeView: View {
             let items = try await service.latestItems(in: library)
             if !items.isEmpty { rows.append(Row(library: library, items: items)) }
         }
-        return HomeData(resume: try await resume, rows: rows)
+        let resumeItems = try await resume
+
+        // Start downloading every poster now, so they're already cached by the time you scroll to them.
+        ImageCache.shared.prefetch((resumeItems + rows.flatMap(\.items)).compactMap(\.posterURL))
+
+        return HomeData(resume: resumeItems, rows: rows)
     }
 }
 
