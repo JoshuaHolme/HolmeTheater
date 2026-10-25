@@ -567,10 +567,23 @@ actor JellyfinMediaService: MediaService {
         return dto.type == .episode ? (seriesPoster ?? ownPoster) : (ownPoster ?? seriesPoster)
     }
 
-    /// An episode's own widescreen still, or nil for anything that isn't an episode.
+    /// Widescreen artwork for list rows.
+    ///
+    /// An episode uses its own still (its primary image). A movie uses its thumb image, falling back to its
+    /// backdrop. Everything else has none.
     private static func thumbnailURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
-        guard dto.type == .episode, let tag = dto.imageTags?[ImageType.primary.rawValue] else { return nil }
-        return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
+        switch dto.type {
+        case .episode:
+            guard let tag = dto.imageTags?[ImageType.primary.rawValue] else { return nil }
+            return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
+        case .movie:
+            if let tag = dto.imageTags?[ImageType.thumb.rawValue] {
+                return imageURL(itemID: id, type: .thumb, tag: tag, width: posterWidth, client: client)
+            }
+            return backdropURL(for: dto, id: id, client: client)
+        default:
+            return nil
+        }
     }
 
     /// The item's own backdrop, falling back to its parent's.

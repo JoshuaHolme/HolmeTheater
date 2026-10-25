@@ -50,9 +50,14 @@ extension MediaItem {
         }
     }
 
-    /// The artwork `ItemRow` shows: an episode's widescreen still, otherwise the portrait poster.
+    /// Whether `ItemRow` shows widescreen artwork (episodes and movies) rather than a portrait poster.
+    var hasWidescreenRowArtwork: Bool {
+        (kind == .episode || kind == .movie) && thumbnailURL != nil
+    }
+
+    /// The artwork `ItemRow` shows: the widescreen thumbnail for episodes and movies, otherwise the poster.
     var rowArtworkURL: URL? {
-        kind == .episode ? (thumbnailURL ?? posterURL) : posterURL
+        hasWidescreenRowArtwork ? thumbnailURL : posterURL
     }
 
     /// The text shown with an item's artwork, most important first:
@@ -240,13 +245,18 @@ struct MediaShelf: View {
 struct ItemRow: View {
     let item: MediaItem
 
-    /// An episode's image is a widescreen still; everything else is a portrait poster.
-    private var isEpisode: Bool { item.kind == .episode }
+    /// Episodes and movies show a widescreen image; everything else is a portrait poster.
+    private var isWidescreen: Bool { item.hasWidescreenRowArtwork }
+
+    private static let stillWidth: CGFloat = 100
+    private static let posterWidth: CGFloat = 50
 
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkView(url: item.rowArtworkURL, aspectRatio: isEpisode ? 16.0 / 9.0 : 2.0 / 3.0)
-                .frame(width: isEpisode ? 100 : 50)
+            // Every row reserves the same width, so titles line up whether the artwork is a poster or a still.
+            ArtworkView(url: item.rowArtworkURL, aspectRatio: isWidescreen ? 16.0 / 9.0 : 2.0 / 3.0)
+                .frame(width: isWidescreen ? Self.stillWidth : Self.posterWidth)
+                .frame(width: Self.stillWidth)
 
             ItemCaption(item: item)
 

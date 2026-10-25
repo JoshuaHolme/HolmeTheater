@@ -132,7 +132,8 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     /// Widescreen background artwork, ready to load. Falls back to the parent's (e.g. the series') backdrop.
     let backdropURL: URL?
 
-    /// An episode's own widescreen still, or `nil` for anything that isn't an episode.
+    /// Widescreen artwork for list rows: an episode's own still, or a movie's thumb image (falling back to its
+    /// backdrop). `nil` for anything else, or a movie with neither.
     var thumbnailURL: URL? = nil
 
     /// How much of the item has been watched, from 0 to 1, or `nil` if it hasn't been started.
