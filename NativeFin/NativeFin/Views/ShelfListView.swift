@@ -40,17 +40,6 @@ struct ShelfListView: View {
     /// A show the user chose to remove from Up Next, waiting on their confirmation.
     @State private var pendingRemoval: ShowRemoval?
 
-    /// Removing a show from Up Next rewrites the watch state of all its episodes, so it's confirmed first.
-    private struct ShowRemoval: Identifiable {
-        let item: MediaItem
-        let seriesID: String
-        /// Whether every episode gets marked watched (true) or unwatched (false).
-        let markWatched: Bool
-
-        var id: String { "\(seriesID)-\(markWatched)" }
-        var showTitle: String { item.seriesTitle ?? item.title }
-    }
-
     private static let pageSize = 30
 
     var body: some View {
@@ -77,29 +66,7 @@ struct ShelfListView: View {
         } message: {
             Text(actionError ?? "")
         }
-        // An alert, not a confirmation dialog: on iPad a dialog becomes a popover that has to point at a
-        // view, and attached to the whole list it points at an arbitrary row.
-        .alert(
-            "Remove from Up Next?",
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { if !$0 { pendingRemoval = nil } }
-            ),
-            presenting: pendingRemoval
-        ) { removal in
-            if removal.markWatched {
-                Button("Mark All Episodes as Watched") { remove(removal) }
-            } else {
-                Button("Mark All Episodes as Unwatched", role: .destructive) { remove(removal) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { removal in
-            if removal.markWatched {
-                Text("Every episode of \(removal.showTitle) will be marked as watched, in all your Jellyfin apps. Their watched dates will be set to now.")
-            } else {
-                Text("Every episode of \(removal.showTitle) will be marked as unwatched, in all your Jellyfin apps. This resets their play counts and watch dates, and can't be undone.")
-            }
-        }
+        .confirmShowRemoval($pendingRemoval, perform: remove)
     }
 
     private var list: some View {

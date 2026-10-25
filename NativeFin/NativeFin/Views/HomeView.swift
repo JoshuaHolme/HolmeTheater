@@ -14,6 +14,17 @@ struct HomeView: View {
     /// How many items a home shelf shows; the shelf's heading opens the full list.
     private static let shelfLimit = 16
 
+    /// Bumped to reload the shelves after an item's watch state changes on the server.
+    @State private var reloadCount = 0
+
+    private func reload() {
+        reloadCount += 1
+    }
+
+    /// The item "Go to …" or a tapped card is taking the user to. The destination is here, not in each shelf,
+    /// because shelves sit in a lazy stack, where SwiftUI ignores navigation destinations.
+    @State private var goToItem: MediaItem?
+
     /// One "Recently Added …" shelf.
     private struct Row: Identifiable {
         let library: Library
@@ -35,17 +46,17 @@ struct HomeView: View {
 
                 // Loads inside the scroll view, below the header, so the profile button stays
                 // reachable (e.g. to sign out) even if loading fails.
-                AsyncContent(load: loadHome) { data in
+                AsyncContent(load: loadHome, reloadID: reloadCount) { data in
                     LazyVStack(alignment: .leading, spacing: 24) {
                         if !data.resume.isEmpty {
-                            MediaShelf(title: ShelfDestination.continueWatching.title, items: data.resume, destination: .continueWatching)
+                            MediaShelf(title: ShelfDestination.continueWatching.title, items: data.resume, destination: .continueWatching, onChange: reload, onGoTo: { goToItem = $0 })
                         }
                         if !data.nextUp.isEmpty {
-                            MediaShelf(title: ShelfDestination.nextUp.title, items: data.nextUp, destination: .nextUp)
+                            MediaShelf(title: ShelfDestination.nextUp.title, items: data.nextUp, destination: .nextUp, onChange: reload, onGoTo: { goToItem = $0 })
                         }
                         ForEach(data.rows) { row in
                             let destination = ShelfDestination.recentlyAdded(row.library)
-                            MediaShelf(title: destination.title, items: row.items, destination: destination)
+                            MediaShelf(title: destination.title, items: row.items, destination: destination, onChange: reload, onGoTo: { goToItem = $0 })
                         }
                         if data.resume.isEmpty && data.nextUp.isEmpty && data.rows.isEmpty {
                             ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
@@ -59,6 +70,7 @@ struct HomeView: View {
         // the bar itself is hidden because the header replaces it.
         .navigationTitle("Home")
         .toolbarVisibility(.hidden, for: .navigationBar)
+        .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
     }
 
     /// Large heading with the profile button on the same line.

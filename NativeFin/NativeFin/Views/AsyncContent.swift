@@ -23,6 +23,9 @@ struct AsyncContent<Value, Content: View>: View {
     /// Fetches the value. Errors are shown to the user with a Retry button.
     let load: () async throws -> Value
 
+    /// Changing this reloads silently, keeping what's on screen until the new value arrives.
+    var reloadID = 0
+
     /// Builds the loaded UI from the fetched value.
     @ViewBuilder let content: (Value) -> Content
 

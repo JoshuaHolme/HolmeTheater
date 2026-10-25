@@ -406,7 +406,7 @@ actor JellyfinMediaService: MediaService {
     // MARK: - Helpers
 
     /// Extra per-item fields requested beyond the defaults.
-    private static let itemFields: [ItemFields] = [.overview, .primaryImageAspectRatio]
+    private static let itemFields: [ItemFields] = [.overview, .primaryImageAspectRatio, .childCount, .recursiveItemCount]
 
     /// Tells the server what AVPlayer can play natively so it only transcodes when it has to.
     private static let deviceProfile = DeviceProfile(
@@ -591,7 +591,10 @@ actor JellyfinMediaService: MediaService {
             seriesTitle: dto.seriesName,
             seasonNumber: dto.parentIndexNumber,
             episodeNumber: dto.indexNumber,
-            seriesID: dto.seriesID
+            seriesID: dto.seriesID,
+            // A series' child count is its seasons, so only its recursive count is its episodes.
+            episodeCount: kind == .series ? dto.recursiveItemCount : (kind == .season ? dto.recursiveItemCount ?? dto.childCount : nil),
+            unwatchedEpisodeCount: kind == .series || kind == .season ? dto.userData?.unplayedItemCount : nil
         )
     }
 

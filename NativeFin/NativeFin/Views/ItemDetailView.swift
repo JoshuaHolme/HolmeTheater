@@ -12,6 +12,15 @@ struct ItemDetailView: View {
     /// The item being played; setting it presents the full-screen player.
     @State private var playingItem: MediaItem?
 
+    /// A season the user chose to mark watched or unwatched, waiting on their confirmation.
+    @State private var pendingBulkChange: BulkWatchChange?
+
+    /// Set when marking a season fails; shown in an alert.
+    @State private var actionError: String?
+
+    /// Bumped to reload the list of seasons or episodes after a change on the server.
+    @State private var reloadCount = 0
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -52,21 +61,58 @@ struct ItemDetailView: View {
         }
         .navigationTitle(item.title)
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0) }
+        .confirmBulkWatchChange($pendingBulkChange, perform: apply)
+        .alert("Couldn't Update Item", isPresented: Binding(
+            get: { actionError != nil },
+            set: { if !$0 { actionError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(actionError ?? "")
+        }
     }
 
     /// Seasons (for a series) or episodes (for a season), each navigating to its own detail screen.
     private var children: some View {
-        AsyncContent(load: { try await appModel.service.children(of: item) }) { children in
+        AsyncContent(load: { try await appModel.service.children(of: item) }, reloadID: reloadCount) { children in
             VStack(alignment: .leading, spacing: 12) {
                 Text(item.kind == .series ? "Seasons" : "Episodes")
                     .font(.title2.bold())
 
                 ForEach(children) { child in
-                    NavigationLink(value: child) {
-                        ItemRow(item: child)
-                    }
-                    .cardLinkStyle()
+                    ItemRow(item: child, actions: actions(for: child))
+                        // A link behind the row, so the row's menu button takes its own taps.
+                        .background {
+                            NavigationLink(value: child) { Color.clear.contentShape(Rectangle()) }
+                                .cardLinkStyle()
+                        }
                 }
+            }
+        }
+    }
+
+    /// The menu for a row: seasons can be marked watched or unwatched as a whole. Episodes have none here.
+    private func actions(for child: MediaItem) -> ItemRowActions? {
+        guard child.kind == .season else { return nil }
+        return ItemRowActions(
+            markWatched: { pendingBulkChange = BulkWatchChange(item: child, markWatched: true) },
+            markUnwatched: { pendingBulkChange = BulkWatchChange(item: child, markWatched: false) }
+        )
+    }
+
+    /// Marks every episode of a season watched or unwatched, once the user has confirmed, then reloads the list.
+    private func apply(_ change: BulkWatchChange) {
+        let service = appModel.service
+        Task {
+            do {
+                if change.markWatched {
+                    try await service.markWatched(change.item)
+                } else {
+                    try await service.markUnwatched(change.item)
+                }
+                reloadCount += 1
+            } catch {
+                actionError = error.localizedDescription
             }
         }
     }
