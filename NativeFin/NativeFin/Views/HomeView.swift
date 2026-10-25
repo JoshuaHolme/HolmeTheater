@@ -5,6 +5,9 @@
 import SwiftUI
 
 /// Continue Watching plus a "latest" shelf for each movie / TV library.
+///
+/// Instead of a system navigation title, it draws its own large "Home" heading with the profile
+/// button beside it, as part of the scrolling content, so the two scroll away together.
 struct HomeView: View {
     @Environment(AppModel.self) private var appModel
 
@@ -21,23 +24,49 @@ struct HomeView: View {
     }
 
     var body: some View {
-        AsyncContent(load: loadHome) { data in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    if !data.resume.isEmpty {
-                        MediaShelf(title: "Continue Watching", items: data.resume)
-                    }
-                    ForEach(data.rows) { row in
-                        MediaShelf(title: "Latest in \(row.library.name)", items: row.items)
-                    }
-                    if data.resume.isEmpty && data.rows.isEmpty {
-                        ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                header
+                    .padding(.top)
+
+                // Loads inside the scroll view, below the header, so the profile button stays
+                // reachable (e.g. to sign out) even if loading fails.
+                AsyncContent(load: loadHome) { data in
+                    LazyVStack(alignment: .leading, spacing: 24) {
+                        if !data.resume.isEmpty {
+                            MediaShelf(title: ShelfDestination.continueWatching.title, items: data.resume, destination: .continueWatching)
+                        }
+                        ForEach(data.rows) { row in
+                            let destination = ShelfDestination.latest(row.library)
+                            MediaShelf(title: destination.title, items: row.items, destination: destination)
+                        }
+                        if data.resume.isEmpty && data.rows.isEmpty {
+                            ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
+                        }
                     }
                 }
-                .padding(.vertical)
             }
+            .padding(.vertical)
         }
+        // The title is still set so pushed screens can show "Home" on their back button;
+        // the bar itself is hidden because the header replaces it.
         .navigationTitle("Home")
+        .toolbarVisibility(.hidden, for: .navigationBar)
+    }
+
+    /// Large heading with the profile button on the same line.
+    private var header: some View {
+        HStack {
+            Text("Home")
+                .font(.largeTitle.bold())
+                .accessibilityAddTraits(.isHeader)
+
+            Spacer()
+
+            AccountButton()
+                .font(.title)
+        }
+        .padding(.horizontal)
     }
 
     /// Fetches the resume list and each movie/TV library's latest items.
@@ -54,4 +83,12 @@ struct HomeView: View {
         }
         return HomeData(resume: try await resume, rows: rows)
     }
+}
+
+#Preview {
+    NavigationStack {
+        HomeView()
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
 }

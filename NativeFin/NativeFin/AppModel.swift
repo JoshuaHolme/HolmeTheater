@@ -21,14 +21,30 @@ final class AppModel {
 
     private(set) var state: State = .launching
 
+    /// The signed-in session, or nil if there isn't one.
+    var session: UserSession? {
+        if case .signedIn(let session) = state { session } else { nil }
+    }
+
     /// The backend the UI talks to. Swap in `MockMediaService` for previews and demos.
     let service: any MediaService
 
-    private let keychain = KeychainStore(service: Bundle.main.bundleIdentifier ?? "JellyfinClient")
+    private let keychain: KeychainStore
     private let sessionAccount = "session"
 
     init(service: any MediaService) {
         self.service = service
+        self.keychain = KeychainStore(service: Bundle.main.bundleIdentifier ?? "JellyfinClient")
+    }
+
+    /// Creates a model already in `state`, for SwiftUI previews and tests.
+    ///
+    /// It uses a separate Keychain namespace, so signing in inside a preview can never overwrite
+    /// the session the real app restores at launch.
+    init(service: any MediaService, state: State) {
+        self.service = service
+        self.state = state
+        self.keychain = KeychainStore(service: (Bundle.main.bundleIdentifier ?? "JellyfinClient") + ".previews")
     }
 
     /// Call once at launch to pick up a saved session.
@@ -42,6 +58,24 @@ final class AppModel {
         }
         await service.restore(session)
         state = .signedIn(session)
+    }
+
+    /// Re-reads the signed-in user's name and profile picture from the server, so changes made
+    /// elsewhere show up without signing out and in again.
+    ///
+    /// Best effort: if the request fails (offline, server down), the saved profile is kept and the
+    /// user stays signed in. Does nothing unless someone is signed in.
+    func refreshProfile() async {
+        guard let current = session,
+              let updated = try? await service.refreshProfile(),
+              updated != current
+        else { return }
+
+        // The user may have signed out, or switched accounts, while the request was in flight.
+        guard session?.userID == updated.userID else { return }
+
+        try? keychain.save(updated, account: sessionAccount)
+        state = .signedIn(updated)
     }
 
     /// Checks that `address` is a reachable Jellyfin server. Call before signing in.

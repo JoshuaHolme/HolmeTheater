@@ -62,3 +62,26 @@ struct AsyncContent<Value, Content: View>: View {
         }
     }
 }
+
+#Preview("Loaded") {
+    AsyncContent(load: { ["One", "Two", "Three"] }) { items in
+        List(items, id: \.self) { Text($0) }
+    }
+}
+
+#Preview("Loading") {
+    AsyncContent(load: {
+        try await Task.sleep(for: .seconds(3600))
+        return [String]()
+    }) { _ in
+        Text("Never shown")
+    }
+}
+
+#Preview("Failed") {
+    AsyncContent(load: { () async throws -> [String] in
+        throw MediaServiceError.serverUnreachable
+    }) { _ in
+        Text("Never shown")
+    }
+}

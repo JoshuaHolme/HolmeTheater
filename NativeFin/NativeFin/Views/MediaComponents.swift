@@ -47,6 +47,7 @@ extension View {
     func mediaNavigationDestinations() -> some View {
         navigationDestination(for: MediaItem.self) { ItemDetailView(item: $0) }
             .navigationDestination(for: Library.self) { LibraryView(library: $0) }
+            .navigationDestination(for: ShelfDestination.self) { ShelfListView(destination: $0) }
     }
 
     /// Link style that keeps cards looking like cards (and focusable on tvOS).
@@ -125,14 +126,18 @@ struct PosterCard: View {
 }
 
 /// Horizontally scrolling row of posters under a heading. Each poster navigates to its item.
+///
+/// If a `destination` is given, the heading is a button (with a chevron) that opens the full list.
 struct MediaShelf: View {
     let title: String
     let items: [MediaItem]
 
+    /// Where tapping the heading leads. Nil makes the heading plain text.
+    var destination: ShelfDestination?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.title2.bold())
+            heading
                 .padding(.horizontal)
 
             ScrollView(.horizontal) {
@@ -150,16 +155,39 @@ struct MediaShelf: View {
             .scrollIndicators(.hidden)
         }
     }
+
+    @ViewBuilder
+    private var heading: some View {
+        if let destination {
+            NavigationLink(value: destination) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.title2.bold())
+                    Image(systemName: "chevron.right")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .cardLinkStyle()
+            .accessibilityLabel("\(title), show all")
+        } else {
+            Text(title)
+                .font(.title2.bold())
+        }
+    }
 }
 
 /// Compact list row: thumbnail plus title and details.
 struct ItemRow: View {
     let item: MediaItem
 
+    /// An episode's image is a widescreen still; everything else is a portrait poster.
+    private var isEpisode: Bool { item.kind == .episode }
+
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkView(url: item.posterURL, aspectRatio: 2.0 / 3.0)
-                .frame(width: 50)
+            ArtworkView(url: item.posterURL, aspectRatio: isEpisode ? 16.0 / 9.0 : 2.0 / 3.0)
+                .frame(width: isEpisode ? 100 : 50)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
@@ -184,4 +212,31 @@ struct ItemRow: View {
             }
         }
     }
+}
+
+#Preview("PosterCard") {
+    HStack(alignment: .top) {
+        PosterCard(item: .previewMovie)
+        PosterCard(item: .previewPartlyWatched)
+        PosterCard(item: .previewWatched)
+        PosterCard(item: .previewEpisode)
+    }
+    .padding()
+}
+
+#Preview("MediaShelf") {
+    NavigationStack {
+        MediaShelf(title: "Continue Watching", items: MediaItem.previewMovies)
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}
+
+#Preview("ItemRow") {
+    List(MediaItem.previewMovies + [.previewEpisode]) { ItemRow(item: $0) }
+}
+
+#Preview("ArtworkView") {
+    ArtworkView(url: nil, aspectRatio: 16.0 / 9.0)
+        .padding()
 }

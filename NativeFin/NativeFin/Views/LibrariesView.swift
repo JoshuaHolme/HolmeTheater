@@ -61,3 +61,19 @@ private extension Library {
         }
     }
 }
+
+#Preview("Libraries") {
+    NavigationStack {
+        LibrariesView()
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}
+
+#Preview("Library") {
+    NavigationStack {
+        LibraryView(library: .previewMovies)
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}

@@ -119,6 +119,21 @@ actor JellyfinMediaService: MediaService {
         session = nil
     }
 
+    func refreshProfile() async throws -> UserSession {
+        let (client, session) = try signedIn()
+        let user = try await send(Paths.getCurrentUser, with: client)
+
+        let updated = UserSession(
+            server: session.server,
+            userID: session.userID,
+            username: user.name ?? session.username,
+            accessToken: session.accessToken,
+            avatarURL: Self.avatarURL(userID: session.userID, tag: user.primaryImageTag, client: client)
+        )
+        self.session = updated
+        return updated
+    }
+
     // MARK: - Browsing
 
     func libraries() async throws -> [Library] {
@@ -184,6 +199,30 @@ actor JellyfinMediaService: MediaService {
         // Unlike the other endpoints, "latest" returns a bare array rather than a query result.
         let dtos = try await send(request, with: client)
         return dtos.compactMap { Self.makeItem(from: $0, client: client) }
+    }
+
+    func recentlyAdded(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+
+        // Flatten to the individual playable items (episodes or movies) rather than series.
+        let includeTypes: [BaseItemKind]? = switch library.kind {
+        case .movies: [.movie]
+        case .tvShows: [.episode]
+        case .music, .other: nil
+        }
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            startIndex: offset,
+            limit: limit,
+            isRecursive: includeTypes != nil,
+            sortOrder: [.descending],
+            parentID: library.id,
+            fields: Self.itemFields,
+            includeItemTypes: includeTypes,
+            sortBy: [.dateCreated],
+            enableUserData: true
+        ))
+        return try await mapItems(send(request, with: client), client: client)
     }
 
     func children(of item: MediaItem) async throws -> [MediaItem] {
@@ -369,14 +408,26 @@ actor JellyfinMediaService: MediaService {
             throw MediaServiceError.underlying("The server's sign-in response was incomplete.")
         }
         let url = client.configuration.url
+
         let session = UserSession(
             server: server ?? ServerInfo(id: result.serverID ?? "", name: url.host() ?? "Jellyfin", url: url),
             userID: userID,
             username: result.user?.name ?? "",
-            accessToken: token
+            accessToken: token,
+            avatarURL: Self.avatarURL(userID: userID, tag: result.user?.primaryImageTag, client: client)
         )
         self.session = session
         return session
+    }
+
+    /// The URL of a user's profile picture, or nil if they haven't set one.
+    ///
+    /// The server only reports an image tag if the user has uploaded a picture, and the tag changes
+    /// whenever the picture does, so the URL changes with it and caches stay correct.
+    /// Like item artwork, no token is needed to fetch it.
+    private static func avatarURL(userID: String, tag: String?, client: JellyfinClient) -> URL? {
+        guard let tag else { return nil }
+        return client.url(path: "/UserImage?userId=\(userID)&tag=\(tag)")
     }
 
     /// Sends a request and unwraps its value, converting SDK errors to `MediaServiceError`.

@@ -60,3 +60,11 @@ struct SearchView: View {
         }
     }
 }
+
+#Preview {
+    NavigationStack {
+        SearchView()
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}

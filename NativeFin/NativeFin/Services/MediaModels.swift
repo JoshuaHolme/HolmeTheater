@@ -27,6 +27,10 @@ nonisolated struct UserSession: Codable, Hashable, Sendable {
     let username: String
     /// The Jellyfin access token. Treat as a secret.
     let accessToken: String
+    /// The user's profile picture, or nil if they haven't set one.
+    ///
+    /// Optional with a default so sessions saved before this field existed still decode.
+    var avatarURL: URL? = nil
 }
 
 /// Progress of a Quick Connect sign-in. See ``MediaService/quickConnect()``.

@@ -131,3 +131,8 @@ struct SignInView: View {
         quickConnectCode = nil
     }
 }
+
+#Preview {
+    SignInView()
+        .environment(AppModel.preview(signedIn: false))
+}

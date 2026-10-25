@@ -7,12 +7,22 @@ import SwiftUI
 /// App entry point. Creates the shared `AppModel` and restores any saved session at launch.
 @main struct NativeFinApp: App {
     @State private var appModel = AppModel(service: NativeFinApp.makeService())
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(appModel)
-                .task { await appModel.restoreSession() }
+                .task {
+                    await appModel.restoreSession()
+                    await appModel.refreshProfile()
+                }
+        }
+        // Pick up profile changes made elsewhere each time the app comes back to the foreground.
+        .onChange(of: scenePhase) {
+            if scenePhase == .active {
+                Task { await appModel.refreshProfile() }
+            }
         }
     }
 

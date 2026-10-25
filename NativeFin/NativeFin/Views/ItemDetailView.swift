@@ -71,3 +71,35 @@ struct ItemDetailView: View {
         }
     }
 }
+
+#Preview("Movie") {
+    NavigationStack {
+        ItemDetailView(item: .previewMovie)
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}
+
+#Preview("Partly Watched") {
+    NavigationStack {
+        ItemDetailView(item: .previewPartlyWatched)
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}
+
+#Preview("Series") {
+    NavigationStack {
+        ItemDetailView(item: .previewSeries)
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}
+
+#Preview("Episode") {
+    NavigationStack {
+        ItemDetailView(item: .previewEpisode)
+            .mediaNavigationDestinations()
+    }
+    .environment(AppModel.preview())
+}

@@ -36,6 +36,13 @@ nonisolated protocol MediaService: Sendable {
     /// Revokes the session's access token on the server (best effort) and forgets it locally.
     func signOut() async
 
+    /// Re-reads the signed-in user's profile (display name and profile picture) from the server,
+    /// so changes made elsewhere show up without signing in again.
+    ///
+    /// Returns the updated session, which keeps the same access token.
+    /// - Throws: ``MediaServiceError/notSignedIn`` if there's no session, or a network error.
+    func refreshProfile() async throws -> UserSession
+
     // MARK: Browsing
 
     /// The user's top-level libraries.
@@ -47,8 +54,14 @@ nonisolated protocol MediaService: Sendable {
     /// Partially watched movies and episodes ("Continue Watching").
     func resumeItems() async throws -> [MediaItem]
 
-    /// Recently added items in a library.
+    /// The most recently added items in a library, a handful for a home-screen shelf.
     func latestItems(in library: Library) async throws -> [MediaItem]
+
+    /// One page of everything in a library, newest first: episodes for a TV library, movies for a movie library.
+    ///
+    /// Page through it by passing the number of items already loaded as `offset`. A page shorter than
+    /// `limit` is the last one.
+    func recentlyAdded(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem]
 
     /// Seasons of a series, or episodes of a season. Empty for anything else.
     func children(of item: MediaItem) async throws -> [MediaItem]

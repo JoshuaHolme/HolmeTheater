@@ -181,3 +181,8 @@ final class PlaybackSession {
         debugText = text
     }
 }
+
+#Preview {
+    PlayerView(item: .previewPartlyWatched)
+        .environment(AppModel.preview())
+}
