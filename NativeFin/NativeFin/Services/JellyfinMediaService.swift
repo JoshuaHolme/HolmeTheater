@@ -516,6 +516,7 @@ actor JellyfinMediaService: MediaService {
             runtime: runtime,
             posterURL: posterURL(for: dto, id: id, client: client),
             backdropURL: backdropURL(for: dto, id: id, client: client),
+            thumbnailURL: thumbnailURL(for: dto, id: id, client: client),
             playedFraction: playedFraction,
             isPlayed: dto.userData?.isPlayed ?? false,
             seriesTitle: dto.seriesName,
@@ -529,15 +530,29 @@ actor JellyfinMediaService: MediaService {
         client.url(path: "/Items/\(itemID)/Images/\(type.rawValue)?maxWidth=\(width)&tag=\(tag)")
     }
 
-    /// The item's own poster, falling back to its series' poster (e.g. for episodes without a thumbnail).
+    /// The portrait poster.
+    ///
+    /// An episode uses its show's poster, because its own image is a widescreen still that looks wrong in a
+    /// poster slot (see `thumbnailURL(for:id:client:)`). Everything else uses its own poster, falling back to
+    /// its series' poster if it has none.
     private static func posterURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
+        var ownPoster: URL?
         if let tag = dto.imageTags?[ImageType.primary.rawValue] {
-            return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
+            ownPoster = imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
         }
+
+        var seriesPoster: URL?
         if let seriesID = dto.seriesID, let tag = dto.seriesPrimaryImageTag {
-            return imageURL(itemID: seriesID, type: .primary, tag: tag, width: posterWidth, client: client)
+            seriesPoster = imageURL(itemID: seriesID, type: .primary, tag: tag, width: posterWidth, client: client)
         }
-        return nil
+
+        return dto.type == .episode ? (seriesPoster ?? ownPoster) : (ownPoster ?? seriesPoster)
+    }
+
+    /// An episode's own widescreen still, or nil for anything that isn't an episode.
+    private static func thumbnailURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
+        guard dto.type == .episode, let tag = dto.imageTags?[ImageType.primary.rawValue] else { return nil }
+        return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
     }
 
     /// The item's own backdrop, falling back to its parent's.

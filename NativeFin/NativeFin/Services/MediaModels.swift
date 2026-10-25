@@ -69,8 +69,13 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     /// Total runtime in seconds.
     let runtime: TimeInterval?
     /// Ready-to-load artwork URLs, resolved against the server by the service.
+    ///
+    /// `posterURL` is always portrait: for an episode it's the show's poster, so it sits comfortably
+    /// in a poster slot. An episode's own widescreen still is in `thumbnailURL`.
     let posterURL: URL?
     let backdropURL: URL?
+    /// An episode's own widescreen still; nil for everything else.
+    var thumbnailURL: URL? = nil
     /// 0...1 for partially watched items, nil otherwise.
     let playedFraction: Double?
     /// Whether the user has finished watching this item.
