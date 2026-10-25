@@ -134,4 +134,23 @@ nonisolated protocol MediaService: Sendable {
     ///   - position: The current playback position, in seconds.
     ///   - isPaused: Whether playback is currently paused.
     func report(_ event: PlaybackEvent, for item: MediaItem, info: PlaybackInfo, position: TimeInterval, isPaused: Bool) async
+
+    // MARK: Watch state
+
+    /// Marks an item as watched. The server also clears its resume position, so it leaves "Continue Watching".
+    ///
+    /// - Parameter item: A movie or episode.
+    func markWatched(_ item: MediaItem) async throws
+
+    /// Marks an item as not watched, and clears its resume position.
+    ///
+    /// - Parameter item: A movie or episode.
+    func markUnwatched(_ item: MediaItem) async throws
+
+    /// Forgets how far through an item the user got, so it no longer appears in "Continue Watching".
+    ///
+    /// This doesn't change whether the item counts as watched.
+    ///
+    /// - Parameter item: A movie or episode.
+    func removeFromContinueWatching(_ item: MediaItem) async throws
 }

@@ -50,6 +50,10 @@ extension MediaItem {
         }
     }
 
+    /// Whether to show the watched checkmark. An item that's partly watched (it has a resume position) is in
+    /// progress, even if the server also flags it as played.
+    var showsWatchedBadge: Bool { isPlayed && playedFraction == nil }
+
     /// Whether `ItemRow` shows widescreen artwork (episodes and movies) rather than a portrait poster.
     var hasWidescreenRowArtwork: Bool {
         (kind == .episode || kind == .movie) && thumbnailURL != nil
@@ -173,7 +177,7 @@ struct PosterCard: View {
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    if item.isPlayed {
+                    if item.showsWatchedBadge {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.white, .green)
                             .padding(6)
@@ -241,15 +245,27 @@ struct MediaShelf: View {
     }
 }
 
+/// What the "more" menu on a list row can do to its item.
+struct ItemRowActions {
+    let markWatched: () -> Void
+    let markUnwatched: () -> Void
+
+    /// Takes the item out of Continue Watching. Nil where that doesn't apply, which hides the menu entry.
+    var removeFromContinueWatching: (() -> Void)?
+}
+
 /// Compact list row: thumbnail plus title and details.
+///
+/// If `actions` is given, a "more" button on the right opens a menu of them.
 struct ItemRow: View {
     let item: MediaItem
+    var actions: ItemRowActions?
 
     /// Episodes and movies show a widescreen image; everything else is a portrait poster.
     private var isWidescreen: Bool { item.hasWidescreenRowArtwork }
 
-    private static let stillWidth: CGFloat = 100
-    private static let posterWidth: CGFloat = 50
+    private static let stillWidth: CGFloat = 86
+    private static let posterWidth: CGFloat = 43
 
     var body: some View {
         HStack(spacing: 12) {
@@ -262,10 +278,33 @@ struct ItemRow: View {
 
             Spacer()
 
-            if item.isPlayed {
+            if item.showsWatchedBadge {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .accessibilityLabel("Watched")
+            }
+
+            if let actions {
+                Menu {
+                    // A partly watched item offers both, so the user can finish it or start it over.
+                    if !item.showsWatchedBadge {
+                        Button("Mark as Watched", systemImage: "checkmark.circle", action: actions.markWatched)
+                    }
+                    if item.isPlayed || item.playedFraction != nil {
+                        Button("Mark as Unwatched", systemImage: "arrow.uturn.backward.circle", action: actions.markUnwatched)
+                    }
+                    if let remove = actions.removeFromContinueWatching {
+                        Button("Remove from Continue Watching", systemImage: "minus.circle", action: remove)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                        .contentShape(Rectangle())
+                }
+                // Plain leaves the label's color alone. Tinting the menu instead would gray its items' icons too.
+                .buttonStyle(.plain)
+                .accessibilityLabel("More")
             }
         }
     }

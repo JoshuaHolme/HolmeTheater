@@ -137,10 +137,10 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     var thumbnailURL: URL? = nil
 
     /// How much of the item has been watched, from 0 to 1, or `nil` if it hasn't been started.
-    let playedFraction: Double?
+    var playedFraction: Double?
 
     /// Whether the user has finished watching the item.
-    let isPlayed: Bool
+    var isPlayed: Bool
 
     /// The title of the series an episode or season belongs to.
     let seriesTitle: String?

@@ -352,6 +352,29 @@ actor JellyfinMediaService: MediaService {
         }
     }
 
+    // MARK: - Watch state
+
+    func markWatched(_ item: MediaItem) async throws {
+        let (client, session) = try signedIn()
+        _ = try await send(Paths.markPlayedItem(itemID: item.id, userID: session.userID), with: client)
+    }
+
+    func markUnwatched(_ item: MediaItem) async throws {
+        let (client, session) = try signedIn()
+        _ = try await send(Paths.markUnplayedItem(itemID: item.id, userID: session.userID), with: client)
+    }
+
+    func removeFromContinueWatching(_ item: MediaItem) async throws {
+        let (client, session) = try signedIn()
+        // The resume list is every item with a saved position, so zeroing it is what removes the item.
+        let request = Paths.updateItemUserData(
+            itemID: item.id,
+            userID: session.userID,
+            UpdateUserItemDataDto(playbackPositionTicks: 0)
+        )
+        _ = try await send(request, with: client)
+    }
+
     // MARK: - Helpers
 
     /// Extra per-item fields requested beyond the defaults.

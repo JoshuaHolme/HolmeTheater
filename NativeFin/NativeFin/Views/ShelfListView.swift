@@ -31,14 +31,21 @@ struct ShelfListView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
 
+    /// Set when marking played or removing an item fails; shown in an alert.
+    @State private var actionError: String?
+
     private static let pageSize = 30
 
     var body: some View {
         List {
             ForEach(items) { item in
-                NavigationLink(value: item) {
-                    ItemRow(item: item)
-                }
+                ItemRow(item: item, actions: actions(for: item))
+                    // A link in the background gives the row navigation without a disclosure chevron, and
+                    // leaves the row's menu button free to take its own taps.
+                    .background {
+                        NavigationLink(value: item) { EmptyView() }
+                            .opacity(0)
+                    }
             }
 
             if let errorMessage {
@@ -67,6 +74,64 @@ struct ShelfListView: View {
             }
         }
         .navigationTitle(destination.title)
+        .alert("Couldn't Update Item", isPresented: Binding(
+            get: { actionError != nil },
+            set: { if !$0 { actionError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(actionError ?? "")
+        }
+    }
+
+    /// The row menu for an item, or nil for things that can't be watched (series and seasons).
+    private func actions(for item: MediaItem) -> ItemRowActions? {
+        guard item.isPlayable else { return nil }
+        let isContinueWatching = destination == .continueWatching
+
+        // Either change clears the resume position, so on Continue Watching the item leaves the list.
+        return ItemRowActions(
+            markWatched: {
+                update(item, removesRow: isContinueWatching, isPlayed: true) { try await $0.markWatched(item) }
+            },
+            markUnwatched: {
+                update(item, removesRow: isContinueWatching, isPlayed: false) { try await $0.markUnwatched(item) }
+            },
+            removeFromContinueWatching: isContinueWatching ? {
+                update(item, removesRow: true) { try await $0.removeFromContinueWatching(item) }
+            } : nil
+        )
+    }
+
+    /// Runs a server change to `item`'s watch state, then reflects it in the list.
+    ///
+    /// The list only changes if the server call succeeds, so it never disagrees with the server.
+    ///
+    /// - Parameters:
+    ///   - removesRow: Whether the change takes the item out of this list, so its row goes away.
+    ///   - isPlayed: The item's new watched state, if the change sets one. A resume position is always cleared.
+    private func update(
+        _ item: MediaItem,
+        removesRow: Bool,
+        isPlayed: Bool? = nil,
+        change: @escaping @Sendable (any MediaService) async throws -> Void
+    ) {
+        let service = appModel.service
+        Task {
+            do {
+                try await change(service)
+                if removesRow {
+                    items.removeAll { $0.id == item.id }
+                    // The row is gone, so the next page starts earlier on the server too.
+                    nextOffset = max(nextOffset - 1, 0)
+                } else if let index = items.firstIndex(where: { $0.id == item.id }) {
+                    items[index].isPlayed = isPlayed ?? items[index].isPlayed
+                    items[index].playedFraction = nil
+                }
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
     }
 
     /// Fetches the next page and appends it. Does nothing if a page is already loading or there are no more.

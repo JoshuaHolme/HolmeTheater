@@ -190,4 +190,20 @@ nonisolated struct MockMediaService: MediaService {
     }
 
     func report(_ event: PlaybackEvent, for item: MediaItem, info: PlaybackInfo, position: TimeInterval, isPaused: Bool) async {}
+
+    // MARK: Watch state
+
+    // The canned data is immutable, so these only simulate the round trip.
+
+    func markWatched(_ item: MediaItem) async throws {
+        try await simulateLatency()
+    }
+
+    func markUnwatched(_ item: MediaItem) async throws {
+        try await simulateLatency()
+    }
+
+    func removeFromContinueWatching(_ item: MediaItem) async throws {
+        try await simulateLatency()
+    }
 }
