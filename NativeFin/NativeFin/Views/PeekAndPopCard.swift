@@ -13,15 +13,20 @@ struct PeekAndPopSpec {
     /// What VoiceOver reads for the card.
     let accessibilityLabel: String
 
-    /// Called when the card is tapped, or its preview is tapped.
+    /// Called when the card itself is tapped (or activated with VoiceOver).
+    let onTap: () -> Void
+
+    /// Called when the preview is tapped: opens the item ("pop").
     let onOpen: () -> Void
 
-    /// The preview shown above the menu.
+    /// The preview shown above the menu. Type-erased so rows and cards can hold a spec without being generic
+    /// over it; it's only ever handed to a `UIHostingController`, so it costs SwiftUI no diffing.
     let peek: AnyView
 
-    init(menu: [ItemMenuEntry], accessibilityLabel: String, onOpen: @escaping () -> Void, peek: some View) {
+    init(menu: [ItemMenuEntry], accessibilityLabel: String, onTap: @escaping () -> Void, onOpen: @escaping () -> Void, peek: some View) {
         self.menu = menu
         self.accessibilityLabel = accessibilityLabel
+        self.onTap = onTap
         self.onOpen = onOpen
         self.peek = AnyView(peek)
     }
@@ -57,6 +62,7 @@ extension View {
             peekAndPop(
                 menu: spec.menu,
                 accessibilityLabel: spec.accessibilityLabel,
+                onTap: spec.onTap,
                 onOpen: spec.onOpen,
                 passthrough: passthrough,
                 isAccessibilityElement: isAccessibilityElement
@@ -76,24 +82,26 @@ extension View {
 import UIKit
 
 extension View {
-    /// Makes a card tappable, and long-pressable for a peek and menu where tapping the peek opens the item,
-    /// the same as tapping the card ("peek and pop").
+    /// Makes a card tappable, and long-pressable for a peek and menu where tapping the peek opens the item
+    /// ("peek and pop").
     ///
     /// SwiftUI's `contextMenu(menuItems:preview:)` can show a preview, but tapping it only dismisses it, with
     /// no way to run an action. UIKit's context menu interaction can commit ("pop") on a preview tap, so this
     /// lays a transparent UIKit view over the card to drive that interaction. The card itself stays plain
-    /// SwiftUI, so its layout is unaffected; the owner navigates in `onOpen`.
+    /// SwiftUI, so its layout is unaffected; the owner acts in `onTap` and navigates in `onOpen`.
     ///
     /// - Parameters:
     ///   - menu: The long-press menu's entries.
     ///   - accessibilityLabel: What VoiceOver reads for the card.
-    ///   - onOpen: Called when the card is tapped, or its preview is tapped.
+    ///   - onTap: Called when the card is tapped. Defaults to `onOpen`.
+    ///   - onOpen: Called when the preview is tapped.
     ///   - passthrough: A corner to leave alone, for a control inside the card.
     ///   - isAccessibilityElement: Whether the layer is the card's accessibility element.
     ///   - peek: The preview shown above the menu.
     func peekAndPop<Peek: View>(
         menu: [ItemMenuEntry],
         accessibilityLabel: String,
+        onTap: (() -> Void)? = nil,
         onOpen: @escaping () -> Void,
         passthrough: PeekPassthrough = .none,
         isAccessibilityElement: Bool = true,
@@ -105,6 +113,7 @@ extension View {
                 PeekInteractionView(
                     menu: menu,
                     accessibilityLabel: accessibilityLabel,
+                    onTap: onTap ?? onOpen,
                     onOpen: onOpen,
                     passthrough: passthrough,
                     isAccessibilityElement: isAccessibilityElement,
@@ -118,6 +127,7 @@ extension View {
 private struct PeekInteractionView<Peek: View>: UIViewRepresentable {
     let menu: [ItemMenuEntry]
     let accessibilityLabel: String
+    let onTap: () -> Void
     let onOpen: () -> Void
     let passthrough: PeekPassthrough
     let isAccessibilityElement: Bool
@@ -132,6 +142,7 @@ private struct PeekInteractionView<Peek: View>: UIViewRepresentable {
             peek: peek,
             menu: menu,
             accessibilityLabel: accessibilityLabel,
+            onTap: onTap,
             onOpen: onOpen,
             passthrough: passthrough,
             isAccessibilityElement: isAccessibilityElement
@@ -141,11 +152,9 @@ private struct PeekInteractionView<Peek: View>: UIViewRepresentable {
 
 /// A clear view with a tap and a context menu interaction. See `peekAndPop`.
 private final class PeekUIView<Peek: View>: UIView, UIContextMenuInteractionDelegate {
-    /// How wide a peek is; `ItemPeek` lays itself out at this width.
-    private static var peekWidth: CGFloat { 320 }
-
     private var peek: Peek
     private var menu: [ItemMenuEntry] = []
+    private var onTap: () -> Void = {}
     private var onOpen: () -> Void = {}
     private var passthrough = PeekPassthrough.none
 
@@ -168,24 +177,34 @@ private final class PeekUIView<Peek: View>: UIView, UIContextMenuInteractionDele
         peek: Peek,
         menu: [ItemMenuEntry],
         accessibilityLabel: String,
+        onTap: @escaping () -> Void,
         onOpen: @escaping () -> Void,
         passthrough: PeekPassthrough,
         isAccessibilityElement: Bool
     ) {
         self.peek = peek
         self.menu = menu
+        self.onTap = onTap
         self.onOpen = onOpen
         self.passthrough = passthrough
 
         self.isAccessibilityElement = isAccessibilityElement
         self.accessibilityLabel = accessibilityLabel
-        // Give VoiceOver users the menu's actions too, since it has no long-press.
-        accessibilityCustomActions = menu.flattened.map { entry in
-            UIAccessibilityCustomAction(name: entry.title) { _ in
-                entry.perform?()
-                return true
+    }
+
+    /// Gives VoiceOver users the menu's actions too, since it has no long-press. Built when VoiceOver asks, not
+    /// on every SwiftUI update, and always from the latest menu.
+    override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
+        get {
+            menu.flattened.map { entry, name in
+                UIAccessibilityCustomAction(name: name) { _ in
+                    entry.perform?()
+                    return true
+                }
             }
         }
+        // The menu is the only source of these actions.
+        set {}
     }
 
     /// Lets touches in the pass-through corner reach the SwiftUI control underneath, instead of this layer.
@@ -199,12 +218,12 @@ private final class PeekUIView<Peek: View>: UIView, UIContextMenuInteractionDele
     }
 
     override func accessibilityActivate() -> Bool {
-        onOpen()
+        onTap()
         return true
     }
 
     @objc private func tapped() {
-        onOpen()
+        onTap()
     }
 
     // MARK: UIContextMenuInteractionDelegate
@@ -250,7 +269,7 @@ private final class PeekUIView<Peek: View>: UIView, UIContextMenuInteractionDele
         let controller = UIHostingController(rootView: peek)
         controller.view.backgroundColor = .systemBackground
         controller.preferredContentSize = controller.sizeThatFits(
-            in: CGSize(width: Self.peekWidth, height: CGFloat.greatestFiniteMagnitude)
+            in: CGSize(width: ItemPeek.width, height: CGFloat.greatestFiniteMagnitude)
         )
         return controller
     }
@@ -266,9 +285,22 @@ private func menuElement(for entry: ItemMenuEntry) -> UIMenuElement {
 }
 
 private extension Array where Element == ItemMenuEntry {
-    /// The entries that do something, with submenus expanded into their items.
-    var flattened: [ItemMenuEntry] {
-        flatMap { $0.children.isEmpty ? [$0] : $0.children.flattened }
+    /// The entries that do something, with submenus expanded into their items, each with the name VoiceOver
+    /// reads for it. A submenu's items are prefixed with its title, so "Mark All Episodes as Watched" under
+    /// "Remove from Up Next" isn't mistaken for a plain "Mark as Watched".
+    var flattened: [(entry: ItemMenuEntry, name: String)] {
+        flatMap { entry in
+            guard !entry.children.isEmpty else { return [(entry: entry, name: entry.title)] }
+            return entry.children.flattened.map { child in
+                (
+                    entry: child.entry,
+                    name: String(
+                        localized: "\(entry.title): \(child.name)",
+                        comment: "VoiceOver action for an item in a submenu: the submenu's title, then the item's"
+                    )
+                )
+            }
+        }
     }
 }
 #endif

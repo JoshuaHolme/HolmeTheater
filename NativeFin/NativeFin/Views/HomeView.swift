@@ -25,6 +25,10 @@ struct HomeView: View {
     /// because shelves sit in a lazy stack, where SwiftUI ignores navigation destinations.
     @State private var goToItem: MediaItem?
 
+    /// The item a tapped poster is playing; setting it presents the full-screen player. The shelves reload
+    /// when it closes, so they show the latest progress.
+    @State private var playingItem: MediaItem?
+
     /// One "Recently Added …" shelf.
     private struct Row: Identifiable {
         let library: Library
@@ -49,14 +53,13 @@ struct HomeView: View {
                 AsyncContent(load: loadHome, reloadID: reloadCount) { data in
                     LazyVStack(alignment: .leading, spacing: 24) {
                         if !data.resume.isEmpty {
-                            MediaShelf(title: ShelfDestination.continueWatching.title, items: data.resume, destination: .continueWatching, onChange: reload, onGoTo: { goToItem = $0 })
+                            shelf(.continueWatching, items: data.resume)
                         }
                         if !data.nextUp.isEmpty {
-                            MediaShelf(title: ShelfDestination.nextUp.title, items: data.nextUp, destination: .nextUp, onChange: reload, onGoTo: { goToItem = $0 })
+                            shelf(.nextUp, items: data.nextUp)
                         }
                         ForEach(data.rows) { row in
-                            let destination = ShelfDestination.recentlyAdded(row.library)
-                            MediaShelf(title: destination.title, items: row.items, destination: destination, onChange: reload, onGoTo: { goToItem = $0 })
+                            shelf(.recentlyAdded(row.library), items: row.items)
                         }
                         if data.resume.isEmpty && data.nextUp.isEmpty && data.rows.isEmpty {
                             ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
@@ -71,6 +74,19 @@ struct HomeView: View {
         .navigationTitle("Home")
         .toolbarVisibility(.hidden, for: .navigationBar)
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
+        .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: reload) }
+    }
+
+    /// A shelf whose heading opens `destination`'s full list. Its posters play here, and its watch-state
+    /// actions reload the whole screen.
+    private func shelf(_ destination: ShelfDestination, items: [MediaItem]) -> some View {
+        MediaShelf(
+            title: destination.title,
+            items: items,
+            destination: destination,
+            onChange: reload,
+            navigation: ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
+        )
     }
 
     /// Large heading with the profile button on the same line.

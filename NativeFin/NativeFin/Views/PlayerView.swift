@@ -11,6 +11,11 @@ import SwiftUI
 /// server decided and whether playback is healthy.
 struct PlayerView: View {
     let item: MediaItem
+
+    /// Called after the player closes, once the server has been told where playback stopped, so the presenter
+    /// can refresh and show the latest progress.
+    var onStop: () -> Void = {}
+
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
 
@@ -66,7 +71,14 @@ struct PlayerView: View {
         }
         #endif
         .task { await load() }
-        .onDisappear { session?.stop() }
+        .onDisappear {
+            if let session {
+                session.stop(then: onStop)
+            } else {
+                // Closed before playback began, so there's nothing to report.
+                onStop()
+            }
+        }
     }
 
     /// Asks the server how to play the item, then starts playback.
@@ -161,7 +173,10 @@ final class PlaybackSession {
 
     /// Stops playback and the progress loop, releases the stream, and reports "stopped" with the final
     /// position (only if "started" was reported).
-    func stop() {
+    ///
+    /// - Parameter completion: Called once the server has the final position (or at once, if there's nothing
+    ///   to report). Only the first call's runs.
+    func stop(then completion: @escaping () -> Void = {}) {
         guard !isStopped else { return }
         isStopped = true
         progressTask?.cancel()
@@ -171,11 +186,15 @@ final class PlaybackSession {
         // Drop the item so AVPlayer closes its network connection now rather than when it's deallocated.
         player.replaceCurrentItem(with: nil)
 
-        guard let startReport else { return }
+        guard let startReport else {
+            completion()
+            return
+        }
         // Unstructured so the report still goes out after the view's task is cancelled.
         Task {
             await startReport.value
             await service.report(.stopped, for: item, info: info, position: position, isPaused: true)
+            completion()
         }
     }
 

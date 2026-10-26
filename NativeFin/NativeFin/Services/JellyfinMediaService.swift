@@ -246,6 +246,20 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
+    func item(id: String) async throws -> MediaItem {
+        let (client, session) = try signedIn()
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            fields: Self.itemFields,
+            enableUserData: true,
+            ids: [id]
+        ))
+        guard let item = try await mapItems(send(request, with: client), client: client).first else {
+            throw MediaServiceError.itemNotFound
+        }
+        return item
+    }
+
     func children(of item: MediaItem) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
         switch item.kind {
@@ -370,26 +384,16 @@ actor JellyfinMediaService: MediaService {
 
     // MARK: - Watch state
 
-    func markWatched(_ item: MediaItem) async throws {
+    // The server applies a series' or season's watched state to every episode in it, so one call covers it all.
+
+    func markWatched(itemID: String) async throws {
         let (client, session) = try signedIn()
-        _ = try await send(Paths.markPlayedItem(itemID: item.id, userID: session.userID), with: client)
+        _ = try await send(Paths.markPlayedItem(itemID: itemID, userID: session.userID), with: client)
     }
 
-    func markUnwatched(_ item: MediaItem) async throws {
+    func markUnwatched(itemID: String) async throws {
         let (client, session) = try signedIn()
-        _ = try await send(Paths.markUnplayedItem(itemID: item.id, userID: session.userID), with: client)
-    }
-
-    // The server applies a series' watched state to every episode in it, so one call covers the whole show.
-
-    func markSeriesWatched(seriesID: String) async throws {
-        let (client, session) = try signedIn()
-        _ = try await send(Paths.markPlayedItem(itemID: seriesID, userID: session.userID), with: client)
-    }
-
-    func markSeriesUnwatched(seriesID: String) async throws {
-        let (client, session) = try signedIn()
-        _ = try await send(Paths.markUnplayedItem(itemID: seriesID, userID: session.userID), with: client)
+        _ = try await send(Paths.markUnplayedItem(itemID: itemID, userID: session.userID), with: client)
     }
 
     func removeFromContinueWatching(_ item: MediaItem) async throws {
@@ -592,10 +596,19 @@ actor JellyfinMediaService: MediaService {
             seasonNumber: dto.parentIndexNumber,
             episodeNumber: dto.indexNumber,
             seriesID: dto.seriesID,
-            // A series' child count is its seasons, so only its recursive count is its episodes.
-            episodeCount: kind == .series ? dto.recursiveItemCount : (kind == .season ? dto.recursiveItemCount ?? dto.childCount : nil),
+            episodeCount: episodeCount(of: dto, kind: kind),
             unwatchedEpisodeCount: kind == .series || kind == .season ? dto.userData?.unplayedItemCount : nil
         )
+    }
+
+    /// How many episodes a series or season has, or nil for anything else.
+    private static func episodeCount(of dto: BaseItemDto, kind: MediaItem.Kind) -> Int? {
+        switch kind {
+        // A series' child count is its seasons, so only its recursive count is its episodes.
+        case .series: dto.recursiveItemCount
+        case .season: dto.recursiveItemCount ?? dto.childCount
+        default: nil
+        }
     }
 
     /// An image URL on the server. The `tag` makes the URL change when the image does, so caches stay correct.

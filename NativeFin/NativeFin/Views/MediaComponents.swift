@@ -83,7 +83,7 @@ extension MediaItem {
     var gridStatusLine: String? {
         var parts: [String] = []
         if kind == .episode, let episodeNumber {
-            parts.append(seasonNumber.map { "S\($0), E\(episodeNumber)" } ?? "E\(episodeNumber)")
+            parts.append(seasonNumber.map { String(localized: "S\($0), E\(episodeNumber)") } ?? String(localized: "E\(episodeNumber)"))
         }
         if let runtime {
             let remaining = playedFraction.map { runtime * (1 - $0) } ?? runtime
@@ -93,10 +93,9 @@ extension MediaItem {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Whether `ItemRow` shows widescreen artwork (episodes and movies) rather than a portrait poster.
-    var hasWidescreenRowArtwork: Bool {
-        (kind == .episode || kind == .movie) && thumbnailURL != nil
-    }
+    /// Whether `ItemRow` shows widescreen artwork rather than a portrait poster. Only episodes and movies have
+    /// a thumbnail.
+    var hasWidescreenRowArtwork: Bool { thumbnailURL != nil }
 
     /// The artwork `ItemRow` shows: the widescreen thumbnail for episodes and movies, otherwise the poster.
     var rowArtworkURL: URL? {
@@ -118,6 +117,18 @@ extension MediaItem {
         case .other:
             [title]
         }
+    }
+
+    /// What VoiceOver reads for an item's card or row: its caption, then how much of it has been watched.
+    var accessibilityDescription: String {
+        var parts = captionLines
+        if showsWatchedBadge {
+            parts.append(String(localized: "Watched"))
+        } else if let playedFraction {
+            let percent = playedFraction.formatted(.percent.precision(.fractionLength(0)))
+            parts.append(String(localized: "\(percent) watched"))
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -257,13 +268,14 @@ struct PosterCard: View {
     }
 }
 
-/// Horizontally scrolling row of posters under a heading. Each poster navigates to its item.
+/// Horizontally scrolling row of posters under a heading. Tapping a poster plays its item (or, for a show or
+/// season, opens it).
 ///
 /// If a `destination` is given, the heading is a button (with a chevron) that opens the full list.
 ///
 /// Long-pressing a poster peeks at the item and opens a menu: "Go to …" plus the same watch-state actions
-/// as the shelf's full list. `onChange` is called after one changes something on the server, so the owner
-/// can reload.
+/// as the shelf's full list. The detail screen opens from "Go to …" or by tapping the peek. `onChange` is
+/// called after an action changes something on the server, so the owner can reload.
 struct MediaShelf: View {
     let title: String
     let items: [MediaItem]
@@ -274,49 +286,28 @@ struct MediaShelf: View {
     /// Called after a long-press action has changed the server, so the shelf's owner can reload.
     var onChange: () -> Void = {}
 
-    /// Called to open an item's detail screen. The owner presents it: a navigation destination can't live in
-    /// the shelf itself, because shelves sit in a lazy stack, where SwiftUI ignores destinations.
-    var onGoTo: (MediaItem) -> Void = { _ in }
+    /// Opens and plays items. The owner presents both: a navigation destination can't live in the shelf
+    /// itself, because shelves sit in a lazy stack, where SwiftUI ignores destinations.
+    let navigation: ItemNavigation
 
     @Environment(AppModel.self) private var appModel
 
-    /// Set when an action fails; shown in an alert.
-    @State private var actionError: String?
+    /// A change waiting for confirmation, or an error to show.
+    @State private var watchState = WatchActionState()
 
-    /// A show the user chose to remove from Up Next, waiting on their confirmation.
-    @State private var pendingRemoval: ShowRemoval?
-
-    /// A whole show or season the user chose to mark watched or unwatched, waiting on their confirmation.
-    @State private var pendingBulkChange: BulkWatchChange?
-
-    /// A change the user just made to an item, shown at once while the owner reloads the real data.
-    private struct Patch {
-        /// The item's new watched state, if the change sets one.
-        var isPlayed: Bool?
-        /// Whether the change takes the item off this shelf.
-        var removed = false
-    }
-
-    /// Changes made since `items` last updated, by item ID. Cleared when the reload arrives.
-    @State private var patches: [String: Patch] = [:]
+    /// Changes made since `items` last updated, shown at once while the owner reloads. Cleared when the
+    /// reload arrives.
+    @State private var effects: [WatchEffect] = []
 
     /// `items` with the user's latest changes applied.
     private var shownItems: [MediaItem] {
-        items.compactMap { item in
-            guard let patch = patches[item.id] else { return item }
-            if patch.removed { return nil }
+        effects.reduce(items) { $0.applying($1) }
+    }
 
-            var item = item
-            if let isPlayed = patch.isPlayed {
-                item.isPlayed = isPlayed
-                // A show or season marked as a whole has all its episodes watched, or none.
-                if item.kind == .series || item.kind == .season {
-                    item.unwatchedEpisodeCount = isPlayed ? 0 : item.episodeCount
-                }
-            }
-            // Marking watched or unwatched both clear the resume position.
-            item.playedFraction = nil
-            return item
+    private var watchActions: WatchActions {
+        WatchActions(service: appModel.service, destination: destination, state: $watchState) { effect in
+            effects.append(effect)
+            onChange()
         }
     }
 
@@ -336,152 +327,31 @@ struct MediaShelf: View {
             .scrollIndicators(.hidden)
         }
         // The reload has arrived, so the real data replaces the local changes.
-        .onChange(of: items) { patches = [:] }
-        .alert("Couldn't Update Item", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
-        }
-        .confirmShowRemoval($pendingRemoval, perform: remove)
-        .confirmBulkWatchChange($pendingBulkChange, perform: apply)
+        .onChange(of: items) { effects = [] }
+        .watchActionAlerts(watchActions)
     }
 
-    /// Marks every episode of a show or season watched or unwatched, once the user has confirmed.
-    private func apply(_ change: BulkWatchChange) {
-        let item = change.item
-        perform(
-            { service in
-                if change.markWatched {
-                    try await service.markWatched(item)
-                } else {
-                    try await service.markUnwatched(item)
-                }
-            },
-            then: { patches[item.id] = Patch(isPlayed: change.markWatched) }
-        )
-    }
-
-    /// A poster that opens its item when tapped, and peeks and pops when long-pressed.
+    /// A poster that plays its item when tapped, and peeks and pops when long-pressed.
     @ViewBuilder
     private func card(for item: MediaItem) -> some View {
+        let actions = watchActions.actions(for: item, navigation: navigation)
         #if os(iOS)
         // A UIKit layer over the card, so that tapping the preview can open the item. SwiftUI's preview can't.
         PosterCard(item: item)
             .frame(width: Layout.posterWidth)
-            .peekAndPop(
-                menu: menuEntries(for: item),
-                accessibilityLabel: item.captionLines.joined(separator: ", "),
-                onOpen: { onGoTo(item) }
-            ) {
-                ItemPeek(item: item)
-            }
+            .peekAndPop(WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
         #else
-        NavigationLink(value: item) {
+        Button { navigation.tap(item) } label: {
             PosterCard(item: item)
                 .frame(width: Layout.posterWidth)
         }
         .cardLinkStyle()
         .contextMenu {
-            ItemActionButtons(entries: menuEntries(for: item))
+            ItemActionButtons(entries: actions?.menuEntries(for: item) ?? [])
         } preview: {
             ItemPeek(item: item)
         }
         #endif
-    }
-
-    /// The long-press menu: "Go to …", then the watch-state actions.
-    private func menuEntries(for item: MediaItem) -> [ItemMenuEntry] {
-        let goTo = ItemMenuEntry(title: item.goToMenuTitle, systemImage: "info.circle", perform: { onGoTo(item) })
-        return [goTo] + (actions(for: item)?.menuEntries(for: item) ?? [])
-    }
-
-
-    /// The watch-state actions for an item, or nil for things that can't be watched (series and seasons).
-    /// These match the ones in `ShelfListView`, so a shelf and its full list offer the same choices.
-    private func actions(for item: MediaItem) -> ItemRowActions? {
-        // A show or season marks all its episodes, after a confirmation.
-        if item.kind == .series || item.kind == .season {
-            return ItemRowActions(
-                markWatched: { pendingBulkChange = BulkWatchChange(item: item, markWatched: true) },
-                markUnwatched: { pendingBulkChange = BulkWatchChange(item: item, markWatched: false) }
-            )
-        }
-        guard item.isPlayable else { return nil }
-
-        // Either change clears the resume position, so on Continue Watching the item leaves the shelf. On
-        // Up Next a watched episode is replaced by the one after it, so it leaves too.
-        let leavesOnWatched = destination == .continueWatching || destination == .nextUp
-        let leavesOnUnwatched = destination == .continueWatching
-
-        return ItemRowActions(
-            markWatched: {
-                perform({ try await $0.markWatched(item) }, then: {
-                    patches[item.id] = Patch(isPlayed: true, removed: leavesOnWatched)
-                })
-            },
-            markUnwatched: {
-                perform({ try await $0.markUnwatched(item) }, then: {
-                    patches[item.id] = Patch(isPlayed: false, removed: leavesOnUnwatched)
-                })
-            },
-            removeFromContinueWatching: destination == .continueWatching ? {
-                perform({ try await $0.removeFromContinueWatching(item) }, then: {
-                    patches[item.id] = Patch(removed: true)
-                })
-            } : nil,
-            removeShowWatched: upNextRemoval(for: item, markWatched: true),
-            removeShowUnwatched: upNextRemoval(for: item, markWatched: false)
-        )
-    }
-
-    /// Asks to remove an episode's show from Up Next, or nil off the Up Next shelf or if the show is unknown.
-    private func upNextRemoval(for item: MediaItem, markWatched: Bool) -> (() -> Void)? {
-        guard destination == .nextUp, let seriesID = item.seriesID else { return nil }
-        return { pendingRemoval = ShowRemoval(item: item, seriesID: seriesID, markWatched: markWatched) }
-    }
-
-    /// Marks every episode of the show watched or unwatched, once the user has confirmed.
-    private func remove(_ removal: ShowRemoval) {
-        perform(
-            { service in
-                if removal.markWatched {
-                    try await service.markSeriesWatched(seriesID: removal.seriesID)
-                } else {
-                    try await service.markSeriesUnwatched(seriesID: removal.seriesID)
-                }
-            },
-            then: {
-                // Every episode of the show is off Up Next.
-                for item in items where item.seriesID == removal.seriesID {
-                    patches[item.id] = Patch(removed: true)
-                }
-            }
-        )
-    }
-
-    /// Runs a server change, shows its effect on the shelf at once, then tells the owner to reload so the
-    /// shelf matches the server.
-    ///
-    /// - Parameters:
-    ///   - change: The server call.
-    ///   - localChange: Applies the same change to `patches`. It only runs if the server call succeeded.
-    private func perform(
-        _ change: @escaping @Sendable (any MediaService) async throws -> Void,
-        then localChange: @escaping () -> Void
-    ) {
-        let service = appModel.service
-        Task {
-            do {
-                try await change(service)
-                localChange()
-                onChange()
-            } catch {
-                actionError = error.localizedDescription
-            }
-        }
     }
 
     @ViewBuilder
@@ -506,9 +376,16 @@ struct MediaShelf: View {
 }
 
 /// What the "more" menu on a list row can do to its item.
+///
+/// Every action is optional; one that's nil (or doesn't apply to the item) has no menu entry.
 struct ItemRowActions {
-    let markWatched: () -> Void
-    let markUnwatched: () -> Void
+    /// Opens the item's detail screen: the menu's first entry, "Go to Movie", "Go to Episode", and so on.
+    var goTo: (() -> Void)?
+
+    /// Marks the item (for a show or season, all its episodes) watched or unwatched. Nil for an item that
+    /// can't be watched.
+    var markWatched: (() -> Void)?
+    var markUnwatched: (() -> Void)?
 
     /// Takes the item out of Continue Watching. Nil where that doesn't apply, which hides the menu entry.
     var removeFromContinueWatching: (() -> Void)?
@@ -528,9 +405,6 @@ struct ItemRow: View {
 
     /// If given, the row peeks and pops when long-pressed. See `peekAndPop(_:passthrough:isAccessibilityElement:)`.
     var peek: PeekAndPopSpec?
-
-    /// How much of the row's trailing edge the peek layer leaves for the "more" button.
-    private static let menuWidth: CGFloat = 56
 
     /// Episodes and movies show a widescreen image; everything else is a portrait poster.
     private var isWidescreen: Bool { item.hasWidescreenRowArtwork }
@@ -559,8 +433,9 @@ struct ItemRow: View {
                 ItemActionsMenu(item: item, actions: actions)
             }
         }
-        // The peek layer covers the row except the menu button's end, so that button keeps its own taps.
-        .peekAndPop(peek, passthrough: .trailingEdge(Self.menuWidth))
+        // The peek layer covers the row except the menu button's end (if it has one), so that button keeps
+        // its own taps.
+        .peekAndPop(peek, passthrough: actions == nil ? .none : .trailingEdge(ItemActionsMenu.reservedWidth))
     }
 }
 
@@ -569,32 +444,53 @@ struct ItemRow: View {
 /// Menus are described with these, not built directly, so the SwiftUI menus and the UIKit long-press menu
 /// (see `PeekAndPopCard`) always offer exactly the same things.
 struct ItemMenuEntry: Identifiable {
+    /// What an entry does, which identifies it within a menu.
+    enum ID: Hashable {
+        case goTo
+        case markWatched
+        case markUnwatched
+        case removeFromContinueWatching
+        case removeFromUpNext
+        case markAllEpisodesWatched
+        case markAllEpisodesUnwatched
+    }
+
+    let id: ID
     /// Already localized.
     let title: String
     let systemImage: String
     var perform: (() -> Void)?
     var children: [ItemMenuEntry] = []
-
-    var id: String { title }
 }
 
 extension ItemRowActions {
-    /// The watch-state entries for an item.
+    /// The menu entries for an item: "Go to …" (if given), then the watch-state actions.
     func menuEntries(for item: MediaItem) -> [ItemMenuEntry] {
+        var entries: [ItemMenuEntry] = []
+        if let goTo {
+            entries.append(ItemMenuEntry(id: .goTo, title: item.goToMenuTitle, systemImage: "info.circle", perform: goTo))
+        }
+        return entries + watchEntries(for: item)
+    }
+
+    /// The watch-state entries for an item.
+    private func watchEntries(for item: MediaItem) -> [ItemMenuEntry] {
         // A show or season covers all its episodes, so what's on offer depends on how many are watched.
         if item.kind == .series || item.kind == .season {
             let isSeason = item.kind == .season
             let options = item.containerWatchOptions
             var entries: [ItemMenuEntry] = []
-            if options.canMarkWatched {
+            if let markWatched, options.canMarkWatched {
                 entries.append(ItemMenuEntry(
+                    id: .markWatched,
                     title: isSeason ? String(localized: "Mark Season as Watched") : String(localized: "Mark Show as Watched"),
                     systemImage: "checkmark.circle",
                     perform: markWatched
                 ))
             }
-            if options.canMarkUnwatched {
+            if let markUnwatched, options.canMarkUnwatched {
                 entries.append(ItemMenuEntry(
+                    id: .markUnwatched,
                     title: isSeason ? String(localized: "Mark Season as Unwatched") : String(localized: "Mark Show as Unwatched"),
                     systemImage: "arrow.uturn.backward.circle",
                     perform: markUnwatched
@@ -606,22 +502,23 @@ extension ItemRowActions {
         var entries: [ItemMenuEntry] = []
 
         // A partly watched item offers both, so the user can finish it or start it over.
-        if !item.showsWatchedBadge {
-            entries.append(ItemMenuEntry(title: String(localized: "Mark as Watched"), systemImage: "checkmark.circle", perform: markWatched))
+        if let markWatched, !item.showsWatchedBadge {
+            entries.append(ItemMenuEntry(id: .markWatched, title: String(localized: "Mark as Watched"), systemImage: "checkmark.circle", perform: markWatched))
         }
-        if item.isPlayed || item.playedFraction != nil {
-            entries.append(ItemMenuEntry(title: String(localized: "Mark as Unwatched"), systemImage: "arrow.uturn.backward.circle", perform: markUnwatched))
+        if let markUnwatched, item.isPlayed || item.playedFraction != nil {
+            entries.append(ItemMenuEntry(id: .markUnwatched, title: String(localized: "Mark as Unwatched"), systemImage: "arrow.uturn.backward.circle", perform: markUnwatched))
         }
         if let remove = removeFromContinueWatching {
-            entries.append(ItemMenuEntry(title: String(localized: "Remove from Continue Watching"), systemImage: "minus.circle", perform: remove))
+            entries.append(ItemMenuEntry(id: .removeFromContinueWatching, title: String(localized: "Remove from Continue Watching"), systemImage: "minus.circle", perform: remove))
         }
         if let showWatched = removeShowWatched, let showUnwatched = removeShowUnwatched {
             entries.append(ItemMenuEntry(
+                id: .removeFromUpNext,
                 title: String(localized: "Remove from Up Next"),
                 systemImage: "minus.circle",
                 children: [
-                    ItemMenuEntry(title: String(localized: "Mark All Episodes as Watched"), systemImage: "checkmark.circle", perform: showWatched),
-                    ItemMenuEntry(title: String(localized: "Mark All Episodes as Unwatched"), systemImage: "arrow.uturn.backward.circle", perform: showUnwatched)
+                    ItemMenuEntry(id: .markAllEpisodesWatched, title: String(localized: "Mark All Episodes as Watched"), systemImage: "checkmark.circle", perform: showWatched),
+                    ItemMenuEntry(id: .markAllEpisodesUnwatched, title: String(localized: "Mark All Episodes as Unwatched"), systemImage: "arrow.uturn.backward.circle", perform: showUnwatched)
                 ]
             ))
         }
@@ -648,100 +545,6 @@ struct ItemActionButtons: View {
     }
 }
 
-/// Removing a show from Up Next rewrites the watch state of all its episodes, so it's confirmed first.
-struct ShowRemoval: Identifiable {
-    let item: MediaItem
-    let seriesID: String
-    /// Whether every episode gets marked watched (true) or unwatched (false).
-    let markWatched: Bool
-
-    var id: String { "\(seriesID)-\(markWatched)" }
-    var showTitle: String { item.seriesTitle ?? item.title }
-}
-
-/// Marking a whole show or season watched or unwatched rewrites the watch state of all its episodes, so it's
-/// confirmed first.
-struct BulkWatchChange: Identifiable {
-    /// The show or season.
-    let item: MediaItem
-    /// Whether every episode gets marked watched (true) or unwatched (false).
-    let markWatched: Bool
-
-    var id: String { "\(item.id)-\(markWatched)" }
-    private var isSeason: Bool { item.kind == .season }
-
-    /// e.g. "Breaking Bad" or "Breaking Bad – Season 2".
-    var name: String {
-        isSeason ? [item.seriesTitle, item.title].compactMap { $0 }.joined(separator: " – ") : item.title
-    }
-
-    var alertTitle: String {
-        switch (isSeason, markWatched) {
-        case (false, true): String(localized: "Mark Show as Watched?")
-        case (false, false): String(localized: "Mark Show as Unwatched?")
-        case (true, true): String(localized: "Mark Season as Watched?")
-        case (true, false): String(localized: "Mark Season as Unwatched?")
-        }
-    }
-}
-
-extension View {
-    /// Asks the user to confirm a pending show or season change, warning what it does to the watch history.
-    ///
-    /// An alert, for the same reason as `confirmShowRemoval`.
-    func confirmBulkWatchChange(_ change: Binding<BulkWatchChange?>, perform: @escaping (BulkWatchChange) -> Void) -> some View {
-        alert(
-            change.wrappedValue?.alertTitle ?? "",
-            isPresented: Binding(
-                get: { change.wrappedValue != nil },
-                set: { if !$0 { change.wrappedValue = nil } }
-            ),
-            presenting: change.wrappedValue
-        ) { pending in
-            if pending.markWatched {
-                Button("Mark as Watched") { perform(pending) }
-            } else {
-                Button("Mark as Unwatched", role: .destructive) { perform(pending) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { pending in
-            if pending.markWatched {
-                Text("Every episode of \(pending.name) will be marked as watched, in all your Jellyfin apps. Their watched dates will be set to now.")
-            } else {
-                Text("Every episode of \(pending.name) will be marked as unwatched, in all your Jellyfin apps. This resets their play counts and watch dates, and can't be undone.")
-            }
-        }
-    }
-
-    /// Asks the user to confirm a pending Up Next removal, warning what it does to the show's watch history.
-    ///
-    /// An alert, not a confirmation dialog: on iPad a dialog becomes a popover that has to point at a
-    /// view, and attached to a whole list or shelf it points at an arbitrary one.
-    func confirmShowRemoval(_ removal: Binding<ShowRemoval?>, perform: @escaping (ShowRemoval) -> Void) -> some View {
-        alert(
-            "Remove from Up Next?",
-            isPresented: Binding(
-                get: { removal.wrappedValue != nil },
-                set: { if !$0 { removal.wrappedValue = nil } }
-            ),
-            presenting: removal.wrappedValue
-        ) { pending in
-            if pending.markWatched {
-                Button("Mark All Episodes as Watched") { perform(pending) }
-            } else {
-                Button("Mark All Episodes as Unwatched", role: .destructive) { perform(pending) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { pending in
-            if pending.markWatched {
-                Text("Every episode of \(pending.showTitle) will be marked as watched, in all your Jellyfin apps. Their watched dates will be set to now.")
-            } else {
-                Text("Every episode of \(pending.showTitle) will be marked as unwatched, in all your Jellyfin apps. This resets their play counts and watch dates, and can't be undone.")
-            }
-        }
-    }
-}
-
 /// What a long-press on a card peeks at: a widescreen image, the item's caption, and a bit of its synopsis.
 struct ItemPeek: View {
     let item: MediaItem
@@ -760,8 +563,11 @@ struct ItemPeek: View {
             }
         }
         .padding(12)
-        .frame(width: 320)
+        .frame(width: Self.width)
     }
+
+    /// How wide a peek is. The peek's UIKit host sizes itself to this too.
+    static let width: CGFloat = 320
 }
 
 /// The "more" (…) button and the menu of watch-state actions it opens.
@@ -772,13 +578,21 @@ struct ItemActionsMenu: View {
     /// Whether the button sits on top of artwork, where it's white so it reads against any image.
     var overArtwork = false
 
+    /// How much room, from the trailing edge, a peek layer leaves for this button so it keeps its own taps:
+    /// the padded label plus some slack for a finger.
+    static let reservedWidth: CGFloat = 56
+
     var body: some View {
         Menu {
             ItemActionButtons(entries: actions.menuEntries(for: item))
         } label: {
             Image(systemName: "ellipsis")
+                // Over artwork it's the card's main control, so it's larger and bolder, like the status text.
+                .font(overArtwork ? .title3.weight(.bold) : .body)
                 .foregroundStyle(overArtwork ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
-                .padding(8)
+                // Over artwork it sits at the card's bottom edge, so it's padded less vertically to sit low.
+                .padding(.horizontal, overArtwork ? 10 : 8)
+                .padding(.vertical, overArtwork ? 6 : 8)
                 .contentShape(Rectangle())
         }
         // Plain leaves the label's color alone. Tinting the menu instead would gray its items' icons too.
@@ -788,7 +602,7 @@ struct ItemActionsMenu: View {
 }
 
 /// A widescreen card for the landscape shelf grid: the image with a status line and the "more" button along
-/// its bottom edge, and the item's caption beneath. It doesn't navigate; the grid puts a link behind it.
+/// its bottom edge, and the item's caption beneath. It doesn't act on taps itself; see `peek`.
 struct ShelfGridCard: View {
     let item: MediaItem
     var actions: ItemRowActions?
@@ -796,10 +610,21 @@ struct ShelfGridCard: View {
     /// If given, the card peeks and pops when long-pressed. See `peekAndPop(_:passthrough:isAccessibilityElement:)`.
     var peek: PeekAndPopSpec?
 
-    private static let progressWidth: CGFloat = 36
+    /// The progress bar's size, scaled with the status text.
+    /// The progress bar's thickness, and the shortest it gets when the status text needs the room. Otherwise
+    /// it stretches to fill the bar. Scaled with the status text.
+    @ScaledMetric(relativeTo: .subheadline) private var progressHeight: CGFloat = 4
+    @ScaledMetric(relativeTo: .subheadline) private var progressMinWidth: CGFloat = 32
 
-    /// The corner of the image the peek layer leaves for the "more" button.
-    private static let menuCorner = PeekPassthrough(trailing: 56, bottom: 48)
+    /// How far the "more" button's corner reaches in from the edges: the padded button plus a little slack.
+    /// Scaled with the button's text style, so it keeps up with larger text.
+    @ScaledMetric(relativeTo: .title3) private var menuCornerWidth: CGFloat = 52
+    @ScaledMetric(relativeTo: .title3) private var menuCornerHeight: CGFloat = 44
+
+    /// The corner of the image the peek layer leaves for the "more" button, if there is one.
+    private var menuCorner: PeekPassthrough {
+        actions == nil ? .none : PeekPassthrough(trailing: menuCornerWidth, bottom: menuCornerHeight)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -814,7 +639,7 @@ struct ShelfGridCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 // The image and the caption each get a peek layer, so the whole card responds. The image's
                 // leaves the "more" button's corner alone, and the caption's isn't a second accessibility element.
-                .peekAndPop(peek, passthrough: Self.menuCorner)
+                .peekAndPop(peek, passthrough: menuCorner)
 
             ItemCaption(item: item)
                 .peekAndPop(peek, isAccessibilityElement: false)
@@ -825,18 +650,22 @@ struct ShelfGridCard: View {
 
     /// Play icon, progress, episode and time left, and the menu button, over a fade so they read on any image.
     private var statusBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Image(systemName: "play.fill")
                 .accessibilityHidden(true)
 
             if let fraction = item.playedFraction {
+                // Fills the room between the play icon and the status text, so there's no empty gap.
                 Capsule()
                     .fill(.white.opacity(0.3))
-                    .frame(width: Self.progressWidth, height: 3)
+                    .frame(minWidth: progressMinWidth, maxWidth: .infinity)
+                    .frame(height: progressHeight)
                     .overlay(alignment: .leading) {
-                        Capsule()
-                            .fill(.white)
-                            .frame(width: Self.progressWidth * fraction)
+                        GeometryReader { proxy in
+                            Capsule()
+                                .fill(.white)
+                                .frame(width: proxy.size.width * min(max(fraction, 0), 1))
+                        }
                     }
                     .accessibilityHidden(true)
             }
@@ -844,19 +673,27 @@ struct ShelfGridCard: View {
             if let status = item.gridStatusLine {
                 Text(status)
                     .lineLimit(1)
+                    // The progress bar gives up its room before the text truncates.
+                    .layoutPriority(1)
             }
 
-            Spacer()
+            // With no progress bar to fill the room, keep the "more" button at the trailing edge.
+            if item.playedFraction == nil {
+                Spacer()
+            }
 
             if let actions {
                 ItemActionsMenu(item: item, actions: actions, overArtwork: true)
             }
         }
-        .font(.caption)
+        .font(.subheadline.weight(.semibold))
         .foregroundStyle(.white)
-        .padding(.horizontal, 8)
-        .padding(.top, 20)
-        .background(LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
+        // The same height with or without the "more" button, so every card's bar lines up.
+        .frame(minHeight: 36)
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
+        .padding(.top, 32)
+        .background(LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom))
     }
 }
 
@@ -871,28 +708,45 @@ struct ShelfGridCard: View {
 }
 
 #Preview("MediaShelf") {
+    @Previewable @State var goToItem: MediaItem?
     NavigationStack {
-        MediaShelf(title: "Continue Watching", items: MediaItem.previewMovies)
-            .mediaNavigationDestinations()
+        MediaShelf(
+            title: "Continue Watching",
+            items: MediaItem.previewMovies,
+            navigation: ItemNavigation(open: { goToItem = $0 }, play: { _ in })
+        )
+        .mediaNavigationDestinations()
+        .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
     }
     .environment(AppModel.preview())
 }
 
 /// An episode (which has a subtitle) between cards that don't: all three should get equal artwork.
 #Preview("MediaShelf mixed subtitles") {
+    @Previewable @State var goToItem: MediaItem?
     NavigationStack {
         MediaShelf(
             title: "Recently Added Shows",
             items: [.previewMovie, .previewEpisode, .previewWatched],
-            destination: .continueWatching
+            destination: .continueWatching,
+            navigation: ItemNavigation(open: { goToItem = $0 }, play: { _ in })
         )
         .mediaNavigationDestinations()
+        .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
     }
     .environment(AppModel.preview())
 }
 
 #Preview("ItemRow") {
     List(MediaItem.previewMovies + [.previewEpisode]) { ItemRow(item: $0) }
+}
+
+#Preview("ShelfGridCard") {
+    HStack(alignment: .top, spacing: 16) {
+        ShelfGridCard(item: .previewEpisode, actions: ItemRowActions(markWatched: {}, markUnwatched: {}))
+        ShelfGridCard(item: .previewPartlyWatched, actions: ItemRowActions(markWatched: {}, markUnwatched: {}))
+    }
+    .padding()
 }
 
 #Preview("ArtworkView") {

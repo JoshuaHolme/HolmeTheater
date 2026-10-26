@@ -238,6 +238,9 @@ nonisolated enum MediaServiceError: LocalizedError, Sendable {
     /// The server offered no stream this device can play.
     case itemNotPlayable
 
+    /// The item doesn't exist on the server (any more), or the user can't see it.
+    case itemNotFound
+
     /// Anything else; the associated message is already user-presentable.
     case underlying(String)
 
@@ -250,6 +253,7 @@ nonisolated enum MediaServiceError: LocalizedError, Sendable {
         case .notSignedIn: String(localized: "You're not signed in.")
         case .sessionExpired: String(localized: "Your session has expired. Sign in again.")
         case .itemNotPlayable: String(localized: "This item can't be played.")
+        case .itemNotFound: String(localized: "This item is no longer available.")
         case .underlying(let message): message
         }
     }

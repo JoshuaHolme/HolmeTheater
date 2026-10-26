@@ -175,6 +175,13 @@ nonisolated struct MockMediaService: MediaService {
         return Array(all.dropFirst(offset).prefix(limit))
     }
 
+    func item(id: String) async throws -> MediaItem {
+        try await simulateLatency()
+        let all = Self.movies + Self.shows + Self.shows.flatMap { Self.episodes(of: $0) }
+        guard let item = all.first(where: { $0.id == id }) else { throw MediaServiceError.itemNotFound }
+        return item
+    }
+
     func children(of item: MediaItem) async throws -> [MediaItem] {
         try await simulateLatency()
         return item.kind == .series ? Self.episodes(of: item) : []
@@ -205,19 +212,11 @@ nonisolated struct MockMediaService: MediaService {
 
     // The canned data is immutable, so these only simulate the round trip.
 
-    func markWatched(_ item: MediaItem) async throws {
+    func markWatched(itemID: String) async throws {
         try await simulateLatency()
     }
 
-    func markUnwatched(_ item: MediaItem) async throws {
-        try await simulateLatency()
-    }
-
-    func markSeriesWatched(seriesID: String) async throws {
-        try await simulateLatency()
-    }
-
-    func markSeriesUnwatched(seriesID: String) async throws {
+    func markUnwatched(itemID: String) async throws {
         try await simulateLatency()
     }
 
