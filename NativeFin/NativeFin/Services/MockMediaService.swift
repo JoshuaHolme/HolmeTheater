@@ -87,7 +87,8 @@ nonisolated struct MockMediaService: MediaService {
                 isPlayed: number < 3,
                 seriesTitle: series.title,
                 seasonNumber: 1,
-                episodeNumber: number
+                episodeNumber: number,
+                seriesID: series.id
             )
         }
     }
@@ -152,6 +153,15 @@ nonisolated struct MockMediaService: MediaService {
         return Array(Self.movies.filter { $0.playedFraction != nil }.dropFirst(offset).prefix(limit))
     }
 
+    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem] {
+        try await simulateLatency()
+        // The first unwatched episode of each sample show.
+        let next = Self.shows.compactMap { show in
+            Self.episodes(of: show).first { !$0.isPlayed && $0.playedFraction == nil }
+        }
+        return Array(next.dropFirst(offset).prefix(limit))
+    }
+
     func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {
         try await simulateLatency()
         return Array((library.kind == .tvShows ? Self.shows : Self.movies).prefix(8))
@@ -163,6 +173,13 @@ nonisolated struct MockMediaService: MediaService {
         // so paging has something to do.
         let all = library.kind == .tvShows ? Self.shows.flatMap { Self.episodes(of: $0) } : Self.movies
         return Array(all.dropFirst(offset).prefix(limit))
+    }
+
+    func item(id: String) async throws -> MediaItem {
+        try await simulateLatency()
+        let all = Self.movies + Self.shows + Self.shows.flatMap { Self.episodes(of: $0) }
+        guard let item = all.first(where: { $0.id == id }) else { throw MediaServiceError.itemNotFound }
+        return item
     }
 
     func children(of item: MediaItem) async throws -> [MediaItem] {
@@ -190,4 +207,20 @@ nonisolated struct MockMediaService: MediaService {
     }
 
     func report(_ event: PlaybackEvent, for item: MediaItem, info: PlaybackInfo, position: TimeInterval, isPaused: Bool) async {}
+
+    // MARK: Watch state
+
+    // The canned data is immutable, so these only simulate the round trip.
+
+    func markWatched(itemID: String) async throws {
+        try await simulateLatency()
+    }
+
+    func markUnwatched(itemID: String) async throws {
+        try await simulateLatency()
+    }
+
+    func removeFromContinueWatching(_ item: MediaItem) async throws {
+        try await simulateLatency()
+    }
 }

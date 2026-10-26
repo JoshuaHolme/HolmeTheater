@@ -7,12 +7,15 @@ import SwiftUI
 /// Where a home-screen shelf's heading leads: the full list behind that shelf.
 enum ShelfDestination: Hashable {
     case continueWatching
+    /// The next episode of each show being watched.
+    case nextUp
     /// Everything recently added to a library (episodes for TV, movies for film).
     case recentlyAdded(Library)
 
     var title: String {
         switch self {
         case .continueWatching: String(localized: "Continue Watching")
+        case .nextUp: String(localized: "Up Next")
         case .recentlyAdded(let library): String(localized: "Recently Added \(library.name)")
         }
     }
@@ -31,53 +34,151 @@ struct ShelfListView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
 
+    /// Set when a refresh was asked for while a page was loading; it runs once the page is in.
+    @State private var needsRefresh = false
+
+    /// A watch-state change waiting for confirmation, or an error to show.
+    @State private var watchState = WatchActionState()
+
+    /// The item a peek's tap or "Go to …" is opening; setting it pushes its detail screen.
+    @State private var goToItem: MediaItem?
+
+    /// The item being played; setting it presents the full-screen player.
+    @State private var playingItem: MediaItem?
+
     private static let pageSize = 30
 
     var body: some View {
-        List {
-            ForEach(items) { item in
-                NavigationLink(value: item) {
-                    ItemRow(item: item)
-                }
-            }
-
-            if let errorMessage {
-                Section {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
-                    Button("Retry") { Task { await loadMore() } }
-                }
-            } else if hasMore {
-                // Scrolling this into view loads the next page; it also loads the first one.
-                HStack {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                }
-                #if !os(tvOS)
-                .listRowSeparator(.hidden)
-                #endif
-                .task { await loadMore() }
+        // A grid of widescreen cards when the screen is wider than it is tall (landscape iPhone or iPad),
+        // otherwise a list of compact rows. A GeometryReader, rather than measuring after layout, so the
+        // first frame is already the right one and its footer doesn't start a page load that gets cancelled.
+        GeometryReader { proxy in
+            if proxy.size.width > proxy.size.height {
+                grid
+            } else {
+                list
             }
         }
-        .listStyle(.plain)
         .overlay {
             if items.isEmpty && !hasMore && errorMessage == nil {
                 ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
             }
         }
         .navigationTitle(destination.title)
+        .watchActionAlerts(watchActions)
+        .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
+        // Back from a detail screen, where the user may have played the item or changed its watch state.
+        // Every detail screen the list opens goes through `goToItem`, which SwiftUI clears on the way back.
+        .onChange(of: goToItem) { oldItem, newItem in
+            if oldItem != nil && newItem == nil {
+                Task { await refresh() }
+            }
+        }
+        .fullScreenCover(item: $playingItem) {
+            PlayerView(item: $0, onStop: { Task { await refresh() } })
+        }
+    }
+
+    private var watchActions: WatchActions {
+        WatchActions(service: appModel.service, destination: destination, state: $watchState) { effect in
+            let before = items.count
+            items = items.applying(effect)
+            // Any rows that went are gone on the server too, so its next page starts that much earlier.
+            nextOffset = max(nextOffset - (before - items.count), 0)
+        }
+    }
+
+    /// Tapping an item plays it; "Go to …" and its peek open it.
+    private var navigation: ItemNavigation {
+        ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
+    }
+
+    private var list: some View {
+        List {
+            ForEach(items) { item in
+                // Built once and shared by the "more" menu and the long-press menu.
+                let actions = watchActions.actions(for: item, navigation: navigation)
+                ItemRow(item: item, actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
+                    #if !os(iOS)
+                    .background { tapTarget(for: item) }
+                    #endif
+            }
+
+            pageFooter
+        }
+        .listStyle(.plain)
+    }
+
+    private var grid: some View {
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 16, alignment: .top)], spacing: 16) {
+                    ForEach(items) { item in
+                        let actions = watchActions.actions(for: item, navigation: navigation)
+                        ShelfGridCard(item: item, actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
+                            #if !os(iOS)
+                            .background { tapTarget(for: item) }
+                            #endif
+                    }
+                }
+
+                pageFooter
+            }
+            .padding()
+        }
+    }
+
+    /// On iOS the peek layer handles taps. Elsewhere, this button behind a row or card does: it sits behind,
+    /// so the menu button takes its own taps, and `contentShape` makes its clear label tappable.
+    private func tapTarget(for item: MediaItem) -> some View {
+        Button { navigation.tap(item) } label: {
+            Color.clear.contentShape(Rectangle())
+        }
+        .cardLinkStyle()
+        .accessibilityLabel(item.accessibilityDescription)
+    }
+
+    /// The error and Retry button if a page failed, or else a spinner that loads the next page when it scrolls
+    /// into view (which also loads the first). It's keyed on the count, so it asks again if a page doesn't fill
+    /// the screen and it's still in view.
+    @ViewBuilder
+    private var pageFooter: some View {
+        if let errorMessage {
+            VStack {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+                Button("Retry") { Task { await loadMore() } }
+            }
+            .frame(maxWidth: .infinity)
+        } else if hasMore {
+            ProgressView()
+                .frame(maxWidth: .infinity)
+                #if !os(tvOS)
+                .listRowSeparator(.hidden)
+                #endif
+                .task(id: items.count) { await loadMore() }
+        }
     }
 
     /// Fetches the next page and appends it. Does nothing if a page is already loading or there are no more.
+    /// Runs a refresh that was asked for while it loaded, once it's done.
     private func loadMore() async {
         guard hasMore, !isLoading else { return }
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        await appendNextPage()
+        isLoading = false
 
+        if needsRefresh {
+            // Unstructured: this task is the footer's, which is cancelled if the footer scrolls away.
+            Task { await refresh() }
+        }
+    }
+
+    /// The body of `loadMore()`: fetches the page at `nextOffset` and appends it, or records the error.
+    private func appendNextPage() async {
         do {
-            let page = try await fetchPage(offset: nextOffset)
+            let page = try await fetchPage(offset: nextOffset, limit: Self.pageSize)
             // The list scrolled away (or the screen closed) while loading; the footer will ask again.
             guard !Task.isCancelled else { return }
 
@@ -95,13 +196,39 @@ struct ShelfListView: View {
         }
     }
 
-    private func fetchPage(offset: Int) async throws -> [MediaItem] {
+    /// Fetches everything loaded so far again, in one request, and replaces the list with it: after playback or
+    /// on coming back from a detail screen, so it shows the latest progress (and on Continue Watching or Up Next,
+    /// which items are on it at all).
+    ///
+    /// If a page is loading, this waits for it (see `loadMore()`), since both change the same state. If the
+    /// request fails, the list stays as it is; it's only out of date.
+    private func refresh() async {
+        guard !isLoading else {
+            needsRefresh = true
+            return
+        }
+        needsRefresh = false
+        isLoading = true
+        defer { isLoading = false }
+
+        let limit = max(nextOffset, Self.pageSize)
+        guard let fresh = try? await fetchPage(offset: 0, limit: limit) else { return }
+        items = fresh
+        nextOffset = fresh.count
+        hasMore = fresh.count >= limit
+        // Everything loaded so far just loaded fine, so an earlier page's error no longer applies.
+        errorMessage = nil
+    }
+
+    private func fetchPage(offset: Int, limit: Int) async throws -> [MediaItem] {
         let service = appModel.service
         switch destination {
         case .continueWatching:
-            return try await service.resumeItems(offset: offset, limit: Self.pageSize)
+            return try await service.resumeItems(offset: offset, limit: limit)
+        case .nextUp:
+            return try await service.nextUpItems(offset: offset, limit: limit)
         case .recentlyAdded(let library):
-            return try await service.recentlyAddedPage(in: library, offset: offset, limit: Self.pageSize)
+            return try await service.recentlyAddedPage(in: library, offset: offset, limit: limit)
         }
     }
 }

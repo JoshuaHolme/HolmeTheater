@@ -84,6 +84,16 @@ nonisolated protocol MediaService: Sendable {
     /// - Returns: Up to `limit` items. A page shorter than `limit` is the last one.
     func resumeItems(offset: Int, limit: Int) async throws -> [MediaItem]
 
+    /// Fetches one page of "Up Next": for each show the user has been watching, the next episode to watch.
+    ///
+    /// Episodes that are partly watched are left out, since they're in ``resumeItems(offset:limit:)``.
+    ///
+    /// - Parameters:
+    ///   - offset: The number of items already loaded; 0 for the first page.
+    ///   - limit: The maximum number of items to return.
+    /// - Returns: Up to `limit` episodes, most recently watched show first. A page shorter than `limit` is the last one.
+    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem]
+
     /// Fetches a handful of the most recently added items in a library, for a home-screen shelf.
     ///
     /// - Parameter library: The library to look in.
@@ -101,6 +111,12 @@ nonisolated protocol MediaService: Sendable {
     ///   - limit: The maximum number of items to return.
     /// - Returns: Up to `limit` items. A page shorter than `limit` is the last one.
     func recentlyAddedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem]
+
+    /// Fetches one item afresh, e.g. to pick up its latest watch progress after playback.
+    ///
+    /// - Parameter id: The item's ID.
+    /// - Throws: ``MediaServiceError/itemNotFound`` if the server has no such item.
+    func item(id: String) async throws -> MediaItem
 
     /// Fetches the items inside a series or season.
     ///
@@ -134,4 +150,30 @@ nonisolated protocol MediaService: Sendable {
     ///   - position: The current playback position, in seconds.
     ///   - isPaused: Whether playback is currently paused.
     func report(_ event: PlaybackEvent, for item: MediaItem, info: PlaybackInfo, position: TimeInterval, isPaused: Bool) async
+
+    // MARK: Watch state
+
+    /// Marks an item as watched. The server also clears its resume position, so it leaves "Continue Watching".
+    ///
+    /// For a series or season, the server marks every episode in it, stamping each with the current time as its
+    /// watched date (overwriting real dates). A whole series marked watched has nothing left for "Up Next".
+    ///
+    /// - Parameter itemID: The ID of a movie, episode, season or series.
+    func markWatched(itemID: String) async throws
+
+    /// Marks an item as not watched, and clears its resume position.
+    ///
+    /// For a series or season, the server marks every episode in it, also resetting each one's play count and
+    /// watched date, so this can't be undone. A whole series marked unwatched leaves "Up Next" until it's watched
+    /// again.
+    ///
+    /// - Parameter itemID: The ID of a movie, episode, season or series.
+    func markUnwatched(itemID: String) async throws
+
+    /// Forgets how far through an item the user got, so it no longer appears in "Continue Watching".
+    ///
+    /// This doesn't change whether the item counts as watched.
+    ///
+    /// - Parameter item: A movie or episode.
+    func removeFromContinueWatching(_ item: MediaItem) async throws
 }

@@ -191,6 +191,22 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
+    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+        let request = Paths.getNextUp(parameters: .init(
+            userID: session.userID,
+            startIndex: offset,
+            limit: limit,
+            fields: Self.itemFields,
+            enableUserData: true,
+            // Partly watched episodes already show under Continue Watching, and a show you've finished
+            // shouldn't come back around.
+            enableResumable: false,
+            enableRewatching: false
+        ))
+        return try await mapItems(send(request, with: client), client: client)
+    }
+
     func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
         let request = Paths.getLatestMedia(parameters: .init(
@@ -228,6 +244,20 @@ actor JellyfinMediaService: MediaService {
             enableUserData: true
         ))
         return try await mapItems(send(request, with: client), client: client)
+    }
+
+    func item(id: String) async throws -> MediaItem {
+        let (client, session) = try signedIn()
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            fields: Self.itemFields,
+            enableUserData: true,
+            ids: [id]
+        ))
+        guard let item = try await mapItems(send(request, with: client), client: client).first else {
+            throw MediaServiceError.itemNotFound
+        }
+        return item
     }
 
     func children(of item: MediaItem) async throws -> [MediaItem] {
@@ -352,10 +382,35 @@ actor JellyfinMediaService: MediaService {
         }
     }
 
+    // MARK: - Watch state
+
+    // The server applies a series' or season's watched state to every episode in it, so one call covers it all.
+
+    func markWatched(itemID: String) async throws {
+        let (client, session) = try signedIn()
+        _ = try await send(Paths.markPlayedItem(itemID: itemID, userID: session.userID), with: client)
+    }
+
+    func markUnwatched(itemID: String) async throws {
+        let (client, session) = try signedIn()
+        _ = try await send(Paths.markUnplayedItem(itemID: itemID, userID: session.userID), with: client)
+    }
+
+    func removeFromContinueWatching(_ item: MediaItem) async throws {
+        let (client, session) = try signedIn()
+        // The resume list is every item with a saved position, so zeroing it is what removes the item.
+        let request = Paths.updateItemUserData(
+            itemID: item.id,
+            userID: session.userID,
+            UpdateUserItemDataDto(playbackPositionTicks: 0)
+        )
+        _ = try await send(request, with: client)
+    }
+
     // MARK: - Helpers
 
     /// Extra per-item fields requested beyond the defaults.
-    private static let itemFields: [ItemFields] = [.overview, .primaryImageAspectRatio]
+    private static let itemFields: [ItemFields] = [.overview, .primaryImageAspectRatio, .childCount, .recursiveItemCount]
 
     /// Tells the server what AVPlayer can play natively so it only transcodes when it has to.
     private static let deviceProfile = DeviceProfile(
@@ -539,8 +594,21 @@ actor JellyfinMediaService: MediaService {
             isPlayed: dto.userData?.isPlayed ?? false,
             seriesTitle: dto.seriesName,
             seasonNumber: dto.parentIndexNumber,
-            episodeNumber: dto.indexNumber
+            episodeNumber: dto.indexNumber,
+            seriesID: dto.seriesID,
+            episodeCount: episodeCount(of: dto, kind: kind),
+            unwatchedEpisodeCount: kind == .series || kind == .season ? dto.userData?.unplayedItemCount : nil
         )
+    }
+
+    /// How many episodes a series or season has, or nil for anything else.
+    private static func episodeCount(of dto: BaseItemDto, kind: MediaItem.Kind) -> Int? {
+        switch kind {
+        // A series' child count is its seasons, so only its recursive count is its episodes.
+        case .series: dto.recursiveItemCount
+        case .season: dto.recursiveItemCount ?? dto.childCount
+        default: nil
+        }
     }
 
     /// An image URL on the server. The `tag` makes the URL change when the image does, so caches stay correct.
@@ -567,10 +635,23 @@ actor JellyfinMediaService: MediaService {
         return dto.type == .episode ? (seriesPoster ?? ownPoster) : (ownPoster ?? seriesPoster)
     }
 
-    /// An episode's own widescreen still, or nil for anything that isn't an episode.
+    /// Widescreen artwork for list rows.
+    ///
+    /// An episode uses its own still (its primary image). A movie uses its thumb image, falling back to its
+    /// backdrop. Everything else has none.
     private static func thumbnailURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
-        guard dto.type == .episode, let tag = dto.imageTags?[ImageType.primary.rawValue] else { return nil }
-        return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
+        switch dto.type {
+        case .episode:
+            guard let tag = dto.imageTags?[ImageType.primary.rawValue] else { return nil }
+            return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
+        case .movie:
+            if let tag = dto.imageTags?[ImageType.thumb.rawValue] {
+                return imageURL(itemID: id, type: .thumb, tag: tag, width: posterWidth, client: client)
+            }
+            return backdropURL(for: dto, id: id, client: client)
+        default:
+            return nil
+        }
     }
 
     /// The item's own backdrop, falling back to its parent's.

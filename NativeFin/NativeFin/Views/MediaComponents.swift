@@ -50,9 +50,56 @@ extension MediaItem {
         }
     }
 
-    /// The artwork `ItemRow` shows: an episode's widescreen still, otherwise the portrait poster.
+    /// Whether to show the watched checkmark. An item that's partly watched (it has a resume position) is in
+    /// progress, even if the server also flags it as played.
+    var showsWatchedBadge: Bool { isPlayed && playedFraction == nil }
+
+    /// The long-press menu's first entry, which opens the item: "Go to Movie", "Go to Episode", and so on.
+    var goToMenuTitle: String {
+        switch kind {
+        case .movie: String(localized: "Go to Movie")
+        case .episode: String(localized: "Go to Episode")
+        case .series: String(localized: "Go to Show")
+        case .season: String(localized: "Go to Season")
+        case .other: String(localized: "Go to Item")
+        }
+    }
+
+    /// For a show or season, which of "mark watched" and "mark unwatched" make sense for its episodes: both if
+    /// some are watched and some aren't, only "unwatched" if all are watched, only "watched" if none are.
+    var containerWatchOptions: (canMarkWatched: Bool, canMarkUnwatched: Bool) {
+        if let total = episodeCount, total > 0, let unwatched = unwatchedEpisodeCount {
+            return (canMarkWatched: unwatched > 0, canMarkUnwatched: unwatched < total)
+        }
+        // Without counts, the server's flag can only say everything is watched. If it isn't, it could be a mix
+        // or nothing watched, so offer both.
+        return isPlayed ? (canMarkWatched: false, canMarkUnwatched: true) : (canMarkWatched: true, canMarkUnwatched: true)
+    }
+
+    /// The widescreen image for the landscape shelf grid, falling back through the backdrop to the poster.
+    var gridArtworkURL: URL? { thumbnailURL ?? backdropURL ?? posterURL }
+
+    /// The line over a grid card's image, e.g. "S4, E6 · 46m left" or "1h 53m". Nil if there's nothing to say.
+    var gridStatusLine: String? {
+        var parts: [String] = []
+        if kind == .episode, let episodeNumber {
+            parts.append(seasonNumber.map { String(localized: "S\($0), E\(episodeNumber)") } ?? String(localized: "E\(episodeNumber)"))
+        }
+        if let runtime {
+            let remaining = playedFraction.map { runtime * (1 - $0) } ?? runtime
+            let time = Duration.seconds(remaining).formatted(.units(allowed: [.hours, .minutes], width: .narrow))
+            parts.append(playedFraction == nil ? time : String(localized: "\(time) left"))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Whether `ItemRow` shows widescreen artwork rather than a portrait poster. Only episodes and movies have
+    /// a thumbnail.
+    var hasWidescreenRowArtwork: Bool { thumbnailURL != nil }
+
+    /// The artwork `ItemRow` shows: the widescreen thumbnail for episodes and movies, otherwise the poster.
     var rowArtworkURL: URL? {
-        kind == .episode ? (thumbnailURL ?? posterURL) : posterURL
+        hasWidescreenRowArtwork ? thumbnailURL : posterURL
     }
 
     /// The text shown with an item's artwork, most important first:
@@ -71,6 +118,18 @@ extension MediaItem {
             [title]
         }
     }
+
+    /// What VoiceOver reads for an item's card or row: its caption, then how much of it has been watched.
+    var accessibilityDescription: String {
+        var parts = captionLines
+        if showsWatchedBadge {
+            parts.append(String(localized: "Watched"))
+        } else if let playedFraction {
+            let percent = playedFraction.formatted(.percent.precision(.fractionLength(0)))
+            parts.append(String(localized: "\(percent) watched"))
+        }
+        return parts.joined(separator: ", ")
+    }
 }
 
 extension View {
@@ -79,6 +138,13 @@ extension View {
         navigationDestination(for: MediaItem.self) { ItemDetailView(item: $0) }
             .navigationDestination(for: Library.self) { LibraryView(library: $0) }
             .navigationDestination(for: ShelfDestination.self) { ShelfListView(destination: $0) }
+    }
+
+    /// Gives something drawn over artwork (a badge, a progress bar) a faint edge, so it doesn't vanish into
+    /// artwork of a similar color. This plays the role `ArtworkView`'s outline does for the artwork itself;
+    /// a soft shadow suits small shapes better than a stroke.
+    func artworkOverlayEdge() -> some View {
+        shadow(color: .black.opacity(0.4), radius: 2)
     }
 
     /// Link style that keeps cards looking like cards (and focusable on tvOS).
@@ -122,6 +188,13 @@ struct ArtworkView: View {
                 .allowsHitTesting(false)
             }
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            // A faint outline gives artwork whose background matches the screen's (white or black) an edge.
+            // It's inset, and the primary color flips with light and dark mode, so it stays subtle on artwork
+            // that already stands out.
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(.primary.opacity(0.15), lineWidth: 1)
+            }
     }
 }
 
@@ -154,6 +227,19 @@ struct ItemCaption: View {
     }
 }
 
+/// The green checkmark in the corner of watched artwork.
+struct WatchedBadge: View {
+    var body: some View {
+        Image(systemName: "checkmark.circle.fill")
+            // Large enough to spot at a glance on a busy poster.
+            .font(.title)
+            .foregroundStyle(.white, .green)
+            .artworkOverlayEdge()
+            .padding(6)
+            .accessibilityLabel("Watched")
+    }
+}
+
 /// A poster with a progress bar (if partly watched), a watched checkmark, and the item's caption beneath.
 struct PosterCard: View {
     let item: MediaItem
@@ -164,15 +250,13 @@ struct PosterCard: View {
                 .overlay(alignment: .bottom) {
                     if let fraction = item.playedFraction {
                         ProgressView(value: fraction)
+                            .artworkOverlayEdge()
                             .padding(6)
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    if item.isPlayed {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.white, .green)
-                            .padding(6)
-                            .accessibilityLabel("Watched")
+                    if item.showsWatchedBadge {
+                        WatchedBadge()
                     }
                 }
 
@@ -184,15 +268,48 @@ struct PosterCard: View {
     }
 }
 
-/// Horizontally scrolling row of posters under a heading. Each poster navigates to its item.
+/// Horizontally scrolling row of posters under a heading. Tapping a poster plays its item (or, for a show or
+/// season, opens it).
 ///
 /// If a `destination` is given, the heading is a button (with a chevron) that opens the full list.
+///
+/// Long-pressing a poster peeks at the item and opens a menu: "Go to …" plus the same watch-state actions
+/// as the shelf's full list. The detail screen opens from "Go to …" or by tapping the peek. `onChange` is
+/// called after an action changes something on the server, so the owner can reload.
 struct MediaShelf: View {
     let title: String
     let items: [MediaItem]
 
     /// Where tapping the heading leads. Nil makes the heading plain text.
     var destination: ShelfDestination?
+
+    /// Called after a long-press action has changed the server, so the shelf's owner can reload.
+    var onChange: () -> Void = {}
+
+    /// Opens and plays items. The owner presents both: a navigation destination can't live in the shelf
+    /// itself, because shelves sit in a lazy stack, where SwiftUI ignores destinations.
+    let navigation: ItemNavigation
+
+    @Environment(AppModel.self) private var appModel
+
+    /// A change waiting for confirmation, or an error to show.
+    @State private var watchState = WatchActionState()
+
+    /// Changes made since `items` last updated, shown at once while the owner reloads. Cleared when the
+    /// reload arrives.
+    @State private var effects: [WatchEffect] = []
+
+    /// `items` with the user's latest changes applied.
+    private var shownItems: [MediaItem] {
+        effects.reduce(items) { $0.applying($1) }
+    }
+
+    private var watchActions: WatchActions {
+        WatchActions(service: appModel.service, destination: destination, state: $watchState) { effect in
+            effects.append(effect)
+            onChange()
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -201,18 +318,40 @@ struct MediaShelf: View {
 
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: 12) {
-                    ForEach(items) { item in
-                        NavigationLink(value: item) {
-                            PosterCard(item: item)
-                                .frame(width: Layout.posterWidth)
-                        }
-                        .cardLinkStyle()
+                    ForEach(shownItems) { item in
+                        card(for: item)
                     }
                 }
                 .padding(.horizontal)
             }
             .scrollIndicators(.hidden)
         }
+        // The reload has arrived, so the real data replaces the local changes.
+        .onChange(of: items) { effects = [] }
+        .watchActionAlerts(watchActions)
+    }
+
+    /// A poster that plays its item when tapped, and peeks and pops when long-pressed.
+    @ViewBuilder
+    private func card(for item: MediaItem) -> some View {
+        let actions = watchActions.actions(for: item, navigation: navigation)
+        #if os(iOS)
+        // A UIKit layer over the card, so that tapping the preview can open the item. SwiftUI's preview can't.
+        PosterCard(item: item)
+            .frame(width: Layout.posterWidth)
+            .peekAndPop(WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
+        #else
+        Button { navigation.tap(item) } label: {
+            PosterCard(item: item)
+                .frame(width: Layout.posterWidth)
+        }
+        .cardLinkStyle()
+        .contextMenu {
+            ItemActionButtons(entries: actions?.menuEntries(for: item) ?? [])
+        } preview: {
+            ItemPeek(item: item)
+        }
+        #endif
     }
 
     @ViewBuilder
@@ -236,28 +375,325 @@ struct MediaShelf: View {
     }
 }
 
+/// What the "more" menu on a list row can do to its item.
+///
+/// Every action is optional; one that's nil (or doesn't apply to the item) has no menu entry.
+struct ItemRowActions {
+    /// Opens the item's detail screen: the menu's first entry, "Go to Movie", "Go to Episode", and so on.
+    var goTo: (() -> Void)?
+
+    /// Marks the item (for a show or season, all its episodes) watched or unwatched. Nil for an item that
+    /// can't be watched.
+    var markWatched: (() -> Void)?
+    var markUnwatched: (() -> Void)?
+
+    /// Takes the item out of Continue Watching. Nil where that doesn't apply, which hides the menu entry.
+    var removeFromContinueWatching: (() -> Void)?
+
+    /// The two ways to take an episode's show out of Up Next: mark all of its episodes watched, or unwatched.
+    /// Both are nil where that doesn't apply, which hides the "Remove from Up Next" submenu.
+    var removeShowWatched: (() -> Void)?
+    var removeShowUnwatched: (() -> Void)?
+}
+
 /// Compact list row: thumbnail plus title and details.
+///
+/// If `actions` is given, a "more" button on the right opens a menu of them.
 struct ItemRow: View {
     let item: MediaItem
+    var actions: ItemRowActions?
 
-    /// An episode's image is a widescreen still; everything else is a portrait poster.
-    private var isEpisode: Bool { item.kind == .episode }
+    /// If given, the row peeks and pops when long-pressed. See `peekAndPop(_:passthrough:isAccessibilityElement:)`.
+    var peek: PeekAndPopSpec?
+
+    /// Episodes and movies show a widescreen image; everything else is a portrait poster.
+    private var isWidescreen: Bool { item.hasWidescreenRowArtwork }
+
+    private static let stillWidth: CGFloat = 86
+    private static let posterWidth: CGFloat = 43
 
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkView(url: item.rowArtworkURL, aspectRatio: isEpisode ? 16.0 / 9.0 : 2.0 / 3.0)
-                .frame(width: isEpisode ? 100 : 50)
+            // Every row reserves the same width, so titles line up whether the artwork is a poster or a still.
+            ArtworkView(url: item.rowArtworkURL, aspectRatio: isWidescreen ? 16.0 / 9.0 : 2.0 / 3.0)
+                .frame(width: isWidescreen ? Self.stillWidth : Self.posterWidth)
+                .frame(width: Self.stillWidth)
 
             ItemCaption(item: item)
 
             Spacer()
 
-            if item.isPlayed {
+            if item.showsWatchedBadge {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .accessibilityLabel("Watched")
             }
+
+            if let actions {
+                ItemActionsMenu(item: item, actions: actions)
+            }
         }
+        // The peek layer covers the row except the menu button's end (if it has one), so that button keeps
+        // its own taps.
+        .peekAndPop(peek, passthrough: actions == nil ? .none : .trailingEdge(ItemActionsMenu.reservedWidth))
+    }
+}
+
+/// One entry in an item's menu: an action, or a submenu if it has `children`.
+///
+/// Menus are described with these, not built directly, so the SwiftUI menus and the UIKit long-press menu
+/// (see `PeekAndPopCard`) always offer exactly the same things.
+struct ItemMenuEntry: Identifiable {
+    /// What an entry does, which identifies it within a menu.
+    enum ID: Hashable {
+        case goTo
+        case markWatched
+        case markUnwatched
+        case removeFromContinueWatching
+        case removeFromUpNext
+        case markAllEpisodesWatched
+        case markAllEpisodesUnwatched
+    }
+
+    let id: ID
+    /// Already localized.
+    let title: String
+    let systemImage: String
+    var perform: (() -> Void)?
+    var children: [ItemMenuEntry] = []
+}
+
+extension ItemRowActions {
+    /// The menu entries for an item: "Go to …" (if given), then the watch-state actions.
+    func menuEntries(for item: MediaItem) -> [ItemMenuEntry] {
+        var entries: [ItemMenuEntry] = []
+        if let goTo {
+            entries.append(ItemMenuEntry(id: .goTo, title: item.goToMenuTitle, systemImage: "info.circle", perform: goTo))
+        }
+        return entries + watchEntries(for: item)
+    }
+
+    /// The watch-state entries for an item.
+    private func watchEntries(for item: MediaItem) -> [ItemMenuEntry] {
+        // A show or season covers all its episodes, so what's on offer depends on how many are watched.
+        if item.kind == .series || item.kind == .season {
+            let isSeason = item.kind == .season
+            let options = item.containerWatchOptions
+            var entries: [ItemMenuEntry] = []
+            if let markWatched, options.canMarkWatched {
+                entries.append(ItemMenuEntry(
+                    id: .markWatched,
+                    title: isSeason ? String(localized: "Mark Season as Watched") : String(localized: "Mark Show as Watched"),
+                    systemImage: "checkmark.circle",
+                    perform: markWatched
+                ))
+            }
+            if let markUnwatched, options.canMarkUnwatched {
+                entries.append(ItemMenuEntry(
+                    id: .markUnwatched,
+                    title: isSeason ? String(localized: "Mark Season as Unwatched") : String(localized: "Mark Show as Unwatched"),
+                    systemImage: "arrow.uturn.backward.circle",
+                    perform: markUnwatched
+                ))
+            }
+            return entries
+        }
+
+        var entries: [ItemMenuEntry] = []
+
+        // A partly watched item offers both, so the user can finish it or start it over.
+        if let markWatched, !item.showsWatchedBadge {
+            entries.append(ItemMenuEntry(id: .markWatched, title: String(localized: "Mark as Watched"), systemImage: "checkmark.circle", perform: markWatched))
+        }
+        if let markUnwatched, item.isPlayed || item.playedFraction != nil {
+            entries.append(ItemMenuEntry(id: .markUnwatched, title: String(localized: "Mark as Unwatched"), systemImage: "arrow.uturn.backward.circle", perform: markUnwatched))
+        }
+        if let remove = removeFromContinueWatching {
+            entries.append(ItemMenuEntry(id: .removeFromContinueWatching, title: String(localized: "Remove from Continue Watching"), systemImage: "minus.circle", perform: remove))
+        }
+        if let showWatched = removeShowWatched, let showUnwatched = removeShowUnwatched {
+            entries.append(ItemMenuEntry(
+                id: .removeFromUpNext,
+                title: String(localized: "Remove from Up Next"),
+                systemImage: "minus.circle",
+                children: [
+                    ItemMenuEntry(id: .markAllEpisodesWatched, title: String(localized: "Mark All Episodes as Watched"), systemImage: "checkmark.circle", perform: showWatched),
+                    ItemMenuEntry(id: .markAllEpisodesUnwatched, title: String(localized: "Mark All Episodes as Unwatched"), systemImage: "arrow.uturn.backward.circle", perform: showUnwatched)
+                ]
+            ))
+        }
+        return entries
+    }
+}
+
+/// Menu entries as SwiftUI buttons: the contents of the "more" button's menu and of a long-press menu.
+struct ItemActionButtons: View {
+    let entries: [ItemMenuEntry]
+
+    var body: some View {
+        ForEach(entries) { entry in
+            if entry.children.isEmpty {
+                Button(entry.title, systemImage: entry.systemImage) { entry.perform?() }
+            } else {
+                Menu(entry.title, systemImage: entry.systemImage) {
+                    ForEach(entry.children) { child in
+                        Button(child.title, systemImage: child.systemImage) { child.perform?() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What a long-press on a card peeks at: a widescreen image, the item's caption, and a bit of its synopsis.
+struct ItemPeek: View {
+    let item: MediaItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ArtworkView(url: item.gridArtworkURL, aspectRatio: 16.0 / 9.0)
+
+            ItemCaption(item: item)
+
+            if let overview = item.overview {
+                Text(overview)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+            }
+        }
+        .padding(12)
+        .frame(width: Self.width)
+    }
+
+    /// How wide a peek is. The peek's UIKit host sizes itself to this too.
+    static let width: CGFloat = 320
+}
+
+/// The "more" (…) button and the menu of watch-state actions it opens.
+struct ItemActionsMenu: View {
+    let item: MediaItem
+    let actions: ItemRowActions
+
+    /// Whether the button sits on top of artwork, where it's white so it reads against any image.
+    var overArtwork = false
+
+    /// How much room, from the trailing edge, a peek layer leaves for this button so it keeps its own taps:
+    /// the padded label plus some slack for a finger.
+    static let reservedWidth: CGFloat = 56
+
+    var body: some View {
+        Menu {
+            ItemActionButtons(entries: actions.menuEntries(for: item))
+        } label: {
+            Image(systemName: "ellipsis")
+                // Over artwork it's the card's main control, so it's larger and bolder, like the status text.
+                .font(overArtwork ? .title3.weight(.bold) : .body)
+                .foregroundStyle(overArtwork ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                // Over artwork it sits at the card's bottom edge, so it's padded less vertically to sit low.
+                .padding(.horizontal, overArtwork ? 10 : 8)
+                .padding(.vertical, overArtwork ? 6 : 8)
+                .contentShape(Rectangle())
+        }
+        // Plain leaves the label's color alone. Tinting the menu instead would gray its items' icons too.
+        .buttonStyle(.plain)
+        .accessibilityLabel("More")
+    }
+}
+
+/// A widescreen card for the landscape shelf grid: the image with a status line and the "more" button along
+/// its bottom edge, and the item's caption beneath. It doesn't act on taps itself; see `peek`.
+struct ShelfGridCard: View {
+    let item: MediaItem
+    var actions: ItemRowActions?
+
+    /// If given, the card peeks and pops when long-pressed. See `peekAndPop(_:passthrough:isAccessibilityElement:)`.
+    var peek: PeekAndPopSpec?
+
+    /// The progress bar's size, scaled with the status text.
+    /// The progress bar's thickness, and the shortest it gets when the status text needs the room. Otherwise
+    /// it stretches to fill the bar. Scaled with the status text.
+    @ScaledMetric(relativeTo: .subheadline) private var progressHeight: CGFloat = 4
+    @ScaledMetric(relativeTo: .subheadline) private var progressMinWidth: CGFloat = 32
+
+    /// How far the "more" button's corner reaches in from the edges: the padded button plus a little slack.
+    /// Scaled with the button's text style, so it keeps up with larger text.
+    @ScaledMetric(relativeTo: .title3) private var menuCornerWidth: CGFloat = 52
+    @ScaledMetric(relativeTo: .title3) private var menuCornerHeight: CGFloat = 44
+
+    /// The corner of the image the peek layer leaves for the "more" button, if there is one.
+    private var menuCorner: PeekPassthrough {
+        actions == nil ? .none : PeekPassthrough(trailing: menuCornerWidth, bottom: menuCornerHeight)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ArtworkView(url: item.gridArtworkURL, aspectRatio: 16.0 / 9.0)
+                .overlay(alignment: .bottom) { statusBar }
+                .overlay(alignment: .topTrailing) {
+                    if item.showsWatchedBadge {
+                        WatchedBadge()
+                    }
+                }
+                // The status bar's gradient is square; clip it to the image's rounded corners.
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                // The image and the caption each get a peek layer, so the whole card responds. The image's
+                // leaves the "more" button's corner alone, and the caption's isn't a second accessibility element.
+                .peekAndPop(peek, passthrough: menuCorner)
+
+            ItemCaption(item: item)
+                .peekAndPop(peek, isAccessibilityElement: false)
+        }
+        // Make the whole card tappable, including the gaps between the artwork and text.
+        .contentShape(Rectangle())
+    }
+
+    /// Play icon, progress, episode and time left, and the menu button, over a fade so they read on any image.
+    private var statusBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "play.fill")
+                .accessibilityHidden(true)
+
+            if let fraction = item.playedFraction {
+                // Fills the room between the play icon and the status text, so there's no empty gap.
+                Capsule()
+                    .fill(.white.opacity(0.3))
+                    .frame(minWidth: progressMinWidth, maxWidth: .infinity)
+                    .frame(height: progressHeight)
+                    .overlay(alignment: .leading) {
+                        GeometryReader { proxy in
+                            Capsule()
+                                .fill(.white)
+                                .frame(width: proxy.size.width * min(max(fraction, 0), 1))
+                        }
+                    }
+                    .accessibilityHidden(true)
+            }
+
+            if let status = item.gridStatusLine {
+                Text(status)
+                    .lineLimit(1)
+                    // The progress bar gives up its room before the text truncates.
+                    .layoutPriority(1)
+            }
+
+            // With no progress bar to fill the room, keep the "more" button at the trailing edge.
+            if item.playedFraction == nil {
+                Spacer()
+            }
+
+            if let actions {
+                ItemActionsMenu(item: item, actions: actions, overArtwork: true)
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.white)
+        // The same height with or without the "more" button, so every card's bar lines up.
+        .frame(minHeight: 36)
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
+        .padding(.top, 32)
+        .background(LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom))
     }
 }
 
@@ -272,28 +708,45 @@ struct ItemRow: View {
 }
 
 #Preview("MediaShelf") {
+    @Previewable @State var goToItem: MediaItem?
     NavigationStack {
-        MediaShelf(title: "Continue Watching", items: MediaItem.previewMovies)
-            .mediaNavigationDestinations()
+        MediaShelf(
+            title: "Continue Watching",
+            items: MediaItem.previewMovies,
+            navigation: ItemNavigation(open: { goToItem = $0 }, play: { _ in })
+        )
+        .mediaNavigationDestinations()
+        .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
     }
     .environment(AppModel.preview())
 }
 
 /// An episode (which has a subtitle) between cards that don't: all three should get equal artwork.
 #Preview("MediaShelf mixed subtitles") {
+    @Previewable @State var goToItem: MediaItem?
     NavigationStack {
         MediaShelf(
             title: "Recently Added Shows",
             items: [.previewMovie, .previewEpisode, .previewWatched],
-            destination: .continueWatching
+            destination: .continueWatching,
+            navigation: ItemNavigation(open: { goToItem = $0 }, play: { _ in })
         )
         .mediaNavigationDestinations()
+        .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
     }
     .environment(AppModel.preview())
 }
 
 #Preview("ItemRow") {
     List(MediaItem.previewMovies + [.previewEpisode]) { ItemRow(item: $0) }
+}
+
+#Preview("ShelfGridCard") {
+    HStack(alignment: .top, spacing: 16) {
+        ShelfGridCard(item: .previewEpisode, actions: ItemRowActions(markWatched: {}, markUnwatched: {}))
+        ShelfGridCard(item: .previewPartlyWatched, actions: ItemRowActions(markWatched: {}, markUnwatched: {}))
+    }
+    .padding()
 }
 
 #Preview("ArtworkView") {

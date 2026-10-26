@@ -6,7 +6,8 @@ import SwiftUI
 
 /// Loads a value when it appears and renders it, with built-in loading and error/retry states.
 ///
-/// Reloads silently (no spinner) each time the view reappears, e.g. when popping back to it.
+/// Reloads silently (no spinner) each time the view reappears, e.g. when popping back to it, and whenever
+/// `reloadID` changes. If a silent reload fails, the last loaded value stays on screen.
 ///
 /// ```swift
 /// AsyncContent(load: { try await service.libraries() }) { libraries in
@@ -22,6 +23,9 @@ struct AsyncContent<Value, Content: View>: View {
 
     /// Fetches the value. Errors are shown to the user with a Retry button.
     let load: () async throws -> Value
+
+    /// Changing this reloads silently, keeping what's on screen until the new value arrives.
+    var reloadID = 0
 
     /// Builds the loaded UI from the fetched value.
     @ViewBuilder let content: (Value) -> Content
@@ -49,15 +53,21 @@ struct AsyncContent<Value, Content: View>: View {
                 }
             }
         }
-        .task { await run() }
+        // Keyed on `reloadID`, so changing it runs the load again (and cancels one still in flight).
+        .task(id: reloadID) { await run() }
     }
 
     private func run() async {
         do {
-            phase = .loaded(try await load())
+            let value = try await load()
+            // Superseded by a newer load (or the view went away): that load's result is the one to show.
+            guard !Task.isCancelled else { return }
+            phase = .loaded(value)
         } catch {
             // The task is cancelled when the view disappears; that isn't a failure.
             guard !Task.isCancelled else { return }
+            // A failed reload keeps what's on screen, which is only out of date. Only a first load shows the error.
+            if case .loaded = phase { return }
             phase = .failed(error.localizedDescription)
         }
     }

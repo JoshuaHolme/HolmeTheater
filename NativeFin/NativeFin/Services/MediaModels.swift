@@ -132,14 +132,15 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     /// Widescreen background artwork, ready to load. Falls back to the parent's (e.g. the series') backdrop.
     let backdropURL: URL?
 
-    /// An episode's own widescreen still, or `nil` for anything that isn't an episode.
+    /// Widescreen artwork for list rows: an episode's own still, or a movie's thumb image (falling back to its
+    /// backdrop). `nil` for anything else, or a movie with neither.
     var thumbnailURL: URL? = nil
 
     /// How much of the item has been watched, from 0 to 1, or `nil` if it hasn't been started.
-    let playedFraction: Double?
+    var playedFraction: Double?
 
     /// Whether the user has finished watching the item.
-    let isPlayed: Bool
+    var isPlayed: Bool
 
     /// The title of the series an episode or season belongs to.
     let seriesTitle: String?
@@ -149,6 +150,16 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
 
     /// An episode's number within its season.
     let episodeNumber: Int?
+
+    /// The ID of the series an episode or season belongs to, or `nil` for anything else.
+    var seriesID: String? = nil
+
+    /// For a show or season: how many episodes it has. `nil` for anything else, or if the server didn't say.
+    var episodeCount: Int? = nil
+
+    /// For a show or season: how many of its episodes aren't watched. `nil` for anything else, or if the
+    /// server didn't say.
+    var unwatchedEpisodeCount: Int? = nil
 }
 
 /// How the server is delivering a video stream.
@@ -227,6 +238,9 @@ nonisolated enum MediaServiceError: LocalizedError, Sendable {
     /// The server offered no stream this device can play.
     case itemNotPlayable
 
+    /// The item doesn't exist on the server (any more), or the user can't see it.
+    case itemNotFound
+
     /// Anything else; the associated message is already user-presentable.
     case underlying(String)
 
@@ -239,6 +253,7 @@ nonisolated enum MediaServiceError: LocalizedError, Sendable {
         case .notSignedIn: String(localized: "You're not signed in.")
         case .sessionExpired: String(localized: "Your session has expired. Sign in again.")
         case .itemNotPlayable: String(localized: "This item can't be played.")
+        case .itemNotFound: String(localized: "This item is no longer available.")
         case .underlying(let message): message
         }
     }
