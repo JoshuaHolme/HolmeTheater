@@ -54,6 +54,17 @@ extension MediaItem {
     /// progress, even if the server also flags it as played.
     var showsWatchedBadge: Bool { isPlayed && playedFraction == nil }
 
+    /// The long-press menu's first entry, which opens the item: "Go to Movie", "Go to Episode", and so on.
+    var goToMenuTitle: String {
+        switch kind {
+        case .movie: String(localized: "Go to Movie")
+        case .episode: String(localized: "Go to Episode")
+        case .series: String(localized: "Go to Show")
+        case .season: String(localized: "Go to Season")
+        case .other: String(localized: "Go to Item")
+        }
+    }
+
     /// For a show or season, which of "mark watched" and "mark unwatched" make sense for its episodes: both if
     /// some are watched and some aren't, only "unwatched" if all are watched, only "watched" if none are.
     var containerWatchOptions: (canMarkWatched: Bool, canMarkUnwatched: Bool) {
@@ -383,19 +394,10 @@ struct MediaShelf: View {
 
     /// The long-press menu: "Go to …", then the watch-state actions.
     private func menuEntries(for item: MediaItem) -> [ItemMenuEntry] {
-        let goTo = ItemMenuEntry(title: goToTitle(for: item), systemImage: "info.circle", perform: { onGoTo(item) })
+        let goTo = ItemMenuEntry(title: item.goToMenuTitle, systemImage: "info.circle", perform: { onGoTo(item) })
         return [goTo] + (actions(for: item)?.menuEntries(for: item) ?? [])
     }
 
-    private func goToTitle(for item: MediaItem) -> String {
-        switch item.kind {
-        case .movie: String(localized: "Go to Movie")
-        case .episode: String(localized: "Go to Episode")
-        case .series: String(localized: "Go to Show")
-        case .season: String(localized: "Go to Season")
-        case .other: String(localized: "Go to Item")
-        }
-    }
 
     /// The watch-state actions for an item, or nil for things that can't be watched (series and seasons).
     /// These match the ones in `ShelfListView`, so a shelf and its full list offer the same choices.
@@ -524,6 +526,12 @@ struct ItemRow: View {
     let item: MediaItem
     var actions: ItemRowActions?
 
+    /// If given, the row peeks and pops when long-pressed. See `peekAndPop(_:passthrough:isAccessibilityElement:)`.
+    var peek: PeekAndPopSpec?
+
+    /// How much of the row's trailing edge the peek layer leaves for the "more" button.
+    private static let menuWidth: CGFloat = 56
+
     /// Episodes and movies show a widescreen image; everything else is a portrait poster.
     private var isWidescreen: Bool { item.hasWidescreenRowArtwork }
 
@@ -551,6 +559,8 @@ struct ItemRow: View {
                 ItemActionsMenu(item: item, actions: actions)
             }
         }
+        // The peek layer covers the row except the menu button's end, so that button keeps its own taps.
+        .peekAndPop(peek, passthrough: .trailingEdge(Self.menuWidth))
     }
 }
 
@@ -783,7 +793,13 @@ struct ShelfGridCard: View {
     let item: MediaItem
     var actions: ItemRowActions?
 
+    /// If given, the card peeks and pops when long-pressed. See `peekAndPop(_:passthrough:isAccessibilityElement:)`.
+    var peek: PeekAndPopSpec?
+
     private static let progressWidth: CGFloat = 36
+
+    /// The corner of the image the peek layer leaves for the "more" button.
+    private static let menuCorner = PeekPassthrough(trailing: 56, bottom: 48)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -796,8 +812,12 @@ struct ShelfGridCard: View {
                 }
                 // The status bar's gradient is square; clip it to the image's rounded corners.
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                // The image and the caption each get a peek layer, so the whole card responds. The image's
+                // leaves the "more" button's corner alone, and the caption's isn't a second accessibility element.
+                .peekAndPop(peek, passthrough: Self.menuCorner)
 
             ItemCaption(item: item)
+                .peekAndPop(peek, isAccessibilityElement: false)
         }
         // Make the whole card tappable, including the gaps between the artwork and text.
         .contentShape(Rectangle())

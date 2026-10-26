@@ -40,6 +40,9 @@ struct ShelfListView: View {
     /// A show the user chose to remove from Up Next, waiting on their confirmation.
     @State private var pendingRemoval: ShowRemoval?
 
+    /// The item a peek's tap or "Go to …" is opening; setting it pushes its detail screen.
+    @State private var goToItem: MediaItem?
+
     private static let pageSize = 30
 
     var body: some View {
@@ -67,12 +70,25 @@ struct ShelfListView: View {
             Text(actionError ?? "")
         }
         .confirmShowRemoval($pendingRemoval, perform: remove)
+        .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
+    }
+
+    /// What a long-press on an item peeks at and offers: "Go to …", then the watch-state actions. Tapping the
+    /// peek opens the item.
+    private func peekSpec(for item: MediaItem) -> PeekAndPopSpec {
+        let goTo = ItemMenuEntry(title: item.goToMenuTitle, systemImage: "info.circle", perform: { goToItem = item })
+        return PeekAndPopSpec(
+            menu: [goTo] + (actions(for: item)?.menuEntries(for: item) ?? []),
+            accessibilityLabel: item.captionLines.joined(separator: ", "),
+            onOpen: { goToItem = item },
+            peek: ItemPeek(item: item)
+        )
     }
 
     private var list: some View {
         List {
             ForEach(items) { item in
-                ItemRow(item: item, actions: actions(for: item))
+                ItemRow(item: item, actions: actions(for: item), peek: peekSpec(for: item))
                     // A link in the background gives the row navigation without a disclosure chevron, and
                     // leaves the row's menu button free to take its own taps.
                     .background {
@@ -108,7 +124,7 @@ struct ShelfListView: View {
             LazyVStack(spacing: 16) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 16, alignment: .top)], spacing: 16) {
                     ForEach(items) { item in
-                        ShelfGridCard(item: item, actions: actions(for: item))
+                        ShelfGridCard(item: item, actions: actions(for: item), peek: peekSpec(for: item))
                             // The link sits behind the card, so the card's menu button takes its own taps.
                             // `contentShape` makes the clear label tappable.
                             .background {

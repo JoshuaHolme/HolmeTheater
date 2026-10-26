@@ -2,8 +2,77 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-#if os(iOS)
 import SwiftUI
+
+/// Everything a card needs to peek and pop, so a row or card can be given it without knowing about UIKit.
+/// See `peekAndPop(_:passthrough:isAccessibilityElement:)`.
+struct PeekAndPopSpec {
+    /// The long-press menu's entries.
+    let menu: [ItemMenuEntry]
+
+    /// What VoiceOver reads for the card.
+    let accessibilityLabel: String
+
+    /// Called when the card is tapped, or its preview is tapped.
+    let onOpen: () -> Void
+
+    /// The preview shown above the menu.
+    let peek: AnyView
+
+    init(menu: [ItemMenuEntry], accessibilityLabel: String, onOpen: @escaping () -> Void, peek: some View) {
+        self.menu = menu
+        self.accessibilityLabel = accessibilityLabel
+        self.onOpen = onOpen
+        self.peek = AnyView(peek)
+    }
+}
+
+/// A corner of a card that the peek and pop layer leaves alone, so a control there, like a "more" button,
+/// still gets its own taps. Measured from the card's bottom trailing corner.
+struct PeekPassthrough {
+    var trailing: CGFloat = 0
+    var bottom: CGFloat = 0
+
+    static let none = PeekPassthrough()
+
+    /// The whole trailing edge, top to bottom, for a button at the end of a row.
+    static func trailingEdge(_ width: CGFloat) -> PeekPassthrough {
+        PeekPassthrough(trailing: width, bottom: .greatestFiniteMagnitude)
+    }
+}
+
+extension View {
+    /// Makes a card peek and pop, from a spec. Does nothing where that isn't supported (anything but iOS), or if
+    /// `spec` is nil.
+    ///
+    /// - Parameters:
+    ///   - spec: What to peek at, the menu, and what opening does.
+    ///   - passthrough: A corner to leave alone, for a control inside the card.
+    ///   - isAccessibilityElement: Whether the layer is the card's accessibility element. Turn it off when a
+    ///     card is covered by more than one layer, so VoiceOver doesn't read it twice.
+    @ViewBuilder
+    func peekAndPop(_ spec: PeekAndPopSpec?, passthrough: PeekPassthrough = .none, isAccessibilityElement: Bool = true) -> some View {
+        #if os(iOS)
+        if let spec {
+            peekAndPop(
+                menu: spec.menu,
+                accessibilityLabel: spec.accessibilityLabel,
+                onOpen: spec.onOpen,
+                passthrough: passthrough,
+                isAccessibilityElement: isAccessibilityElement
+            ) {
+                spec.peek
+            }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(iOS)
 import UIKit
 
 extension View {
@@ -19,17 +88,28 @@ extension View {
     ///   - menu: The long-press menu's entries.
     ///   - accessibilityLabel: What VoiceOver reads for the card.
     ///   - onOpen: Called when the card is tapped, or its preview is tapped.
+    ///   - passthrough: A corner to leave alone, for a control inside the card.
+    ///   - isAccessibilityElement: Whether the layer is the card's accessibility element.
     ///   - peek: The preview shown above the menu.
     func peekAndPop<Peek: View>(
         menu: [ItemMenuEntry],
         accessibilityLabel: String,
         onOpen: @escaping () -> Void,
+        passthrough: PeekPassthrough = .none,
+        isAccessibilityElement: Bool = true,
         @ViewBuilder peek: () -> Peek
     ) -> some View {
         // The overlay is the one accessibility element, so VoiceOver doesn't read the card twice.
-        accessibilityHidden(true)
+        accessibilityHidden(isAccessibilityElement)
             .overlay {
-                PeekInteractionView(menu: menu, accessibilityLabel: accessibilityLabel, onOpen: onOpen, peek: peek())
+                PeekInteractionView(
+                    menu: menu,
+                    accessibilityLabel: accessibilityLabel,
+                    onOpen: onOpen,
+                    passthrough: passthrough,
+                    isAccessibilityElement: isAccessibilityElement,
+                    peek: peek()
+                )
             }
     }
 }
@@ -39,6 +119,8 @@ private struct PeekInteractionView<Peek: View>: UIViewRepresentable {
     let menu: [ItemMenuEntry]
     let accessibilityLabel: String
     let onOpen: () -> Void
+    let passthrough: PeekPassthrough
+    let isAccessibilityElement: Bool
     let peek: Peek
 
     func makeUIView(context: Context) -> PeekUIView<Peek> {
@@ -46,7 +128,14 @@ private struct PeekInteractionView<Peek: View>: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PeekUIView<Peek>, context: Context) {
-        view.update(peek: peek, menu: menu, accessibilityLabel: accessibilityLabel, onOpen: onOpen)
+        view.update(
+            peek: peek,
+            menu: menu,
+            accessibilityLabel: accessibilityLabel,
+            onOpen: onOpen,
+            passthrough: passthrough,
+            isAccessibilityElement: isAccessibilityElement
+        )
     }
 }
 
@@ -58,6 +147,7 @@ private final class PeekUIView<Peek: View>: UIView, UIContextMenuInteractionDele
     private var peek: Peek
     private var menu: [ItemMenuEntry] = []
     private var onOpen: () -> Void = {}
+    private var passthrough = PeekPassthrough.none
 
     init(peek: Peek) {
         self.peek = peek
@@ -66,7 +156,6 @@ private final class PeekUIView<Peek: View>: UIView, UIContextMenuInteractionDele
         backgroundColor = .clear
         addInteraction(UIContextMenuInteraction(delegate: self))
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
-        isAccessibilityElement = true
         accessibilityTraits = .button
     }
 
@@ -75,11 +164,20 @@ private final class PeekUIView<Peek: View>: UIView, UIContextMenuInteractionDele
     }
 
     /// Takes the latest peek, menu and actions from SwiftUI, which rebuilds them on every state change.
-    func update(peek: Peek, menu: [ItemMenuEntry], accessibilityLabel: String, onOpen: @escaping () -> Void) {
+    func update(
+        peek: Peek,
+        menu: [ItemMenuEntry],
+        accessibilityLabel: String,
+        onOpen: @escaping () -> Void,
+        passthrough: PeekPassthrough,
+        isAccessibilityElement: Bool
+    ) {
         self.peek = peek
         self.menu = menu
         self.onOpen = onOpen
+        self.passthrough = passthrough
 
+        self.isAccessibilityElement = isAccessibilityElement
         self.accessibilityLabel = accessibilityLabel
         // Give VoiceOver users the menu's actions too, since it has no long-press.
         accessibilityCustomActions = menu.flattened.map { entry in
@@ -88,6 +186,16 @@ private final class PeekUIView<Peek: View>: UIView, UIContextMenuInteractionDele
                 return true
             }
         }
+    }
+
+    /// Lets touches in the pass-through corner reach the SwiftUI control underneath, instead of this layer.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if passthrough.trailing > 0,
+           point.x >= bounds.maxX - passthrough.trailing,
+           point.y >= bounds.maxY - passthrough.bottom {
+            return false
+        }
+        return super.point(inside: point, with: event)
     }
 
     override func accessibilityActivate() -> Bool {
