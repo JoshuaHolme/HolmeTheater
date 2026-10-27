@@ -11,12 +11,21 @@ enum ShelfDestination: Hashable {
     case nextUp
     /// Everything recently added to a library (episodes for TV, movies for film).
     case recentlyAdded(Library)
+    /// Other movies or shows on the server that resemble this one.
+    case similar(MediaItem)
+    /// The special features (extras) of a movie or show.
+    case specialFeatures(MediaItem)
+    /// The episodes of a season (the only one a mini series has).
+    case episodes(MediaItem)
 
     var title: String {
         switch self {
         case .continueWatching: String(localized: "Continue Watching")
         case .nextUp: String(localized: "Up Next")
         case .recentlyAdded(let library): String(localized: "Recently Added \(library.name)")
+        case .similar: String(localized: "More Like This")
+        case .specialFeatures: String(localized: "Special Features")
+        case .episodes: String(localized: "Episodes")
         }
     }
 }
@@ -88,6 +97,12 @@ struct ShelfListView: View {
         }
     }
 
+    /// The menu links to leave out: a list of a show's episodes is inside the show and its only season.
+    private var omittedLinks: Set<RelatedLink> {
+        if case .episodes = destination { return [.show, .season] }
+        return []
+    }
+
     /// Tapping an item plays it; "Go to …" and its peek open it.
     private var navigation: ItemNavigation {
         ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
@@ -97,7 +112,7 @@ struct ShelfListView: View {
         List {
             ForEach(items) { item in
                 // Built once and shared by the "more" menu and the long-press menu.
-                let actions = watchActions.actions(for: item, navigation: navigation)
+                let actions = watchActions.actions(for: item, navigation: navigation, omitting: omittedLinks)
                 ItemRow(item: item, actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
                     #if !os(iOS)
                     .background { tapTarget(for: item) }
@@ -114,7 +129,7 @@ struct ShelfListView: View {
             LazyVStack(spacing: 16) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 16, alignment: .top)], spacing: 16) {
                     ForEach(items) { item in
-                        let actions = watchActions.actions(for: item, navigation: navigation)
+                        let actions = watchActions.actions(for: item, navigation: navigation, omitting: omittedLinks)
                         ShelfGridCard(item: item, actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
                             #if !os(iOS)
                             .background { tapTarget(for: item) }
@@ -229,6 +244,15 @@ struct ShelfListView: View {
             return try await service.nextUpItems(offset: offset, limit: limit)
         case .recentlyAdded(let library):
             return try await service.recentlyAddedPage(in: library, offset: offset, limit: limit)
+        case .episodes(let season):
+            // The server pages these, but a season is short and in order, so it's asked for them all and cut here.
+            return Array(try await service.children(of: season).dropFirst(offset).prefix(limit))
+        case .specialFeatures(let item):
+            // Like similar items, these have no paging on the server and there are few.
+            return Array(try await service.specialFeatures(of: item).dropFirst(offset).prefix(limit))
+        case .similar(let item):
+            // The server has no paging for these, and there are few, so it's asked for them all and cut here.
+            return Array(try await service.similarItems(to: item).dropFirst(offset).prefix(limit))
         }
     }
 }

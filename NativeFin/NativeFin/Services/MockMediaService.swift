@@ -67,7 +67,9 @@ nonisolated struct MockMediaService: MediaService {
             isPlayed: false,
             seriesTitle: nil,
             seasonNumber: nil,
-            episodeNumber: nil
+            episodeNumber: nil,
+            genres: ["Drama", "Mystery"],
+            network: "Sample Network"
         )
     }
 
@@ -182,9 +184,40 @@ nonisolated struct MockMediaService: MediaService {
         return item
     }
 
+    func details(ofPerson personID: String) async throws -> PersonDetails {
+        try await simulateLatency()
+        return PersonDetails()
+    }
+
+    func items(featuring personID: String) async throws -> [PersonCredit] {
+        try await simulateLatency()
+        return []
+    }
+
+    func similarItems(to item: MediaItem) async throws -> [MediaItem] {
+        try await simulateLatency()
+        return []
+    }
+
+    func specialFeatures(of item: MediaItem) async throws -> [MediaItem] {
+        try await simulateLatency()
+        return []
+    }
+
+    func setFavorite(_ isFavorite: Bool, itemID: String) async throws {
+        try await simulateLatency()
+    }
+
     func children(of item: MediaItem) async throws -> [MediaItem] {
         try await simulateLatency()
         return item.kind == .series ? Self.episodes(of: item) : []
+    }
+
+    func nextEpisode(in series: MediaItem) async throws -> MediaItem? {
+        try await simulateLatency()
+        // The partly watched episode, or the first unwatched one, else the first.
+        let episodes = Self.episodes(of: series)
+        return episodes.first { $0.playedFraction != nil || !$0.isPlayed } ?? episodes.first
     }
 
     func search(_ query: String) async throws -> [MediaItem] {

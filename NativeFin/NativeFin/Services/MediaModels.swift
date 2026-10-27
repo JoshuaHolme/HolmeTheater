@@ -101,6 +101,9 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
         case season
         /// An episode of a series, which can be played.
         case episode
+        /// A bonus video attached to a movie or show: behind the scenes, a deleted scene, an interview. It can
+        /// be played.
+        case extra
         /// Anything the app doesn't specifically handle (music, photos, collections, …).
         case other
     }
@@ -151,15 +154,122 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     /// An episode's number within its season.
     let episodeNumber: Int?
 
+    /// For an extra: what kind it is, e.g. "Behind the Scenes". `nil` for anything else, or if the server doesn't say.
+    var extraLabel: String? = nil
+
     /// The ID of the series an episode or season belongs to, or `nil` for anything else.
     var seriesID: String? = nil
+
+    /// The ID of the season an episode belongs to, or `nil` for anything else.
+    var seasonID: String? = nil
 
     /// For a show or season: how many episodes it has. `nil` for anything else, or if the server didn't say.
     var episodeCount: Int? = nil
 
+    /// For a show: how many seasons it has, counting a Specials season. `nil` for anything else, or if the
+    /// server didn't say.
+    var seasonCount: Int? = nil
+
     /// For a show or season: how many of its episodes aren't watched. `nil` for anything else, or if the
     /// server didn't say.
     var unwatchedEpisodeCount: Int? = nil
+
+    /// The item's logo (its title as artwork, on a transparent background), or `nil` if the server has none.
+    var logoURL: URL? = nil
+
+    /// The item's genres, e.g. "Drama" and "Comedy", in the order the server lists them.
+    var genres: [String] = []
+
+    /// For a show: the network it originally aired on, e.g. "HBO". `nil` if the server doesn't know.
+    var network: String? = nil
+
+    /// The content rating, e.g. "TV-MA" or "PG-13". `nil` if the server doesn't have one.
+    var officialRating: String? = nil
+
+    /// The audience score out of 10, or `nil` if the server has none.
+    var communityRating: Double? = nil
+
+    /// A show's status as the server words it, e.g. "Continuing" or "Ended". `nil` if it doesn't say.
+    var status: String? = nil
+
+    /// The year a show's run ended. `nil` if it hasn't, or the server doesn't know.
+    var endYear: Int? = nil
+
+    /// A one-line promotional tagline, if the server has one.
+    var tagline: String? = nil
+
+    /// A link to the trailer on the web (usually YouTube), if the server has one.
+    var trailerURL: URL? = nil
+
+    /// Whether the user has marked the item as a favorite.
+    var isFavorite = false
+
+    /// The cast and crew, in the server's order. Only filled in when a single item is fetched, not in lists.
+    var people: [MediaPerson] = []
+}
+
+/// What the server knows about a person beyond their name and photo. Any of it can be missing, depending on what
+/// the server's metadata provider found.
+nonisolated struct PersonDetails: Hashable, Sendable {
+    /// A biography.
+    var biography: String?
+
+    /// Date of birth. A calendar date in UTC, so read it as one.
+    var birthDate: Date?
+
+    /// Date of death, for someone who has died.
+    var deathDate: Date?
+
+    /// Where they were born, e.g. "Los Angeles, California, USA".
+    var birthplace: String?
+
+    /// Their page on IMDb or TMDb.
+    var webpage: URL?
+
+    /// Whether there's nothing to show.
+    var isEmpty: Bool {
+        biography == nil && birthDate == nil && deathDate == nil && birthplace == nil && webpage == nil
+    }
+}
+
+/// A movie or show that a person is credited on, with what they did on it.
+nonisolated struct PersonCredit: Identifiable, Hashable, Sendable {
+    /// The movie or series.
+    let item: MediaItem
+
+    /// What the person did on it: usually one entry, more if they had several jobs (e.g. director and writer).
+    let roles: [MediaPerson]
+
+    var id: String { item.id }
+}
+
+/// A member of an item's cast or crew.
+nonisolated struct MediaPerson: Identifiable, Hashable, Sendable {
+    /// What the person did on the item.
+    nonisolated enum Role: Hashable, Sendable {
+        case actor, director, writer, producer, creator, composer
+    }
+
+    /// The person's ID on the server.
+    let personID: String
+
+    /// What they did.
+    let role: Role
+
+    /// Their name.
+    let name: String
+
+    /// The character an actor played. `nil` for crew, or if the server doesn't say.
+    let character: String?
+
+    /// A portrait, ready to load, or `nil` if the server has none.
+    let imageURL: URL?
+
+    /// A larger copy of the portrait, for showing full screen. `nil` if the server has no portrait.
+    let largeImageURL: URL?
+
+    /// A person can appear once per role, e.g. as both director and writer.
+    var id: String { "\(personID)-\(role)" }
 }
 
 /// How the server is delivering a video stream.

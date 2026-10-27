@@ -8,6 +8,15 @@ import SwiftUI
 
 /// Shared layout constants.
 enum Layout {
+    /// Width of a widescreen card in shelves (extras); larger on tvOS.
+    static var wideCardWidth: CGFloat {
+        #if os(tvOS)
+        return 420
+        #else
+        return 220
+        #endif
+    }
+
     /// Width of a poster in shelves; larger on tvOS for the "ten-foot" UI.
     static var posterWidth: CGFloat {
         #if os(tvOS)
@@ -20,7 +29,7 @@ enum Layout {
 
 extension MediaItem {
     /// Whether the item can be played directly (as opposed to being a container like a series).
-    var isPlayable: Bool { kind == .movie || kind == .episode }
+    var isPlayable: Bool { kind == .movie || kind == .episode || kind == .extra }
 
     /// e.g. "Show Name · S1E3" for episodes; nil for everything else.
     var subtitle: String? {
@@ -61,6 +70,7 @@ extension MediaItem {
         case .episode: String(localized: "Go to Episode")
         case .series: String(localized: "Go to Show")
         case .season: String(localized: "Go to Season")
+        case .extra: String(localized: "Go to Feature")
         case .other: String(localized: "Go to Item")
         }
     }
@@ -114,6 +124,8 @@ extension MediaItem {
             [seriesTitle, title].compactMap { $0 }
         case .movie, .series:
             [title, year.map(String.init)].compactMap { $0 }
+        case .extra:
+            [title, extraLabel, runtime.map { Duration.seconds($0).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow)) }].compactMap { $0 }
         case .other:
             [title]
         }
@@ -207,8 +219,11 @@ struct ItemCaption: View {
     /// Without it, the row's tallest card squeezes the artwork of the shorter ones.
     var reservedLines = 0
 
+    /// Lines to show instead of the item's usual caption.
+    var lines: [String]?
+
     var body: some View {
-        let lines = item.captionLines
+        let lines = lines ?? item.captionLines
 
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
@@ -237,6 +252,39 @@ struct WatchedBadge: View {
             .artworkOverlayEdge()
             .padding(6)
             .accessibilityLabel("Watched")
+    }
+}
+
+/// A widescreen card: the item's still with a progress bar (if partly watched) and a watched checkmark, and its
+/// caption beneath.
+struct WideCard: View {
+    let item: MediaItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ArtworkView(url: item.gridArtworkURL, aspectRatio: 16.0 / 9.0)
+                .overlay(alignment: .bottom) {
+                    if let fraction = item.playedFraction {
+                        ProgressView(value: fraction)
+                            .artworkOverlayEdge()
+                            .padding(6)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if item.showsWatchedBadge {
+                        WatchedBadge()
+                    }
+                }
+
+            // An episode's show is the screen it's on, so it shows only its own title and number. The most lines
+            // an extra shows is three (title, kind, length); reserving them keeps the cards the same height.
+            ItemCaption(
+                item: item,
+                reservedLines: item.kind == .episode ? 2 : 3,
+                lines: item.kind == .episode ? [item.title, item.seasonEpisodeText].compactMap { $0 } : nil
+            )
+        }
+        .contentShape(Rectangle())
     }
 }
 
@@ -282,6 +330,16 @@ struct MediaShelf: View {
 
     /// Where tapping the heading leads. Nil makes the heading plain text.
     var destination: ShelfDestination?
+
+    /// Called when the heading is tapped, instead of navigating to `destination` by value. For a shelf on a
+    /// screen that was opened by an item binding, which can't push a value link (see `ShelfHeadingLink`).
+    var onHeadingTap: (() -> Void)?
+
+    /// Whether the cards are widescreen (for extras, which have a still rather than a poster) instead of posters.
+    var isWide = false
+
+    /// Menu links to leave out, for a shelf that's inside the screen they lead to.
+    var omitting: Set<RelatedLink> = []
 
     /// Called after a long-press action has changed the server, so the shelf's owner can reload.
     var onChange: () -> Void = {}
@@ -334,16 +392,14 @@ struct MediaShelf: View {
     /// A poster that plays its item when tapped, and peeks and pops when long-pressed.
     @ViewBuilder
     private func card(for item: MediaItem) -> some View {
-        let actions = watchActions.actions(for: item, navigation: navigation)
+        let actions = watchActions.actions(for: item, navigation: navigation, omitting: omitting)
         #if os(iOS)
         // A UIKit layer over the card, so that tapping the preview can open the item. SwiftUI's preview can't.
-        PosterCard(item: item)
-            .frame(width: Layout.posterWidth)
+        cardBody(for: item)
             .peekAndPop(WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
         #else
         Button { navigation.tap(item) } label: {
-            PosterCard(item: item)
-                .frame(width: Layout.posterWidth)
+            cardBody(for: item)
         }
         .cardLinkStyle()
         .contextMenu {
@@ -354,9 +410,24 @@ struct MediaShelf: View {
         #endif
     }
 
+    /// The card for an item, at the width of the shelf's cards.
+    @ViewBuilder
+    private func cardBody(for item: MediaItem) -> some View {
+        if isWide {
+            WideCard(item: item)
+                .frame(width: Layout.wideCardWidth)
+        } else {
+            PosterCard(item: item)
+                .frame(width: Layout.posterWidth)
+        }
+    }
+
     @ViewBuilder
     private var heading: some View {
-        if let destination {
+        if let onHeadingTap {
+            ShelfHeadingLink(title: LocalizedStringKey(title), action: onHeadingTap)
+                .accessibilityLabel("\(title), show all")
+        } else if let destination {
             NavigationLink(value: destination) {
                 HStack(spacing: 6) {
                     Text(title)
@@ -382,6 +453,11 @@ struct ItemRowActions {
     /// Opens the item's detail screen: the menu's first entry, "Go to Movie", "Go to Episode", and so on.
     var goTo: (() -> Void)?
 
+    /// Opens the season an episode belongs to, and the show an episode or season belongs to. Nil where they
+    /// don't apply. They sit after `goTo` in the menu: episode, season, show.
+    var goToSeason: (() -> Void)?
+    var goToShow: (() -> Void)?
+
     /// Marks the item (for a show or season, all its episodes) watched or unwatched. Nil for an item that
     /// can't be watched.
     var markWatched: (() -> Void)?
@@ -401,6 +477,9 @@ struct ItemRowActions {
 /// If `actions` is given, a "more" button on the right opens a menu of them.
 struct ItemRow: View {
     let item: MediaItem
+
+    /// Lines to show instead of the item's usual caption.
+    var captionLines: [String]?
     var actions: ItemRowActions?
 
     /// If given, the row peeks and pops when long-pressed. See `peekAndPop(_:passthrough:isAccessibilityElement:)`.
@@ -419,7 +498,7 @@ struct ItemRow: View {
                 .frame(width: isWidescreen ? Self.stillWidth : Self.posterWidth)
                 .frame(width: Self.stillWidth)
 
-            ItemCaption(item: item)
+            ItemCaption(item: item, lines: captionLines)
 
             Spacer()
 
@@ -447,12 +526,17 @@ struct ItemMenuEntry: Identifiable {
     /// What an entry does, which identifies it within a menu.
     enum ID: Hashable {
         case goTo
+        case goToSeason
+        case goToShow
         case markWatched
         case markUnwatched
         case removeFromContinueWatching
         case removeFromUpNext
         case markAllEpisodesWatched
         case markAllEpisodesUnwatched
+        case viewPhoto
+        case openLink
+        case copyLink
     }
 
     let id: ID
@@ -469,6 +553,12 @@ extension ItemRowActions {
         var entries: [ItemMenuEntry] = []
         if let goTo {
             entries.append(ItemMenuEntry(id: .goTo, title: item.goToMenuTitle, systemImage: "info.circle", perform: goTo))
+        }
+        if let goToSeason {
+            entries.append(ItemMenuEntry(id: .goToSeason, title: String(localized: "Go to Season"), systemImage: "square.stack", perform: goToSeason))
+        }
+        if let goToShow {
+            entries.append(ItemMenuEntry(id: .goToShow, title: String(localized: "Go to Show"), systemImage: "tv", perform: goToShow))
         }
         return entries + watchEntries(for: item)
     }

@@ -4,13 +4,30 @@
 
 import SwiftUI
 
-/// Detail for any item. Movies and episodes get a Play button; series and seasons list their children.
+/// Detail for any item. Movies and episodes get a Play button; seasons list their episodes. Series have their
+/// own screen, ``ShowDetailView``.
 struct ItemDetailView: View {
+    let item: MediaItem
+
+    var body: some View {
+        if item.kind == .series {
+            ShowDetailView(item: item)
+        } else {
+            StandardItemDetailView(item: item)
+        }
+    }
+}
+
+/// Detail for a movie, season, or episode.
+private struct StandardItemDetailView: View {
     let item: MediaItem
     @Environment(AppModel.self) private var appModel
 
     /// The item being played; setting it presents the full-screen player.
     @State private var playingItem: MediaItem?
+
+    /// The episode a tap in the list is opening.
+    @State private var openedChild: MediaItem?
 
     /// A season change waiting for confirmation, or an error to show.
     @State private var watchState = WatchActionState()
@@ -55,8 +72,8 @@ struct ItemDetailView: View {
                         Text(overview)
                     }
 
-                    if item.kind == .series || item.kind == .season {
-                        children
+                    if item.kind == .season {
+                        ItemChildrenList(item: item, reloadID: reloadCount, open: { openedChild = $0 }, play: { playingItem = $0 }) { actions(for: $0) }
                     }
                 }
                 .padding(.horizontal)
@@ -67,6 +84,7 @@ struct ItemDetailView: View {
             PlayerView(item: $0, onStop: { Task { await refresh() } })
         }
         .watchActionAlerts(watchActions)
+        .navigationDestination(item: $openedChild) { ItemDetailView(item: $0) }
     }
 
     /// Fetches the item again after playback, so the screen shows where the user got to. Keeps what's on
@@ -83,29 +101,265 @@ struct ItemDetailView: View {
         }
     }
 
-    /// Seasons (for a series) or episodes (for a season), each navigating to its own detail screen.
-    private var children: some View {
-        AsyncContent(load: { try await appModel.service.children(of: item) }, reloadID: reloadCount) { children in
-            VStack(alignment: .leading, spacing: 12) {
-                Text(item.kind == .series ? "Seasons" : "Episodes")
-                    .font(.title2.bold())
-
-                ForEach(children) { child in
-                    ItemRow(item: child, actions: actions(for: child))
-                        // A link behind the row, so the row's menu button takes its own taps.
-                        .background {
-                            NavigationLink(value: child) { Color.clear.contentShape(Rectangle()) }
-                                .cardLinkStyle()
-                        }
-                }
-            }
-        }
-    }
-
     /// The menu for a row: seasons can be marked watched or unwatched as a whole. Episodes have none here.
     private func actions(for child: MediaItem) -> ItemRowActions? {
         guard child.kind == .season else { return nil }
         return watchActions.actions(for: child)
+    }
+}
+
+/// Seasons (for a series) or episodes (for a season) under a heading, each navigating to its own detail screen.
+struct ItemChildrenList: View {
+    /// A series or season.
+    let item: MediaItem
+
+    /// Changing this reloads the list, e.g. after a change on the server.
+    var reloadID = 0
+
+    /// Opens a season. The owner presents it, because a navigation destination can't live in the row itself, which
+    /// sits in a lazy stack, where SwiftUI ignores destinations. The owner also has the only destination for items,
+    /// since two on one screen can fight over a push.
+    let open: (MediaItem) -> Void
+
+    /// Plays an episode, for a mini series' episode row. The owner presents the player.
+    let play: (MediaItem) -> Void
+
+    /// The menu for each row, or nil for none.
+    let actions: (MediaItem) -> ItemRowActions?
+
+    @Environment(AppModel.self) private var appModel
+
+    /// Whether the list of every season is open.
+    @State private var showsSeasonList = false
+
+    var body: some View {
+        AsyncContent(load: { try await appModel.service.children(of: item) }, reloadID: reloadID) { children in
+            VStack(alignment: .leading, spacing: 12) {
+                if item.kind == .series, children.count == 1, let season = children.first {
+                    // A show with a single season is a mini series: its episodes stand in for the one season.
+                    EpisodeShelf(season: season, reloadID: reloadID, open: open, play: play)
+                } else if item.kind == .series {
+                    ShelfHeadingLink(title: "\(children.count) Seasons") { showsSeasonList = true }
+                        .padding(.horizontal)
+
+                    seasonShelf(children)
+                } else {
+                    Text("Episodes")
+                        .font(.title2.bold())
+
+                    ForEach(children) { child in
+                        ItemRow(item: child, actions: actions(child))
+                            // A button behind the row, so the row's menu button takes its own taps.
+                            .background {
+                                Button { open(child) } label: { Color.clear.contentShape(Rectangle()) }
+                                    .cardLinkStyle()
+                            }
+                    }
+                }
+            }
+        }
+        .navigationDestination(isPresented: $showsSeasonList) { SeasonListView(series: item) }
+    }
+
+    /// A horizontally scrolling row of season posters. It pads its own ends, so it scrolls edge to edge.
+    private func seasonShelf(_ seasons: [MediaItem]) -> some View {
+        ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: 12) {
+                ForEach(seasons) { season in
+                    seasonCard(season)
+                }
+            }
+            .padding(.horizontal)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    /// A season poster that opens the season when tapped, and peeks and pops when long-pressed.
+    @ViewBuilder
+    private func seasonCard(_ season: MediaItem) -> some View {
+        var actions = actions(season)
+        let _ = actions?.goTo = { open(season) }
+        #if os(iOS)
+        // A UIKit layer over the card, so that tapping the preview can open the season, as on the home screen.
+        SeasonCard(season: season)
+            .frame(width: Layout.posterWidth)
+            .peekAndPop(WatchActions.peekSpec(for: season, actions: actions, navigation: seasonNavigation))
+        #else
+        Button { open(season) } label: {
+            SeasonCard(season: season)
+                .frame(width: Layout.posterWidth)
+        }
+        .cardLinkStyle()
+        .contextMenu {
+            ItemActionButtons(entries: actions?.menuEntries(for: season) ?? [])
+        } preview: {
+            ItemPeek(item: season)
+        }
+        #endif
+    }
+
+    /// Seasons can't be played, so tapping one opens it, like its peek does.
+    private var seasonNavigation: ItemNavigation {
+        ItemNavigation(open: open, play: { _ in })
+    }
+}
+
+/// A section heading with a chevron that opens the full list behind the section, like a home-screen shelf's.
+///
+/// It runs an action rather than navigating by value. A screen that was itself opened by an item binding (a
+/// `navigationDestination(item:)`) can't push a value link: the stack puts that screen on top of the new one. So
+/// anything pushed from such a screen uses a destination on the screen itself, which the owner of the heading sets.
+struct ShelfHeadingLink: View {
+    let title: LocalizedStringKey
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.title2.bold())
+                Image(systemName: "chevron.right")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .cardLinkStyle()
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// A mini series' episodes in a row of widescreen cards, with a heading that opens the list of them all. The same
+/// shelf as the home screen's, so tapping plays and a long-press peeks.
+private struct EpisodeShelf: View {
+    /// The show's only season.
+    let season: MediaItem
+    let reloadID: Int
+    let open: (MediaItem) -> Void
+    let play: (MediaItem) -> Void
+
+    @Environment(AppModel.self) private var appModel
+
+    /// Whether the list of every episode is open.
+    @State private var showsList = false
+
+    /// Bumped to reload the episodes after a change on the server.
+    @State private var reloadCount = 0
+
+    var body: some View {
+        AsyncContent(load: { try await appModel.service.children(of: season) }, reloadID: reloadID + reloadCount) { episodes in
+            if !episodes.isEmpty {
+                MediaShelf(
+                    title: episodes.count == 1 ? String(localized: "1 Episode") : String(localized: "\(episodes.count) Episodes"),
+                    items: episodes,
+                    onHeadingTap: { showsList = true },
+                    isWide: true,
+                    omitting: [.show, .season],
+                    onChange: { reloadCount += 1 },
+                    navigation: ItemNavigation(open: open, play: play)
+                )
+            }
+        }
+        .navigationDestination(isPresented: $showsList) { ShelfListView(destination: .episodes(season)) }
+    }
+}
+
+/// Every season of a show as a list of rows, with the same menus and peeks as the shelf.
+struct SeasonListView: View {
+    let series: MediaItem
+
+    @Environment(AppModel.self) private var appModel
+
+    /// A watch-state change waiting for confirmation, or an error to show.
+    @State private var watchState = WatchActionState()
+
+    /// Bumped to reload the seasons after a change on the server.
+    @State private var reloadCount = 0
+
+    /// The season a tap, peek or "Go to Season" is opening.
+    @State private var openedSeason: MediaItem?
+
+    private var watchActions: WatchActions {
+        WatchActions(service: appModel.service, destination: nil, state: $watchState) { _ in
+            reloadCount += 1
+        }
+    }
+
+    /// Seasons can't be played, so tapping one opens it, like its peek does.
+    private var navigation: ItemNavigation {
+        ItemNavigation(open: { openedSeason = $0 }, play: { _ in })
+    }
+
+    var body: some View {
+        AsyncContent(load: { try await appModel.service.children(of: series) }, reloadID: reloadCount) { seasons in
+            List(seasons) { season in
+                // Built once and shared by the "more" menu and the long-press menu.
+                // Already inside the show, so there's no "Go to Show".
+                let actions = watchActions.actions(for: season, navigation: navigation, omitting: [.show])
+                ItemRow(item: season, captionLines: [season.seasonTitle, season.seasonDetailLine].compactMap { $0 }, actions: actions, peek: WatchActions.peekSpec(for: season, actions: actions, navigation: navigation))
+                    #if !os(iOS)
+                    .background {
+                        Button { openedSeason = season } label: { Color.clear.contentShape(Rectangle()) }
+                            .cardLinkStyle()
+                            .accessibilityLabel(season.accessibilityDescription)
+                    }
+                    #endif
+            }
+            .listStyle(.plain)
+        }
+        .navigationTitle("Seasons")
+        .watchActionAlerts(watchActions)
+        .navigationDestination(item: $openedSeason) { ItemDetailView(item: $0) }
+    }
+}
+
+extension MediaItem {
+    /// "Season 2", or the server's name for it (e.g. "Specials") if it has no regular number.
+    var seasonTitle: String {
+        guard let number = episodeNumber, number > 0 else { return title }
+        return String(localized: "Season \(number)")
+    }
+
+    /// e.g. "8 Episodes · 2021". Whichever part the server didn't give is left out.
+    var seasonDetailLine: String? {
+        var parts: [String] = []
+        if let episodeCount {
+            parts.append(episodeCount == 1 ? String(localized: "1 Episode") : String(localized: "\(episodeCount) Episodes"))
+        }
+        if let year {
+            parts.append(year.formatted(.number.grouping(.never)))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// A season's poster with "Season X" beneath it, then its episode count and the year it came out.
+private struct SeasonCard: View {
+    let season: MediaItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ArtworkView(url: season.posterURL, aspectRatio: 2.0 / 3.0)
+                .overlay(alignment: .topTrailing) {
+                    if season.showsWatchedBadge {
+                        WatchedBadge()
+                    }
+                }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(season.seasonTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+
+                if let subtitle = season.seasonDetailLine {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 

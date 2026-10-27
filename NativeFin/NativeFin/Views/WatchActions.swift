@@ -47,6 +47,12 @@ extension Array where Element == MediaItem {
     }
 }
 
+/// A screen an item's menu can lead to besides its own.
+enum RelatedLink {
+    case season
+    case show
+}
+
 /// How a screen opens and plays the items on it. The screen owns the navigation destination and the player,
 /// so it can refresh when playback ends.
 struct ItemNavigation {
@@ -77,6 +83,38 @@ struct WatchActionState {
 
     /// Set when a change fails; shown in an alert.
     var errorMessage: String?
+}
+
+/// How many seasons each show has, learned as screens load. A show with a single season is treated as a mini
+/// series, with no season page, so a menu needs to know before it offers "Go to Season".
+///
+/// It's observable, so a menu built in a view's body is rebuilt when a count arrives.
+@MainActor @Observable
+final class SeasonCountCache {
+    static let shared = SeasonCountCache()
+
+    private var counts: [String: Int] = [:]
+    private var loading: Set<String> = []
+
+    /// The show's season count, or nil if it isn't known yet.
+    func count(ofSeries id: String) -> Int? { counts[id] }
+
+    /// Remembers a count a screen already has.
+    func record(_ count: Int?, ofSeries id: String) {
+        if let count { counts[id] = count }
+    }
+
+    /// Fetches a show's count in the background if it isn't known and isn't already being fetched.
+    func prefetch(seriesID id: String, service: any MediaService) {
+        guard counts[id] == nil, !loading.contains(id) else { return }
+        loading.insert(id)
+        Task {
+            if let count = try? await service.item(id: id).seasonCount {
+                counts[id] = count
+            }
+            loading.remove(id)
+        }
+    }
 }
 
 /// Builds the watch-state actions for the items on a screen, and runs them.
@@ -131,8 +169,43 @@ struct WatchActions {
     }
 
     /// The menu actions for an item, with "Go to …" opening it through `navigation`.
-    func actions(for item: MediaItem, navigation: ItemNavigation) -> ItemRowActions? {
-        actions(for: item, goTo: { navigation.open(item) })
+    ///
+    /// An episode also offers "Go to Season" and "Go to Show", and a season "Go to Show". The server is asked for
+    /// the season or show when one is chosen, since the item only knows its ID.
+    ///
+    /// - Parameter omitting: Links to leave out because the screen is already inside them, e.g. "Go to Show" on a
+    ///   list of a show's episodes.
+    func actions(for item: MediaItem, navigation: ItemNavigation, omitting: Set<RelatedLink> = []) -> ItemRowActions? {
+        var actions = actions(for: item, goTo: { navigation.open(item) })
+        // A show with a single season has no season page, so its episodes offer only the episode and the show. The
+        // count is fetched if it isn't known yet, and the entry waits for it.
+        if item.kind == .episode, !omitting.contains(.season), let seasonID = item.seasonID, let seriesID = item.seriesID {
+            let cache = SeasonCountCache.shared
+            if let count = cache.count(ofSeries: seriesID) {
+                if count > 1 {
+                    actions?.goToSeason = { open(itemID: seasonID, through: navigation) }
+                }
+            } else {
+                cache.prefetch(seriesID: seriesID, service: service)
+            }
+        }
+        if item.kind == .episode || item.kind == .season, !omitting.contains(.show), let seriesID = item.seriesID {
+            actions?.goToShow = { open(itemID: seriesID, through: navigation) }
+        }
+        return actions
+    }
+
+    /// Fetches an item by ID and opens it, or shows the error.
+    private func open(itemID: String, through navigation: ItemNavigation) {
+        let service = service
+        let state = state
+        Task {
+            do {
+                navigation.open(try await service.item(id: itemID))
+            } catch {
+                state.wrappedValue.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     /// What a long-press on an item peeks at and offers. Tapping the item plays it (see `ItemNavigation/tap(_:)`);

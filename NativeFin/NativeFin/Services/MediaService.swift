@@ -118,11 +118,52 @@ nonisolated protocol MediaService: Sendable {
     /// - Throws: ``MediaServiceError/itemNotFound`` if the server has no such item.
     func item(id: String) async throws -> MediaItem
 
+    /// Finds other movies or shows on the server that resemble one, by genre, cast, studio and so on.
+    ///
+    /// - Parameter item: A movie or series.
+    /// - Returns: The closest matches, not including the item itself. Empty for any other kind of item, or if
+    ///   the server finds nothing close.
+    func similarItems(to item: MediaItem) async throws -> [MediaItem]
+
+    /// Fetches the special features attached to a movie or show: behind the scenes, deleted scenes, interviews and
+    /// so on, which the server finds from how they're named and filed.
+    ///
+    /// - Parameter item: A movie or series.
+    /// - Returns: The extras, in the server's order. Empty if there are none.
+    func specialFeatures(of item: MediaItem) async throws -> [MediaItem]
+
     /// Fetches the items inside a series or season.
     ///
     /// - Parameter item: A series or season.
     /// - Returns: A series' seasons, or a season's episodes in episode order. Empty for any other kind of item.
     func children(of item: MediaItem) async throws -> [MediaItem]
+
+    /// Finds the movies and shows on the server that a person is credited on, e.g. an actor's other work.
+    ///
+    /// - Parameter personID: ``MediaPerson/personID``.
+    /// - Returns: Movies and series (not episodes), sorted by name, each with what the person did on it. Only
+    ///   what's on this server.
+    func items(featuring personID: String) async throws -> [PersonCredit]
+
+    /// Fetches what the server knows about a person: biography, birth and death dates, birthplace and a web link.
+    ///
+    /// - Parameter personID: ``MediaPerson/personID``.
+    /// - Returns: The details. Every part of them can be missing, so check ``PersonDetails/isEmpty``.
+    func details(ofPerson personID: String) async throws -> PersonDetails
+
+    /// Marks an item as a favorite, or takes it off the favorites.
+    ///
+    /// - Parameters:
+    ///   - isFavorite: Whether it should be a favorite.
+    ///   - itemID: The item's ID.
+    func setFavorite(_ isFavorite: Bool, itemID: String) async throws
+
+    /// Picks the episode a show's Play button starts: the next one to watch (resuming one that's partly
+    /// watched), or the first episode of season 1 if the user hasn't started the show or has finished it.
+    ///
+    /// - Parameter series: A series.
+    /// - Returns: The episode to play, or `nil` if the show has no episodes.
+    func nextEpisode(in series: MediaItem) async throws -> MediaItem?
 
     /// Searches the user's movies, series, and episodes.
     ///

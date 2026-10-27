@@ -24,6 +24,13 @@ actor JellyfinMediaService: MediaService {
     /// Asking for more only costs memory (a decoded image takes width × height × 4 bytes) and bandwidth.
     private static let posterWidth = 450
     private static let backdropWidth = 1280
+    private static let logoWidth = 800
+
+    /// How many similar titles to ask for.
+    private static let similarLimit = 20
+
+    /// How wide a person's portrait is asked for when it fills the screen.
+    private static let largePortraitWidth = 1200
 
     private let identity: ClientIdentity
 
@@ -250,7 +257,8 @@ actor JellyfinMediaService: MediaService {
         let (client, session) = try signedIn()
         let request = Paths.getItems(parameters: .init(
             userID: session.userID,
-            fields: Self.itemFields,
+            // The cast is big, so only a single item asks for it, not every list.
+            fields: Self.itemFields + [.people],
             enableUserData: true,
             ids: [id]
         ))
@@ -258,6 +266,83 @@ actor JellyfinMediaService: MediaService {
             throw MediaServiceError.itemNotFound
         }
         return item
+    }
+
+    func details(ofPerson personID: String) async throws -> PersonDetails {
+        let (client, session) = try signedIn()
+        let dto = try await send(Paths.getItem(itemID: personID, userID: session.userID), with: client)
+
+        func nonEmpty(_ text: String?) -> String? {
+            guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            return text
+        }
+
+        // IMDb if the server knows it, otherwise TMDb.
+        var webpage: URL?
+        if let imdb = nonEmpty(dto.providerIDs?["Imdb"]) {
+            webpage = URL(string: "https://www.imdb.com/name/\(imdb)")
+        } else if let tmdb = nonEmpty(dto.providerIDs?["Tmdb"]) {
+            webpage = URL(string: "https://www.themoviedb.org/person/\(tmdb)")
+        }
+
+        return PersonDetails(
+            biography: nonEmpty(dto.overview),
+            birthDate: dto.premiereDate,
+            deathDate: dto.endDate,
+            birthplace: nonEmpty(dto.productionLocations?.first),
+            webpage: webpage
+        )
+    }
+
+    func items(featuring personID: String) async throws -> [PersonCredit] {
+        let (client, session) = try signedIn()
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            isRecursive: true,
+            sortOrder: [.ascending],
+            // Each item's cast tells what the person did on it. The list is small, so it's fine to ask for it.
+            fields: Self.itemFields + [.people],
+            includeItemTypes: [.movie, .series],
+            sortBy: [.sortName],
+            enableUserData: true,
+            personIDs: [personID]
+        ))
+        return try await mapItems(send(request, with: client), client: client).map { item in
+            var item = item
+            let roles = item.people.filter { $0.personID == personID }
+            // The cast isn't needed past this point.
+            item.people = []
+            return PersonCredit(item: item, roles: roles)
+        }
+    }
+
+    func similarItems(to item: MediaItem) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+        let request: Request<BaseItemDtoQueryResult>
+        switch item.kind {
+        case .series:
+            request = Paths.getSimilarShows(itemID: item.id, parameters: .init(userID: session.userID, limit: Self.similarLimit, fields: Self.itemFields))
+        case .movie:
+            request = Paths.getSimilarMovies(itemID: item.id, parameters: .init(userID: session.userID, limit: Self.similarLimit, fields: Self.itemFields))
+        default:
+            return []
+        }
+        return try await mapItems(send(request, with: client), client: client).filter { $0.id != item.id }
+    }
+
+    func specialFeatures(of item: MediaItem) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+        let features = try await send(Paths.getSpecialFeatures(itemID: item.id, userID: session.userID), with: client)
+        return features.compactMap { Self.makeItem(from: $0, client: client, isExtra: true) }
+    }
+
+    func setFavorite(_ isFavorite: Bool, itemID: String) async throws {
+        let (client, session) = try signedIn()
+        if isFavorite {
+            _ = try await send(Paths.markFavoriteItem(itemID: itemID, userID: session.userID), with: client)
+        } else {
+            _ = try await send(Paths.unmarkFavoriteItem(itemID: itemID, userID: session.userID), with: client)
+        }
     }
 
     func children(of item: MediaItem) async throws -> [MediaItem] {
@@ -280,9 +365,40 @@ actor JellyfinMediaService: MediaService {
                 enableUserData: true
             ))
             return try await mapItems(send(request, with: client), client: client)
-        case .movie, .episode, .other:
+        case .movie, .episode, .extra, .other:
             return []
         }
+    }
+
+    func nextEpisode(in series: MediaItem) async throws -> MediaItem? {
+        let (client, session) = try signedIn()
+
+        // The server's Next Up for this one show: the episode after the last one watched, or a partly watched
+        // one. For a show not yet started it's the first episode. It's empty once the show is finished,
+        // because rewatching is off.
+        let nextUp = Paths.getNextUp(parameters: .init(
+            userID: session.userID,
+            limit: 1,
+            fields: Self.itemFields,
+            seriesID: series.id,
+            enableUserData: true,
+            enableResumable: true,
+            enableRewatching: false
+        ))
+        if let next = try await mapItems(send(nextUp, with: client), client: client).first {
+            return next
+        }
+
+        // Finished (or nothing for Next Up to go on): start again from the top. Episodes come in season and
+        // episode order; specials (season 0) are skipped unless they're all there is.
+        let all = Paths.getEpisodes(seriesID: series.id, parameters: .init(
+            userID: session.userID,
+            fields: Self.itemFields,
+            isMissing: false,
+            enableUserData: true
+        ))
+        let episodes = try await mapItems(send(all, with: client), client: client)
+        return episodes.first { ($0.seasonNumber ?? 1) > 0 } ?? episodes.first
     }
 
     func search(_ query: String) async throws -> [MediaItem] {
@@ -410,7 +526,9 @@ actor JellyfinMediaService: MediaService {
     // MARK: - Helpers
 
     /// Extra per-item fields requested beyond the defaults.
-    private static let itemFields: [ItemFields] = [.overview, .primaryImageAspectRatio, .childCount, .recursiveItemCount]
+    private static let itemFields: [ItemFields] = [
+        .overview, .primaryImageAspectRatio, .childCount, .recursiveItemCount, .genres, .studios
+    ]
 
     /// Tells the server what AVPlayer can play natively so it only transcodes when it has to.
     private static let deviceProfile = DeviceProfile(
@@ -560,15 +678,22 @@ actor JellyfinMediaService: MediaService {
     }
 
     /// Maps an SDK item DTO to a `MediaItem`, or nil if it lacks the ID or name every item needs.
-    private static func makeItem(from dto: BaseItemDto, client: JellyfinClient) -> MediaItem? {
+    /// - Parameter isExtra: Whether the item came from a list of extras. Those are also recognized by their
+    ///   `extraType`, but a server may leave that out.
+    private static func makeItem(from dto: BaseItemDto, client: JellyfinClient, isExtra: Bool = false) -> MediaItem? {
         guard let id = dto.id, let title = dto.name else { return nil }
 
-        let kind: MediaItem.Kind = switch dto.type {
-        case .movie: .movie
-        case .series: .series
-        case .season: .season
-        case .episode: .episode
-        default: .other
+        let kind: MediaItem.Kind
+        if isExtra || dto.extraType != nil {
+            kind = .extra
+        } else {
+            kind = switch dto.type {
+            case .movie: .movie
+            case .series: .series
+            case .season: .season
+            case .episode: .episode
+            default: .other
+            }
         }
 
         let runtime = dto.runTimeTicks.map { Double($0) / ticksPerSecond }
@@ -589,16 +714,92 @@ actor JellyfinMediaService: MediaService {
             runtime: runtime,
             posterURL: posterURL(for: dto, id: id, client: client),
             backdropURL: backdropURL(for: dto, id: id, client: client),
-            thumbnailURL: thumbnailURL(for: dto, id: id, client: client),
+            thumbnailURL: thumbnailURL(for: dto, id: id, isExtra: kind == .extra, client: client),
             playedFraction: playedFraction,
             isPlayed: dto.userData?.isPlayed ?? false,
             seriesTitle: dto.seriesName,
             seasonNumber: dto.parentIndexNumber,
             episodeNumber: dto.indexNumber,
+            extraLabel: kind == .extra ? extraLabel(for: dto.extraType) : nil,
             seriesID: dto.seriesID,
+            seasonID: kind == .episode ? dto.seasonID : nil,
             episodeCount: episodeCount(of: dto, kind: kind),
-            unwatchedEpisodeCount: kind == .series || kind == .season ? dto.userData?.unplayedItemCount : nil
+            seasonCount: kind == .series ? dto.childCount : nil,
+            unwatchedEpisodeCount: kind == .series || kind == .season ? dto.userData?.unplayedItemCount : nil,
+            logoURL: logoURL(for: dto, id: id, client: client),
+            genres: dto.genres ?? [],
+            // A show's studios are its networks (and production companies); the first is the original network.
+            network: kind == .series ? dto.studios?.first?.name : nil,
+            officialRating: dto.officialRating,
+            communityRating: dto.communityRating.map(Double.init),
+            status: dto.status,
+            endYear: dto.endDate.map { Calendar.utc.component(.year, from: $0) },
+            tagline: dto.taglines?.first(where: { !$0.isEmpty }),
+            trailerURL: dto.remoteTrailers?.lazy.compactMap { $0.url.flatMap { URL(string: $0) } }.first,
+            isFavorite: dto.userData?.isFavorite ?? false,
+            people: people(of: dto, client: client)
         )
+    }
+
+    /// The item's own logo, falling back to its parent's (a series' logo, for its seasons and episodes).
+    private static func logoURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
+        if let tag = dto.imageTags?[ImageType.logo.rawValue] {
+            return imageURL(itemID: id, type: .logo, tag: tag, width: logoWidth, client: client)
+        }
+        if let parentID = dto.parentLogoItemID, let tag = dto.parentLogoImageTag {
+            return imageURL(itemID: parentID, type: .logo, tag: tag, width: logoWidth, client: client)
+        }
+        return nil
+    }
+
+    /// The item's cast and crew, leaving out kinds of credit the app doesn't show (e.g. music credits) and repeats.
+    private static func people(of dto: BaseItemDto, client: JellyfinClient) -> [MediaPerson] {
+        var seen = Set<String>()
+        return (dto.people ?? []).compactMap { person in
+            guard let personID = person.id, let name = person.name else { return nil }
+            let role: MediaPerson.Role
+            switch person.type {
+            case .actor, .guestStar: role = .actor
+            case .director: role = .director
+            case .writer: role = .writer
+            case .producer: role = .producer
+            case .creator: role = .creator
+            case .composer: role = .composer
+            default: return nil
+            }
+            let image = person.primaryImageTag.flatMap {
+                imageURL(itemID: personID, type: .primary, tag: $0, width: posterWidth, client: client)
+            }
+            let largeImage = person.primaryImageTag.flatMap {
+                imageURL(itemID: personID, type: .primary, tag: $0, width: largePortraitWidth, client: client)
+            }
+            let result = MediaPerson(
+                personID: personID,
+                role: role,
+                name: name,
+                character: role == .actor ? person.role.flatMap { $0.isEmpty ? nil : $0 } : nil,
+                imageURL: image,
+                largeImageURL: largeImage
+            )
+            return seen.insert(result.id).inserted ? result : nil
+        }
+    }
+
+    /// e.g. "Behind the Scenes" for an extra's type, or nil if the server doesn't say.
+    private static func extraLabel(for type: ExtraType?) -> String? {
+        switch type {
+        case .behindTheScenes: String(localized: "Behind the Scenes")
+        case .deletedScene: String(localized: "Deleted Scene")
+        case .interview: String(localized: "Interview")
+        case .featurette: String(localized: "Featurette")
+        case .trailer: String(localized: "Trailer")
+        case .clip: String(localized: "Clip")
+        case .scene: String(localized: "Scene")
+        case .short: String(localized: "Short")
+        case .sample: String(localized: "Sample")
+        case .themeVideo: String(localized: "Theme Video")
+        case .themeSong, .unknown, nil: nil
+        }
     }
 
     /// How many episodes a series or season has, or nil for anything else.
@@ -639,7 +840,17 @@ actor JellyfinMediaService: MediaService {
     ///
     /// An episode uses its own still (its primary image). A movie uses its thumb image, falling back to its
     /// backdrop. Everything else has none.
-    private static func thumbnailURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
+    private static func thumbnailURL(for dto: BaseItemDto, id: String, isExtra: Bool, client: JellyfinClient) -> URL? {
+        // An extra's own image is a widescreen frame, so it's used as it is, falling back to a thumb or backdrop.
+        if isExtra {
+            if let tag = dto.imageTags?[ImageType.primary.rawValue] {
+                return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
+            }
+            if let tag = dto.imageTags?[ImageType.thumb.rawValue] {
+                return imageURL(itemID: id, type: .thumb, tag: tag, width: posterWidth, client: client)
+            }
+            return backdropURL(for: dto, id: id, client: client)
+        }
         switch dto.type {
         case .episode:
             guard let tag = dto.imageTags?[ImageType.primary.rawValue] else { return nil }
@@ -663,5 +874,14 @@ actor JellyfinMediaService: MediaService {
             return imageURL(itemID: parentID, type: .backdrop, tag: tag, width: backdropWidth, client: client)
         }
         return nil
+    }
+}
+
+private extension Calendar {
+    /// A Gregorian calendar in UTC, for dates the server stores as plain calendar dates.
+    nonisolated static var utc: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .gmt
+        return calendar
     }
 }
