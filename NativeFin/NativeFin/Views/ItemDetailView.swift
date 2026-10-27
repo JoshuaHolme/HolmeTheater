@@ -4,19 +4,27 @@
 
 import SwiftUI
 
-/// Detail for any item. Movies and episodes get a Play button; series and seasons list their children.
+/// Detail for any item. Movies, shows, seasons and episodes have their own screen, ``ShowDetailView``. A special
+/// feature has none (it only plays), and anything else gets a simpler one.
 struct ItemDetailView: View {
+    let item: MediaItem
+
+    var body: some View {
+        if item.kind == .series || item.kind == .season || item.kind == .episode || item.kind == .movie {
+            ShowDetailView(item: item)
+        } else {
+            StandardItemDetailView(item: item)
+        }
+    }
+}
+
+/// Detail for anything without a screen of its own, which isn't a special feature.
+private struct StandardItemDetailView: View {
     let item: MediaItem
     @Environment(AppModel.self) private var appModel
 
     /// The item being played; setting it presents the full-screen player.
     @State private var playingItem: MediaItem?
-
-    /// A season change waiting for confirmation, or an error to show.
-    @State private var watchState = WatchActionState()
-
-    /// Bumped to reload the list of seasons or episodes after a change on the server.
-    @State private var reloadCount = 0
 
     /// The item as the server last described it, fetched again after playback. Nil until then.
     @State private var refreshedItem: MediaItem?
@@ -54,10 +62,6 @@ struct ItemDetailView: View {
                     if let overview = current.overview {
                         Text(overview)
                     }
-
-                    if item.kind == .series || item.kind == .season {
-                        children
-                    }
                 }
                 .padding(.horizontal)
             }
@@ -66,7 +70,6 @@ struct ItemDetailView: View {
         .fullScreenCover(item: $playingItem) {
             PlayerView(item: $0, onStop: { Task { await refresh() } })
         }
-        .watchActionAlerts(watchActions)
     }
 
     /// Fetches the item again after playback, so the screen shows where the user got to. Keeps what's on
@@ -74,38 +77,6 @@ struct ItemDetailView: View {
     private func refresh() async {
         guard let latest = try? await appModel.service.item(id: item.id) else { return }
         refreshedItem = latest
-    }
-
-    /// Reloads the seasons or episodes after a change, so their watched counts come from the server.
-    private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, destination: nil, state: $watchState) { _ in
-            reloadCount += 1
-        }
-    }
-
-    /// Seasons (for a series) or episodes (for a season), each navigating to its own detail screen.
-    private var children: some View {
-        AsyncContent(load: { try await appModel.service.children(of: item) }, reloadID: reloadCount) { children in
-            VStack(alignment: .leading, spacing: 12) {
-                Text(item.kind == .series ? "Seasons" : "Episodes")
-                    .font(.title2.bold())
-
-                ForEach(children) { child in
-                    ItemRow(item: child, actions: actions(for: child))
-                        // A link behind the row, so the row's menu button takes its own taps.
-                        .background {
-                            NavigationLink(value: child) { Color.clear.contentShape(Rectangle()) }
-                                .cardLinkStyle()
-                        }
-                }
-            }
-        }
-    }
-
-    /// The menu for a row: seasons can be marked watched or unwatched as a whole. Episodes have none here.
-    private func actions(for child: MediaItem) -> ItemRowActions? {
-        guard child.kind == .season else { return nil }
-        return watchActions.actions(for: child)
     }
 }
 

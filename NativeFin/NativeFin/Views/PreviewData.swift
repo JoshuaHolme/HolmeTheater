@@ -76,7 +76,9 @@ extension MediaItem {
         isPlayed: false,
         seriesTitle: nil,
         seasonNumber: nil,
-        episodeNumber: nil
+        episodeNumber: nil,
+        genres: ["Comedy", "Drama"],
+        network: "Sample Network"
     )
 
     /// An episode that's 60% watched.

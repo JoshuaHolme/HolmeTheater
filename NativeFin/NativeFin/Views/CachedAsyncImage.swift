@@ -38,6 +38,9 @@ struct CachedAsyncImage<Content: View>: View {
 
     var body: some View {
         content(phase)
+            // A picture that arrives after the view is on screen fades in rather than snapping in. One that was
+            // already cached is there on the first frame, so it isn't animated.
+            .animation(.easeOut(duration: 0.25), value: phase.image != nil)
             // Reruns when the URL changes, e.g. when a list reuses this view for a different item.
             .task(id: url) { await load() }
     }

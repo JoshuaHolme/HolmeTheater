@@ -134,6 +134,35 @@ nonisolated final class ImageCache: @unchecked Sendable {
         }
     }
 
+    /// Loads these images into memory and returns once they're ready, so a row can appear with its pictures rather
+    /// than the pictures popping in after it. Gives up waiting after `timeout`, so a slow network can't hold a
+    /// screen back; the downloads carry on in the background either way.
+    ///
+    /// Use it for what shows first. A decoded image costs a lot of memory (see the type's notes), so it isn't for
+    /// a whole library.
+    func preload(_ urls: [URL], timeout: Duration = .seconds(2)) async {
+        let pending = urls.filter { cachedImage(for: $0) == nil }
+        guard !pending.isEmpty else { return }
+
+        // A download can't be cancelled, so a task group can't be raced against the timeout (it waits for every
+        // child). Two separate tasks do instead: whichever finishes first resumes the caller, the other is harmless.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let once = ResumeOnce(continuation)
+            Task {
+                await withTaskGroup(of: Void.self) { group in
+                    for url in pending {
+                        group.addTask { _ = await self.image(for: url) }
+                    }
+                }
+                once.resume()
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                once.resume()
+            }
+        }
+    }
+
     // MARK: - Loading
 
     /// Reads the image from disk (downloading it first if needed) and decodes it into the memory cache.
@@ -239,5 +268,23 @@ nonisolated final class ImageCache: @unchecked Sendable {
             total -= entry.size
             if total <= maxDiskBytes { break }
         }
+    }
+}
+
+/// Resumes a continuation the first time it's asked to, and ignores any later request.
+private nonisolated final class ResumeOnce: @unchecked Sendable {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private let lock = NSLock()
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume() {
+        let pending = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume()
     }
 }

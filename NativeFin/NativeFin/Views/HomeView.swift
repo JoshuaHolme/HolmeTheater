@@ -103,6 +103,9 @@ struct HomeView: View {
         .padding(.horizontal)
     }
 
+    /// How many posters of each shelf load before the shelves show: about what fits across a screen.
+    private static let preloadedPostersPerShelf = 6
+
     /// Fetches the resume list and each movie/TV library's recently added items.
     /// Music and other libraries are skipped, since the app doesn't play them yet.
     private func loadHome() async throws -> HomeData {
@@ -127,8 +130,13 @@ struct HomeView: View {
         let resumeItems = try await resume
         let nextUpItems = try await nextUp
 
-        // Start downloading every poster now, so they're already cached by the time you scroll to them.
-        ImageCache.shared.prefetch((resumeItems + nextUpItems + rows.flatMap(\.items)).compactMap(\.posterURL))
+        // The first posters of each shelf are loaded before the shelves show, so they don't pop in. Every other
+        // poster starts downloading now, so it's cached by the time you scroll to it.
+        let shelfItems = [resumeItems, nextUpItems] + rows.map(\.items)
+        let firstScreen = shelfItems.flatMap { $0.prefix(Self.preloadedPostersPerShelf) }
+        let rest = shelfItems.flatMap { $0.dropFirst(Self.preloadedPostersPerShelf) }
+        ImageCache.shared.prefetch(rest.compactMap(\.posterURL))
+        await ImageCache.shared.preload(firstScreen.compactMap(\.posterURL))
 
         return HomeData(resume: resumeItems, nextUp: nextUpItems, rows: rows)
     }

@@ -11,12 +11,22 @@ enum ShelfDestination: Hashable {
     case nextUp
     /// Everything recently added to a library (episodes for TV, movies for film).
     case recentlyAdded(Library)
+    /// Other movies or shows on the server that resemble this one.
+    case similar(MediaItem)
+    /// The special features (extras) of a movie or show.
+    case specialFeatures(MediaItem)
+    /// The episodes of a season (the only one a mini series has).
+    /// - omitsShow: Whether the list's menus leave out "Go to Show", because it was opened from the show's page.
+    case episodes(MediaItem, omitsShow: Bool)
 
     var title: String {
         switch self {
         case .continueWatching: String(localized: "Continue Watching")
         case .nextUp: String(localized: "Up Next")
         case .recentlyAdded(let library): String(localized: "Recently Added \(library.name)")
+        case .similar: String(localized: "More Like This")
+        case .specialFeatures: String(localized: "Special Features")
+        case .episodes: String(localized: "Episodes")
         }
     }
 }
@@ -88,6 +98,19 @@ struct ShelfListView: View {
         }
     }
 
+    /// What to show under an item in place of its usual caption. A season's episodes are all in the same season, so
+    /// each shows its number and air date instead of "Season 1 Episode 3".
+    private func captionLines(for item: MediaItem) -> [String]? {
+        guard case .episodes = destination, item.kind == .episode else { return nil }
+        return [item.title, item.episodeAirLine].compactMap { $0 }
+    }
+
+    /// The menu links to leave out: a list of a season's episodes is inside that season, and maybe the show.
+    private var omittedLinks: Set<RelatedLink> {
+        if case .episodes(_, let omitsShow) = destination { return omitsShow ? [.show, .season] : [.season] }
+        return []
+    }
+
     /// Tapping an item plays it; "Go to …" and its peek open it.
     private var navigation: ItemNavigation {
         ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
@@ -97,8 +120,8 @@ struct ShelfListView: View {
         List {
             ForEach(items) { item in
                 // Built once and shared by the "more" menu and the long-press menu.
-                let actions = watchActions.actions(for: item, navigation: navigation)
-                ItemRow(item: item, actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
+                let actions = watchActions.actions(for: item, navigation: navigation, omitting: omittedLinks)
+                ItemRow(item: item, captionLines: captionLines(for: item), actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
                     #if !os(iOS)
                     .background { tapTarget(for: item) }
                     #endif
@@ -114,8 +137,8 @@ struct ShelfListView: View {
             LazyVStack(spacing: 16) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 16, alignment: .top)], spacing: 16) {
                     ForEach(items) { item in
-                        let actions = watchActions.actions(for: item, navigation: navigation)
-                        ShelfGridCard(item: item, actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
+                        let actions = watchActions.actions(for: item, navigation: navigation, omitting: omittedLinks)
+                        ShelfGridCard(item: item, actions: actions, captionLines: captionLines(for: item), peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
                             #if !os(iOS)
                             .background { tapTarget(for: item) }
                             #endif
@@ -229,6 +252,15 @@ struct ShelfListView: View {
             return try await service.nextUpItems(offset: offset, limit: limit)
         case .recentlyAdded(let library):
             return try await service.recentlyAddedPage(in: library, offset: offset, limit: limit)
+        case .episodes(let season, _):
+            // The server pages these, but a season is short and in order, so it's asked for them all and cut here.
+            return Array(try await service.children(of: season).dropFirst(offset).prefix(limit))
+        case .specialFeatures(let item):
+            // Like similar items, these have no paging on the server and there are few.
+            return Array(try await service.specialFeatures(of: item).dropFirst(offset).prefix(limit))
+        case .similar(let item):
+            // The server has no paging for these, and there are few, so it's asked for them all and cut here.
+            return Array(try await service.similarItems(to: item).dropFirst(offset).prefix(limit))
         }
     }
 }
