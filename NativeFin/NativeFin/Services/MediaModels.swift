@@ -183,7 +183,8 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     /// The item's genres, e.g. "Drama" and "Comedy", in the order the server lists them.
     var genres: [String] = []
 
-    /// For a show: the network it originally aired on, e.g. "HBO". `nil` if the server doesn't know.
+    /// For a show: the network it originally aired on, e.g. "HBO". For a movie: its first listed studio. `nil` if the
+    /// server doesn't know.
     var network: String? = nil
 
     /// The content rating, e.g. "TV-MA" or "PG-13". `nil` if the server doesn't have one.

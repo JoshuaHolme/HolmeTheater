@@ -280,9 +280,9 @@ actor JellyfinMediaService: MediaService {
 
         // IMDb if the server knows it, otherwise TMDb.
         var webpage: URL?
-        if let imdb = nonEmpty(dto.providerIDs?["Imdb"]) {
+        if let imdb = nonEmpty(dto.providerIDs?["Imdb"]), Self.isPlainID(imdb) {
             webpage = URL(string: "https://www.imdb.com/name/\(imdb)")
-        } else if let tmdb = nonEmpty(dto.providerIDs?["Tmdb"]) {
+        } else if let tmdb = nonEmpty(dto.providerIDs?["Tmdb"]), Self.isPlainID(tmdb) {
             webpage = URL(string: "https://www.themoviedb.org/person/\(tmdb)")
         }
 
@@ -335,6 +335,17 @@ actor JellyfinMediaService: MediaService {
         let (client, session) = try signedIn()
         let features = try await send(Paths.getSpecialFeatures(itemID: item.id, userID: session.userID), with: client)
         return features.compactMap { Self.makeItem(from: $0, client: client, isExtra: true) }
+    }
+
+    func seasonCount(ofSeries id: String) async throws -> Int? {
+        let (client, session) = try signedIn()
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            fields: [.childCount],
+            enableUserData: false,
+            ids: [id]
+        ))
+        return try await send(request, with: client).items?.first?.childCount
     }
 
     func setFavorite(_ isFavorite: Bool, itemID: String) async throws {
@@ -731,7 +742,7 @@ actor JellyfinMediaService: MediaService {
             logoURL: logoURL(for: dto, id: id, client: client),
             genres: dto.genres ?? [],
             // A show's studios are its networks (and production companies); the first is the original network.
-            network: kind == .series ? dto.studios?.first?.name : nil,
+            network: kind == .series || kind == .movie ? dto.studios?.first?.name : nil,
             officialRating: dto.officialRating,
             communityRating: dto.communityRating.map(Double.init),
             criticRating: dto.criticRating.map(Double.init),
@@ -739,7 +750,7 @@ actor JellyfinMediaService: MediaService {
             status: dto.status,
             endYear: dto.endDate.map { Calendar.utc.component(.year, from: $0) },
             tagline: dto.taglines?.first(where: { !$0.isEmpty }),
-            trailerURL: dto.remoteTrailers?.lazy.compactMap { $0.url.flatMap { URL(string: $0) } }.first,
+            trailerURL: dto.remoteTrailers?.lazy.compactMap { $0.url.flatMap(webURL(from:)) }.first,
             isFavorite: dto.userData?.isFavorite ?? false,
             people: people(of: dto, client: client)
         )
@@ -787,6 +798,20 @@ actor JellyfinMediaService: MediaService {
             )
             return seen.insert(result.id).inserted ? result : nil
         }
+    }
+
+    /// The URL for a link the server supplied, only if it's a web page. The server is trusted to describe media, not
+    /// to choose what the app opens, so a `tel:`, custom-scheme or `file:` link is dropped.
+    private static func webURL(from string: String) -> URL? {
+        guard let url = URL(string: string), let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              url.host() != nil else { return nil }
+        return url
+    }
+
+    /// Whether a provider ID is only letters and digits, as IMDb's (`tt0903747`) and TMDb's are, so it can't change
+    /// the path or host of the link it's put into.
+    private static func isPlainID(_ id: String) -> Bool {
+        !id.isEmpty && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
     }
 
     /// e.g. "Behind the Scenes" for an extra's type, or nil if the server doesn't say.

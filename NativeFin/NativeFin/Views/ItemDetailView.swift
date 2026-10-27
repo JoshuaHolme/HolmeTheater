@@ -4,13 +4,13 @@
 
 import SwiftUI
 
-/// Detail for any item. Shows, seasons and episodes have their own screen, ``ShowDetailView``; anything else
-/// playable (a movie, an extra) gets a Play button on a simpler one.
+/// Detail for any item. Movies, shows, seasons and episodes have their own screen, ``ShowDetailView``. A special
+/// feature has none (it only plays), and anything else gets a simpler one.
 struct ItemDetailView: View {
     let item: MediaItem
 
     var body: some View {
-        if item.kind == .series || item.kind == .season || item.kind == .episode {
+        if item.kind == .series || item.kind == .season || item.kind == .episode || item.kind == .movie {
             ShowDetailView(item: item)
         } else {
             StandardItemDetailView(item: item)
@@ -18,7 +18,7 @@ struct ItemDetailView: View {
     }
 }
 
-/// Detail for a movie, an extra, or anything else without a screen of its own.
+/// Detail for anything without a screen of its own, which isn't a special feature.
 private struct StandardItemDetailView: View {
     let item: MediaItem
     @Environment(AppModel.self) private var appModel

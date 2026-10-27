@@ -7,12 +7,13 @@ import SwiftUI
 import WebKit
 #endif
 
-/// Detail for a show, one of its seasons, or one of its episodes: a full-width hero image running up to the top
-/// edge of the screen, with the show's logo, genres and network, synopsis, and a Play button over it. A show's
-/// seasons are listed below (or its episodes, if it has a single season); a season's episodes are.
+/// Detail for a show, one of its seasons, one of its episodes, or a movie: a full-width hero image running up to the
+/// top edge of the screen, with the logo, genres and network (or studio), synopsis, and a Play button over it. A
+/// show's seasons are listed below (or its episodes, if it has a single season); a season's episodes are.
 ///
 /// A season's or episode's page is the show's page narrowed to it: the same hero and rows, showing only what the
-/// season or episode itself has. An episode's hero is its own still, under the show's logo.
+/// season or episode itself has. An episode's hero is its own still, under the show's logo. A movie's page is the
+/// same as a show's, with no episodes or seasons beneath it and "More Like This" for movies.
 struct ShowDetailView: View {
     let item: MediaItem
     @Environment(AppModel.self) private var appModel
@@ -53,6 +54,9 @@ struct ShowDetailView: View {
     /// The show a tap or peek in "More Like This" is opening.
     @State private var openedShow: MediaItem?
 
+    /// Whether the first cast portraits have loaded, so the Cast and Crew row can show without them popping in.
+    @State private var castReady = false
+
     /// A favorite change the server hasn't confirmed yet, shown meanwhile.
     @State private var favoriteOverride: Bool?
 
@@ -60,6 +64,10 @@ struct ShowDetailView: View {
 
     private var isSeason: Bool { item.kind == .season }
     private var isEpisode: Bool { item.kind == .episode }
+    private var isMovie: Bool { item.kind == .movie }
+
+    /// Whether the page is for one thing that plays, rather than something that holds episodes.
+    private var isPlayableItem: Bool { isEpisode || isMovie }
 
     /// The latest copy of the show or season. A season shows only what it has itself (genres, ratings, tagline,
     /// trailer, description, cast), with nothing borrowed from its show.
@@ -71,8 +79,8 @@ struct ShowDetailView: View {
                 hero
 
                 // These pad their own headings and the ends of their rows, so the rows scroll edge to edge.
-                if isEpisode {
-                    // An episode has no rows of episodes or seasons beneath it.
+                if isPlayableItem {
+                    // An episode or movie has no rows of episodes or seasons beneath it.
                 } else if isSeason {
                     // Already inside the season, so its episodes have no "Go to Season".
                     EpisodeShelf(season: item, reloadID: reloadCount, omitting: [.season], open: { openedShow = $0 }, play: { playingItem = $0 })
@@ -86,12 +94,17 @@ struct ShowDetailView: View {
                         items: specialFeatures,
                         onHeadingTap: { showsFeatureList = true },
                         isWide: true,
-                        // Tapping an extra plays it; its peek and "Go to Feature" open its page.
+                        // An extra has no page of its own: tapping it, or opening its peek, plays it.
                         navigation: ItemNavigation(open: { openedShow = $0 }, play: { playingItem = $0 })
                     )
                 }
 
-                CastAndCrewShelf(people: current.people)
+                // Held back until the portraits that show first have loaded, so the row appears with its pictures
+                // instead of the pictures popping in after it.
+                if castReady {
+                    CastAndCrewShelf(people: current.people)
+                        .transition(.opacity)
+                }
 
                 if !similarShows.isEmpty {
                     // Padded and scrolled by the shelf itself, like the rows above. Its owner opens what's tapped.
@@ -116,6 +129,7 @@ struct ShowDetailView: View {
         .toolbar { toolbarButtons }
         #endif
         .task(id: reloadCount) { await load() }
+        .task(id: current.people.map(\.id)) { await preloadCastPortraits() }
         .fullScreenCover(item: $playingItem) {
             PlayerView(item: $0, onStop: { reloadCount += 1 })
         }
@@ -322,6 +336,8 @@ struct ShowDetailView: View {
         // A season says how many episodes it has and when it came out; an episode, when it aired and how long it is.
         if current.kind == .season { return current.seasonDetailLine }
         if current.kind == .episode { return episodeInfoLine }
+        // A movie says when it came out and how long it is.
+        if current.kind == .movie { return current.metadataLine }
 
         let status: String? = switch current.status?.lowercased() {
         case "ended": String(localized: "Ended")
@@ -370,7 +386,7 @@ struct ShowDetailView: View {
 
     /// What the watched button does: whether it marks the item watched (or unwatched), and how. Nil if it can't.
     private var watchedChange: (wantsWatched: Bool, perform: () -> Void)? {
-        let wantsWatched = isEpisode ? !current.showsWatchedBadge : current.containerWatchOptions.canMarkWatched
+        let wantsWatched = isPlayableItem ? !current.showsWatchedBadge : current.containerWatchOptions.canMarkWatched
         let actions = watchActions.actions(for: item)
         guard let perform = wantsWatched ? actions?.markWatched : actions?.markUnwatched else { return nil }
         return (wantsWatched, perform)
@@ -484,7 +500,7 @@ struct ShowDetailView: View {
             Button {
                 playingItem = episode
             } label: {
-                Label(isEpisode || compact ? ownPlayTitle(for: episode) : playTitle(for: episode), systemImage: "play.fill")
+                Label(isPlayableItem || compact ? ownPlayTitle(for: episode) : playTitle(for: episode), systemImage: "play.fill")
                     .font(.headline)
                     // Dark on white, like the TV app's Play button; the hero's text is white otherwise.
                     .foregroundStyle(.black)
@@ -515,19 +531,27 @@ struct ShowDetailView: View {
 
     /// Fetches the episode to play, and the show again (for its full details, and after playback or a change so
     /// the screen shows where the user got to). Keeps what's on screen if either fails; it's only out of date.
+    /// Clears what was fetched for another item. This screen can be reused for a different one (one opened from
+    /// another's "More Like This"), and a request that then fails must not leave the last item's rows showing.
+    private func discardStaleState() {
+        guard refreshedItem?.id != item.id else { return }
+        refreshedItem = nil
+        nextEpisode = nil
+        similarShows = []
+        specialFeatures = []
+    }
+
     private func load() async {
         if isSeason {
             await loadSeason()
             return
         }
-        if isEpisode {
-            await loadEpisode()
+        if isPlayableItem {
+            await loadPlayableItem()
             return
         }
 
-        // This screen can be reused for another show (one opened from another's "More Like This"), so nothing
-        // fetched for the last one may linger.
-        if refreshedItem?.id != item.id { refreshedItem = nil }
+        discardStaleState()
 
         let service = appModel.service
         async let episode = service.nextEpisode(in: item)
@@ -550,15 +574,62 @@ struct ShowDetailView: View {
         }
     }
 
-    /// Fetches an episode again (for its cast and where it got to) and its special features. The Play button plays the
-    /// episode itself. Keeps what's on screen if any of it fails; it's only out of date.
-    private func loadEpisode() async {
-        if refreshedItem?.id != item.id { refreshedItem = nil }
+    /// How many cast portraits are loaded before the Cast and Crew row shows: about as many as fit on screen at once.
+    private static let preloadedPortraitCount = 12
+
+    /// The longest to wait for those portraits before showing the row anyway.
+    private static let portraitPreloadTimeout = Duration.seconds(2)
+
+    /// Loads the first cast portraits into the image cache, then shows the Cast and Crew row. Starts downloading the
+    /// rest in the background. The row never waits more than a moment for them on a slow network.
+    private func preloadCastPortraits() async {
+        let people = current.people
+        guard !people.isEmpty else { return }
+
+        let first = people.prefix(Self.preloadedPortraitCount).compactMap(\.imageURL)
+
+        // Already in memory (coming back to the page, say): nothing to wait for.
+        if first.allSatisfy({ ImageCache.shared.cachedImage(for: $0) != nil }) {
+            castReady = true
+            return
+        }
+        // These are other people (the screen was reused), so the row waits for their portraits.
+        castReady = false
+
+        ImageCache.shared.prefetch(people.dropFirst(Self.preloadedPortraitCount).compactMap(\.imageURL))
+
+        // A download can't be cancelled, so a task group can't be raced against a timeout (it would wait for every
+        // download). Two separate tasks do instead: whichever finishes first shows the row, and the other is harmless.
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for url in first {
+                    group.addTask { _ = await ImageCache.shared.image(for: url) }
+                }
+            }
+            showCastRow()
+        }
+        Task {
+            try? await Task.sleep(for: Self.portraitPreloadTimeout)
+            showCastRow()
+        }
+    }
+
+    private func showCastRow() {
+        guard !castReady else { return }
+        withAnimation { castReady = true }
+    }
+
+    /// Fetches an episode or movie again (for its cast and where it got to), its special features and, for a movie, similar
+    /// movies. The Play button plays the item itself. Keeps what's on screen if any of it fails; it's only out of date.
+    private func loadPlayableItem() async {
+        discardStaleState()
         nextEpisode = nextEpisode ?? item
 
         let service = appModel.service
         async let latest = service.item(id: item.id)
         async let features = service.specialFeatures(of: item)
+        // Only movies have a "More Like This"; the server has none for an episode.
+        async let similar = isMovie ? service.similarItems(to: item) : []
 
         if let latest = try? await latest {
             refreshedItem = latest
@@ -567,12 +638,15 @@ struct ShowDetailView: View {
         if let features = try? await features {
             specialFeatures = features
         }
+        if let similar = try? await similar {
+            similarShows = similar
+        }
     }
 
     /// Fetches a season again, its episodes (for what Play starts) and its special features. Keeps
     /// what's on screen if any of it fails; it's only out of date.
     private func loadSeason() async {
-        if refreshedItem?.id != item.id { refreshedItem = nil }
+        discardStaleState()
 
         let service = appModel.service
         async let latest = service.item(id: item.id)

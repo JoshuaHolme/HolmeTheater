@@ -151,6 +151,13 @@ nonisolated protocol MediaService: Sendable {
     /// - Returns: The details. Every part of them can be missing, so check ``PersonDetails/isEmpty``.
     func details(ofPerson personID: String) async throws -> PersonDetails
 
+    /// Fetches only how many seasons a show has, which is far lighter than fetching the whole show (its cast and
+    /// streams) for a count.
+    ///
+    /// - Parameter id: The show's ID.
+    /// - Returns: The season count, counting a Specials season, or `nil` if the server didn't say.
+    func seasonCount(ofSeries id: String) async throws -> Int?
+
     /// Marks an item as a favorite, or takes it off the favorites.
     ///
     /// - Parameters:

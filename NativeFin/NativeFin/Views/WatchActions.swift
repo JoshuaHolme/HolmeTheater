@@ -57,10 +57,24 @@ enum RelatedLink {
 /// so it can refresh when playback ends.
 struct ItemNavigation {
     /// Opens an item's detail screen.
-    let open: (MediaItem) -> Void
+    private let openDetail: (MediaItem) -> Void
 
     /// Plays an item full-screen.
     let play: (MediaItem) -> Void
+
+    init(open: @escaping (MediaItem) -> Void, play: @escaping (MediaItem) -> Void) {
+        openDetail = open
+        self.play = play
+    }
+
+    /// Opens an item's detail screen. A special feature has none, so it plays instead.
+    func open(_ item: MediaItem) {
+        if item.kind == .extra {
+            play(item)
+        } else {
+            openDetail(item)
+        }
+    }
 
     /// What tapping an item does: plays it straight away, or opens it if it can't be played (a show or season).
     /// The detail screen is otherwise reached through "Go to …" or a peek.
@@ -94,7 +108,10 @@ final class SeasonCountCache {
     static let shared = SeasonCountCache()
 
     private var counts: [String: Int] = [:]
-    private var loading: Set<String> = []
+
+    /// The shows being fetched. Not observed: it changes while a menu is being built in a view's body, and no view
+    /// shows it.
+    @ObservationIgnored private var loading: Set<String> = []
 
     /// The show's season count, or nil if it isn't known yet.
     func count(ofSeries id: String) -> Int? { counts[id] }
@@ -109,7 +126,7 @@ final class SeasonCountCache {
         guard counts[id] == nil, !loading.contains(id) else { return }
         loading.insert(id)
         Task {
-            if let count = try? await service.item(id: id).seasonCount {
+            if let count = try? await service.seasonCount(ofSeries: id) {
                 counts[id] = count
             }
             loading.remove(id)
@@ -176,7 +193,8 @@ struct WatchActions {
     /// - Parameter omitting: Links to leave out because the screen is already inside them, e.g. "Go to Show" on a
     ///   list of a show's episodes.
     func actions(for item: MediaItem, navigation: ItemNavigation, omitting: Set<RelatedLink> = []) -> ItemRowActions? {
-        var actions = actions(for: item, goTo: { navigation.open(item) })
+        // A special feature has no screen of its own to go to; it only plays.
+        var actions = actions(for: item, goTo: item.kind == .extra ? nil : { navigation.open(item) })
         // A show with a single season has no season page, so its episodes offer only the episode and the show. The
         // count is fetched if it isn't known yet, and the entry waits for it.
         if item.kind == .episode, !omitting.contains(.season), let seasonID = item.seasonID, let seriesID = item.seriesID {

@@ -204,6 +204,11 @@ nonisolated struct MockMediaService: MediaService {
         return []
     }
 
+    func seasonCount(ofSeries id: String) async throws -> Int? {
+        try await simulateLatency()
+        return nil
+    }
+
     func setFavorite(_ isFavorite: Bool, itemID: String) async throws {
         try await simulateLatency()
     }
