@@ -53,9 +53,11 @@ struct LibraryView: View {
     private func loadItems() async throws -> [MediaItem] {
         let items = try await appModel.service.items(in: library)
 
-        // Only the first screens' worth: a huge library shouldn't flood the network and memory.
-        // Posters further down still load as you scroll, and are then cached for next time.
-        ImageCache.shared.prefetch(items.prefix(60).compactMap(\.posterURL))
+        // The first screen's posters load before the grid shows, so they don't pop in. The next few screens' worth
+        // download in the background; a huge library shouldn't flood the network and memory. Posters further down
+        // still load as you scroll, and are then cached for next time.
+        ImageCache.shared.prefetch(items.dropFirst(18).prefix(42).compactMap(\.posterURL))
+        await ImageCache.shared.preload(items.prefix(18).compactMap(\.posterURL))
         return items
     }
 }

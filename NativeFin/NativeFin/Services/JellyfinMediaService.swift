@@ -741,7 +741,8 @@ actor JellyfinMediaService: MediaService {
             unwatchedEpisodeCount: kind == .series || kind == .season ? dto.userData?.unplayedItemCount : nil,
             logoURL: logoURL(for: dto, id: id, client: client),
             genres: dto.genres ?? [],
-            // A show's studios are its networks (and production companies); the first is the original network.
+            // A show's first studio is its original network. A movie's is its first listed studio, which the app
+            // shows in the same place, as the "network" line under the title.
             network: kind == .series || kind == .movie ? dto.studios?.first?.name : nil,
             officialRating: dto.officialRating,
             communityRating: dto.communityRating.map(Double.init),
