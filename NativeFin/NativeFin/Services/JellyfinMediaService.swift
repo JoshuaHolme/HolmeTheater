@@ -257,8 +257,9 @@ actor JellyfinMediaService: MediaService {
         let (client, session) = try signedIn()
         let request = Paths.getItems(parameters: .init(
             userID: session.userID,
-            // The cast is big, so only a single item asks for it, not every list.
-            fields: Self.itemFields + [.people],
+            // The cast, and the streams that say what the picture and sound are, are big, so only a single item
+            // asks for them, not every list.
+            fields: Self.itemFields + [.people, .mediaSources, .mediaStreams],
             enableUserData: true,
             ids: [id]
         ))
@@ -721,6 +722,7 @@ actor JellyfinMediaService: MediaService {
             seasonNumber: dto.parentIndexNumber,
             episodeNumber: dto.indexNumber,
             extraLabel: kind == .extra ? extraLabel(for: dto.extraType) : nil,
+            airDate: kind == .episode ? dto.premiereDate : nil,
             seriesID: dto.seriesID,
             seasonID: kind == .episode ? dto.seasonID : nil,
             episodeCount: episodeCount(of: dto, kind: kind),
@@ -732,6 +734,8 @@ actor JellyfinMediaService: MediaService {
             network: kind == .series ? dto.studios?.first?.name : nil,
             officialRating: dto.officialRating,
             communityRating: dto.communityRating.map(Double.init),
+            criticRating: dto.criticRating.map(Double.init),
+            technicalLine: technicalLine(of: dto),
             status: dto.status,
             endYear: dto.endDate.map { Calendar.utc.component(.year, from: $0) },
             tagline: dto.taglines?.first(where: { !$0.isEmpty }),
@@ -800,6 +804,80 @@ actor JellyfinMediaService: MediaService {
         case .themeVideo: String(localized: "Theme Video")
         case .themeSong, .unknown, nil: nil
         }
+    }
+
+    /// e.g. "4K · Dolby Vision · Dolby Atmos 7.1": the resolution, dynamic range (if not plain SDR) and main audio
+    /// of the item's video file. Nil if the item has no streams listed.
+    private static func technicalLine(of dto: BaseItemDto) -> String? {
+        let streams = dto.mediaStreams ?? dto.mediaSources?.first?.mediaStreams ?? []
+        let video = streams.first { $0.type == .video }
+        // The default audio track, else the first.
+        let audio = streams.first { $0.type == .audio && $0.isDefault == true } ?? streams.first { $0.type == .audio }
+
+        let parts = [video.flatMap(resolutionLabel(of:)), video.flatMap(dynamicRangeLabel(of:)), audio.flatMap(audioLabel(of:))]
+        let line = parts.compactMap { $0 }
+        return line.isEmpty ? nil : line.joined(separator: " · ")
+    }
+
+    /// "4K", "1080p" and so on. It goes by width, because a widescreen film's picture is shorter than its format.
+    private static func resolutionLabel(of video: MediaStream) -> String? {
+        guard let width = video.width else { return nil }
+        switch width {
+        case 3500...: return "4K"
+        case 2400...: return "1440p"
+        case 1800...: return "1080p"
+        case 1200...: return "720p"
+        default: return String(localized: "SD")
+        }
+    }
+
+    /// "Dolby Vision", "HDR10+", "HDR10" or "HLG"; nil for ordinary (SDR) video.
+    private static func dynamicRangeLabel(of video: MediaStream) -> String? {
+        switch video.videoRangeType {
+        case .dovi, .doviWithHDR10, .doviWithHLG, .doviWithEL, .doviWithHDR10Plus, .doviWithELHDR10Plus: "Dolby Vision"
+        case .hdr10Plus: "HDR10+"
+        case .hdr10: "HDR10"
+        case .hlg: "HLG"
+        default: nil
+        }
+    }
+
+    /// e.g. "Dolby Atmos 7.1", "Dolby Digital Plus 5.1" or "AAC 2.0".
+    private static func audioLabel(of audio: MediaStream) -> String? {
+        let profile = audio.profile?.lowercased() ?? ""
+        let format: String? = switch audio.codec?.lowercased() {
+        case "truehd": "Dolby TrueHD"
+        case "eac3": "Dolby Digital Plus"
+        case "ac3": "Dolby Digital"
+        case "dts": profile.contains("ma") ? "DTS-HD MA" : profile.contains("hra") ? "DTS-HD HRA" : "DTS"
+        case "aac": "AAC"
+        case "flac": "FLAC"
+        case "opus": "Opus"
+        case "mp3": "MP3"
+        case "pcm_s16le", "pcm_s24le", "pcm_s32le": "PCM"
+        case .some(let other): other.uppercased()
+        case nil: nil
+        }
+
+        // An object-based mix is named for what it is, whatever the file's codec.
+        let name: String? = switch audio.audioSpatialFormat {
+        case .dolbyAtmos: "Dolby Atmos"
+        case .dtsx: "DTS:X"
+        default: format
+        }
+
+        let layout: String? = audio.channels.map { channels in
+            switch channels {
+            case 1: "1.0"
+            case 2: "2.0"
+            case 6: "5.1"
+            case 8: "7.1"
+            default: "\(channels)ch"
+            }
+        }
+
+        let parts = [name, layout].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
     /// How many episodes a series or season has, or nil for anything else.

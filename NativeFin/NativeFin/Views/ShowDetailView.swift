@@ -7,8 +7,12 @@ import SwiftUI
 import WebKit
 #endif
 
-/// Detail for a show: a full-width hero image running up to the top edge of the screen, with the show's logo,
-/// genres and network, synopsis, and a Play button over it. Its seasons are listed below.
+/// Detail for a show, one of its seasons, or one of its episodes: a full-width hero image running up to the top
+/// edge of the screen, with the show's logo, genres and network, synopsis, and a Play button over it. A show's
+/// seasons are listed below (or its episodes, if it has a single season); a season's episodes are.
+///
+/// A season's or episode's page is the show's page narrowed to it: the same hero and rows, showing only what the
+/// season or episode itself has. An episode's hero is its own still, under the show's logo.
 struct ShowDetailView: View {
     let item: MediaItem
     @Environment(AppModel.self) private var appModel
@@ -54,7 +58,11 @@ struct ShowDetailView: View {
 
     @Environment(\.openURL) private var openURL
 
-    /// The latest copy of the show.
+    private var isSeason: Bool { item.kind == .season }
+    private var isEpisode: Bool { item.kind == .episode }
+
+    /// The latest copy of the show or season. A season shows only what it has itself (genres, ratings, tagline,
+    /// trailer, description, cast), with nothing borrowed from its show.
     private var current: MediaItem { refreshedItem ?? item }
 
     var body: some View {
@@ -63,7 +71,14 @@ struct ShowDetailView: View {
                 hero
 
                 // These pad their own headings and the ends of their rows, so the rows scroll edge to edge.
-                ItemChildrenList(item: item, reloadID: reloadCount, open: { openedShow = $0 }, play: { playingItem = $0 }) { watchActions.actions(for: $0) }
+                if isEpisode {
+                    // An episode has no rows of episodes or seasons beneath it.
+                } else if isSeason {
+                    // Already inside the season, so its episodes have no "Go to Season".
+                    EpisodeShelf(season: item, reloadID: reloadCount, omitting: [.season], open: { openedShow = $0 }, play: { playingItem = $0 })
+                } else {
+                    ItemChildrenList(item: item, reloadID: reloadCount, open: { openedShow = $0 }, play: { playingItem = $0 }) { watchActions.actions(for: $0) }
+                }
 
                 if !specialFeatures.isEmpty {
                     MediaShelf(
@@ -98,6 +113,7 @@ struct ShowDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         // The logo over the hero already names the show.
         .toolbar(removing: .title)
+        .toolbar { toolbarButtons }
         #endif
         .task(id: reloadCount) { await load() }
         .fullScreenCover(item: $playingItem) {
@@ -116,7 +132,24 @@ struct ShowDetailView: View {
     /// The backdrop, with the show's details stacked over its bottom-left corner.
     private var hero: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ShowLogo(item: current)
+            // A season has the show's logo (or its name, if there is none), then its own name beneath.
+            ShowLogo(item: current, fallbackTitle: isSeason || isEpisode ? (item.seriesTitle ?? item.title) : nil)
+
+            if isSeason {
+                Text(item.seasonTitle)
+                    .font(.title2.bold())
+                    .accessibilityAddTraits(.isHeader)
+            } else if isEpisode {
+                // The episode's own name, with where it falls in the show beneath.
+                Text(item.title)
+                    .font(.title2.bold())
+                    .lineLimit(3)
+                    .accessibilityAddTraits(.isHeader)
+                if let position = item.seasonEpisodeText {
+                    Text(position)
+                        .font(.callout)
+                }
+            }
 
             // As in the TV app, the short genre line is the bright one and the description recedes beneath it,
             // so the two read as different things without the genres fading into the artwork.
@@ -145,20 +178,21 @@ struct ShowDetailView: View {
                 if let ratings = ratingsLine {
                     Text(ratings)
                 }
+                if let technical = current.technicalLine {
+                    Text(technical)
+                }
             }
             .font(.footnote.weight(.medium))
             .foregroundStyle(.white.opacity(0.75))
 
             // The trailer's label gives way to just its icon if the row doesn't fit.
             ViewThatFits(in: .horizontal) {
-                actionButtons(showsTrailerTitle: true)
-                actionButtons(showsTrailerTitle: false)
+                actionButtons(showsTrailerTitle: true, compactPlay: false)
+                actionButtons(showsTrailerTitle: false, compactPlay: false)
+                actionButtons(showsTrailerTitle: false, compactPlay: true)
             }
             .padding(.top, 4)
         }
-        // A readable measure on wide screens, which also keeps the text over the darker corner of the artwork
-        // rather than across its middle.
-        .frame(maxWidth: Self.detailsMaxWidth, alignment: .leading)
         .foregroundStyle(.white)
         // The details sit on a dark fade whatever the appearance, so their secondary colors are the light ones.
         .environment(\.colorScheme, .dark)
@@ -172,15 +206,6 @@ struct ShowDetailView: View {
         // The artwork runs edge to edge, past the side safe areas (e.g. under a sidebar tab bar in landscape),
         // while the details stay inside them.
         .background { backdrop.ignoresSafeArea(edges: .horizontal) }
-    }
-
-    /// The widest the details over the hero get. On a phone in portrait they fill the width.
-    private static var detailsMaxWidth: CGFloat {
-        #if os(tvOS)
-        return 900
-        #else
-        return 520
-        #endif
     }
 
     /// The hero's usual height, like the TV app's: no taller than its width allows at `heroAspectRatio`, which keeps it
@@ -225,7 +250,7 @@ struct ShowDetailView: View {
 
         return Color.black
             .overlay {
-                CachedAsyncImage(url: current.backdropURL ?? current.posterURL) { phase in
+                CachedAsyncImage(url: heroImageURL) { phase in
                     if case .success(let image) = phase {
                         image.resizable().scaledToFill()
                     }
@@ -272,9 +297,32 @@ struct ShowDetailView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
+    /// The hero's image: an episode's own still, otherwise the backdrop (or poster, if there is none).
+    private var heroImageURL: URL? {
+        isEpisode ? current.thumbnailURL ?? current.backdropURL ?? current.posterURL : current.backdropURL ?? current.posterURL
+    }
+
+    /// e.g. "Jan 5, 2001 · 45m": the day an episode aired and how long it runs. Nil if neither is known.
+    private var episodeInfoLine: String? {
+        var parts: [String] = []
+        if let aired = current.airDate {
+            // A calendar date stored at midnight UTC, so it's read in UTC or it can land on the day before.
+            let utc = TimeZone(identifier: "UTC") ?? .gmt
+            parts.append(aired.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: utc)))
+        }
+        if let runtime = current.runtime {
+            parts.append(Duration.seconds(runtime).formatted(.units(allowed: [.hours, .minutes], width: .narrow)))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     /// e.g. "Ended · 1999–2006" or "Continuing · 2019–Present": whether the show is still running, then the years
     /// it has run. Nil if the server says neither.
     private var statusLine: String? {
+        // A season says how many episodes it has and when it came out; an episode, when it aired and how long it is.
+        if current.kind == .season { return current.seasonDetailLine }
+        if current.kind == .episode { return episodeInfoLine }
+
         let status: String? = switch current.status?.lowercased() {
         case "ended": String(localized: "Ended")
         case "continuing": String(localized: "Continuing")
@@ -297,21 +345,80 @@ struct ShowDetailView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// e.g. "TV-MA · ★ 8.7": the content rating, then the audience score out of 10. Nil if neither is known.
+    /// e.g. "TV-MA · ★ 8.7 · 92% Critics": the content rating, the audience score out of 10, then the critics'
+    /// score. Nil if none is known.
     private var ratingsLine: String? {
         let score = current.communityRating.map { "★ " + $0.formatted(.number.precision(.fractionLength(1))) }
-        let parts = [current.officialRating, score].compactMap { $0 }
+        let critics = current.criticRating.map { String(localized: "\(Int($0.rounded()))% Critics") }
+        let parts = [current.officialRating, score, critics].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// Play, then Watch Trailer if the show has one, then the favorite button.
-    private func actionButtons(showsTrailerTitle: Bool) -> some View {
+    private func actionButtons(showsTrailerTitle: Bool, compactPlay: Bool) -> some View {
         HStack(spacing: 12) {
-            playButton
+            playButton(compact: compactPlay)
             trailerButton(showsTitle: showsTrailerTitle)
+            #if os(tvOS)
+            // There's no navigation bar on tvOS, so the favorite and watched buttons sit here. On iOS they're in
+            // the toolbar (see `toolbarButtons`).
             favoriteButton
+            watchedButton
+            #endif
         }
     }
+
+    /// What the watched button does: whether it marks the item watched (or unwatched), and how. Nil if it can't.
+    private var watchedChange: (wantsWatched: Bool, perform: () -> Void)? {
+        let wantsWatched = isEpisode ? !current.showsWatchedBadge : current.containerWatchOptions.canMarkWatched
+        let actions = watchActions.actions(for: item)
+        guard let perform = wantsWatched ? actions?.markWatched : actions?.markUnwatched else { return nil }
+        return (wantsWatched, perform)
+    }
+
+    /// Marks the show, season or episode watched, or unwatched if it all is. For a show or season that changes every
+    /// episode in it, so it asks first, like the menus do.
+    @ViewBuilder
+    private var watchedButton: some View {
+        if let change = watchedChange {
+            Button(action: change.perform) {
+                Image(systemName: change.wantsWatched ? "checkmark.circle" : "checkmark.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(change.wantsWatched ? .white : .green)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+            .accessibilityLabel(change.wantsWatched ? "Mark as Watched" : "Mark as Unwatched")
+        }
+    }
+
+    #if os(iOS)
+    /// The favorite and watched buttons for the navigation bar, which keep their place as the page scrolls. They
+    /// take the bar's own look, over the artwork or not.
+    @ToolbarContentBuilder
+    private var toolbarButtons: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                toggleFavorite()
+            } label: {
+                Image(systemName: isFavorite ? "heart.fill" : "heart")
+            }
+            .tint(isFavorite ? .red : nil)
+            .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+
+            if let change = watchedChange {
+                Button(action: change.perform) {
+                    Image(systemName: change.wantsWatched ? "checkmark.circle" : "checkmark.circle.fill")
+                }
+                .tint(change.wantsWatched ? nil : .green)
+                .accessibilityLabel(change.wantsWatched ? "Mark as Watched" : "Mark as Unwatched")
+                // VoiceOver would otherwise announce a checkmark image as "selected", which this is not.
+                .accessibilityRemoveTraits(.isSelected)
+            }
+        }
+    }
+    #endif
 
     /// Opens the show's trailer on the web. Hidden if it has none, and on tvOS, which has no browser.
     @ViewBuilder
@@ -372,12 +479,12 @@ struct ShowDetailView: View {
 
     /// Plays the next episode, or resumes it if it's partly watched. Hidden if the show has no episodes.
     @ViewBuilder
-    private var playButton: some View {
+    private func playButton(compact: Bool) -> some View {
         if let episode = nextEpisode {
             Button {
                 playingItem = episode
             } label: {
-                Label(playTitle(for: episode), systemImage: "play.fill")
+                Label(isEpisode || compact ? ownPlayTitle(for: episode) : playTitle(for: episode), systemImage: "play.fill")
                     .font(.headline)
                     // Dark on white, like the TV app's Play button; the hero's text is white otherwise.
                     .foregroundStyle(.black)
@@ -390,6 +497,10 @@ struct ShowDetailView: View {
 
     /// "Play First Episode" for season 1 episode 1, otherwise e.g. "Play S2, E4". "Resume S1, E1" if it's partly
     /// watched, even the first episode.
+    private func ownPlayTitle(for episode: MediaItem) -> String {
+        episode.playedFraction != nil ? String(localized: "Resume") : String(localized: "Play")
+    }
+
     private func playTitle(for episode: MediaItem) -> String {
         let resumes = episode.playedFraction != nil
         if !resumes, episode.seasonNumber == 1, episode.episodeNumber == 1 {
@@ -398,13 +509,22 @@ struct ShowDetailView: View {
         guard let number = episode.episodeNumber else {
             return resumes ? String(localized: "Resume") : String(localized: "Play")
         }
-        let code = episode.seasonNumber.map { String(localized: "S\($0), E\(number)") } ?? String(localized: "E\(number)")
+        let code = episode.seasonNumber.map { String(localized: "S\(String($0)), E\(number)") } ?? String(localized: "E\(number)")
         return resumes ? String(localized: "Resume \(code)") : String(localized: "Play \(code)")
     }
 
     /// Fetches the episode to play, and the show again (for its full details, and after playback or a change so
     /// the screen shows where the user got to). Keeps what's on screen if either fails; it's only out of date.
     private func load() async {
+        if isSeason {
+            await loadSeason()
+            return
+        }
+        if isEpisode {
+            await loadEpisode()
+            return
+        }
+
         // This screen can be reused for another show (one opened from another's "More Like This"), so nothing
         // fetched for the last one may linger.
         if refreshedItem?.id != item.id { refreshedItem = nil }
@@ -424,6 +544,47 @@ struct ShowDetailView: View {
         }
         if let similar = try? await similar {
             similarShows = similar
+        }
+        if let features = try? await features {
+            specialFeatures = features
+        }
+    }
+
+    /// Fetches an episode again (for its cast and where it got to) and its special features. The Play button plays the
+    /// episode itself. Keeps what's on screen if any of it fails; it's only out of date.
+    private func loadEpisode() async {
+        if refreshedItem?.id != item.id { refreshedItem = nil }
+        nextEpisode = nextEpisode ?? item
+
+        let service = appModel.service
+        async let latest = service.item(id: item.id)
+        async let features = service.specialFeatures(of: item)
+
+        if let latest = try? await latest {
+            refreshedItem = latest
+            nextEpisode = latest
+        }
+        if let features = try? await features {
+            specialFeatures = features
+        }
+    }
+
+    /// Fetches a season again, its episodes (for what Play starts) and its special features. Keeps
+    /// what's on screen if any of it fails; it's only out of date.
+    private func loadSeason() async {
+        if refreshedItem?.id != item.id { refreshedItem = nil }
+
+        let service = appModel.service
+        async let latest = service.item(id: item.id)
+        async let episodes = service.children(of: item)
+        async let features = service.specialFeatures(of: item)
+
+        if let latest = try? await latest {
+            refreshedItem = latest
+        }
+        if let episodes = try? await episodes {
+            // The one that's partly watched, or the first unwatched, else the first.
+            nextEpisode = episodes.first { $0.playedFraction != nil || !$0.isPlayed } ?? episodes.first
         }
         if let features = try? await features {
             specialFeatures = features
@@ -969,6 +1130,9 @@ private struct PersonCard: View {
 private struct ShowLogo: View {
     let item: MediaItem
 
+    /// What to type out instead of the item's own title, if there is no logo. Nil to use the title.
+    var fallbackTitle: String?
+
     /// The largest the logo gets. Logos vary from wide wordmarks to near-square badges, so both are capped.
     private static var maxSize: CGSize {
         #if os(tvOS)
@@ -1003,7 +1167,7 @@ private struct ShowLogo: View {
     }
 
     private var title: some View {
-        Text(item.title)
+        Text(fallbackTitle ?? item.title)
             .font(.largeTitle.bold())
             .lineLimit(3)
             .accessibilityAddTraits(.isHeader)

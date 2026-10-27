@@ -53,10 +53,23 @@ extension MediaItem {
     /// e.g. "Season 1 Episode 3"; nil unless the item has an episode number.
     var seasonEpisodeText: String? {
         switch (seasonNumber, episodeNumber) {
-        case let (season?, episode?): String(localized: "Season \(season) Episode \(episode)")
+        case let (season?, episode?): String(localized: "Season \(String(season)) Episode \(episode)")
         case let (nil, episode?): String(localized: "Episode \(episode)")
         default: nil
         }
+    }
+
+    /// e.g. "Episode 3 · Jan 5, 2001": an episode's number and the day it aired, for where its season is already
+    /// known. Whichever part is missing is left out; nil if both are.
+    var episodeAirLine: String? {
+        var parts: [String] = []
+        if let episodeNumber { parts.append(String(localized: "Episode \(episodeNumber)")) }
+        if let airDate {
+            // A calendar date stored at midnight UTC, so it's read in UTC or it can land on the day before.
+            let utc = TimeZone(identifier: "UTC") ?? .gmt
+            parts.append(airDate.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: utc)))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// Whether to show the watched checkmark. An item that's partly watched (it has a resume position) is in
@@ -93,7 +106,7 @@ extension MediaItem {
     var gridStatusLine: String? {
         var parts: [String] = []
         if kind == .episode, let episodeNumber {
-            parts.append(seasonNumber.map { String(localized: "S\($0), E\(episodeNumber)") } ?? String(localized: "E\(episodeNumber)"))
+            parts.append(seasonNumber.map { String(localized: "S\(String($0)), E\(episodeNumber)") } ?? String(localized: "E\(episodeNumber)"))
         }
         if let runtime {
             let remaining = playedFraction.map { runtime * (1 - $0) } ?? runtime
@@ -281,7 +294,7 @@ struct WideCard: View {
             ItemCaption(
                 item: item,
                 reservedLines: item.kind == .episode ? 2 : 3,
-                lines: item.kind == .episode ? [item.title, item.seasonEpisodeText].compactMap { $0 } : nil
+                lines: item.kind == .episode ? [item.title, item.episodeAirLine].compactMap { $0 } : nil
             )
         }
         .contentShape(Rectangle())
@@ -697,6 +710,9 @@ struct ShelfGridCard: View {
     let item: MediaItem
     var actions: ItemRowActions?
 
+    /// Lines to show instead of the item's usual caption.
+    var captionLines: [String]?
+
     /// If given, the card peeks and pops when long-pressed. See `peekAndPop(_:passthrough:isAccessibilityElement:)`.
     var peek: PeekAndPopSpec?
 
@@ -731,7 +747,7 @@ struct ShelfGridCard: View {
                 // leaves the "more" button's corner alone, and the caption's isn't a second accessibility element.
                 .peekAndPop(peek, passthrough: menuCorner)
 
-            ItemCaption(item: item)
+            ItemCaption(item: item, lines: captionLines)
                 .peekAndPop(peek, isAccessibilityElement: false)
         }
         // Make the whole card tappable, including the gaps between the artwork and text.

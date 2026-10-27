@@ -118,7 +118,7 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     let kind: Kind
 
     /// A synopsis, if the server has one.
-    let overview: String?
+    var overview: String?
 
     /// The production year.
     let year: Int?
@@ -157,6 +157,9 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     /// For an extra: what kind it is, e.g. "Behind the Scenes". `nil` for anything else, or if the server doesn't say.
     var extraLabel: String? = nil
 
+    /// For an episode: the day it first aired, a calendar date in UTC. `nil` for anything else, or if unknown.
+    var airDate: Date? = nil
+
     /// The ID of the series an episode or season belongs to, or `nil` for anything else.
     var seriesID: String? = nil
 
@@ -188,6 +191,13 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
 
     /// The audience score out of 10, or `nil` if the server has none.
     var communityRating: Double? = nil
+
+    /// The critics' score as a percentage (0 to 100), or `nil` if the server has none.
+    var criticRating: Double? = nil
+
+    /// The picture and sound of the video file, e.g. "4K · Dolby Vision · Dolby Atmos 7.1". `nil` for anything
+    /// without a file of its own (a show or season), or if the server doesn't say.
+    var technicalLine: String? = nil
 
     /// A show's status as the server words it, e.g. "Continuing" or "Ended". `nil` if it doesn't say.
     var status: String? = nil

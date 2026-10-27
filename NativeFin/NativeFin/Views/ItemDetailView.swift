@@ -4,13 +4,13 @@
 
 import SwiftUI
 
-/// Detail for any item. Movies and episodes get a Play button; seasons list their episodes. Series have their
-/// own screen, ``ShowDetailView``.
+/// Detail for any item. Shows, seasons and episodes have their own screen, ``ShowDetailView``; anything else
+/// playable (a movie, an extra) gets a Play button on a simpler one.
 struct ItemDetailView: View {
     let item: MediaItem
 
     var body: some View {
-        if item.kind == .series {
+        if item.kind == .series || item.kind == .season || item.kind == .episode {
             ShowDetailView(item: item)
         } else {
             StandardItemDetailView(item: item)
@@ -18,22 +18,13 @@ struct ItemDetailView: View {
     }
 }
 
-/// Detail for a movie, season, or episode.
+/// Detail for a movie, an extra, or anything else without a screen of its own.
 private struct StandardItemDetailView: View {
     let item: MediaItem
     @Environment(AppModel.self) private var appModel
 
     /// The item being played; setting it presents the full-screen player.
     @State private var playingItem: MediaItem?
-
-    /// The episode a tap in the list is opening.
-    @State private var openedChild: MediaItem?
-
-    /// A season change waiting for confirmation, or an error to show.
-    @State private var watchState = WatchActionState()
-
-    /// Bumped to reload the list of seasons or episodes after a change on the server.
-    @State private var reloadCount = 0
 
     /// The item as the server last described it, fetched again after playback. Nil until then.
     @State private var refreshedItem: MediaItem?
@@ -71,10 +62,6 @@ private struct StandardItemDetailView: View {
                     if let overview = current.overview {
                         Text(overview)
                     }
-
-                    if item.kind == .season {
-                        ItemChildrenList(item: item, reloadID: reloadCount, open: { openedChild = $0 }, play: { playingItem = $0 }) { actions(for: $0) }
-                    }
                 }
                 .padding(.horizontal)
             }
@@ -83,8 +70,6 @@ private struct StandardItemDetailView: View {
         .fullScreenCover(item: $playingItem) {
             PlayerView(item: $0, onStop: { Task { await refresh() } })
         }
-        .watchActionAlerts(watchActions)
-        .navigationDestination(item: $openedChild) { ItemDetailView(item: $0) }
     }
 
     /// Fetches the item again after playback, so the screen shows where the user got to. Keeps what's on
@@ -93,24 +78,11 @@ private struct StandardItemDetailView: View {
         guard let latest = try? await appModel.service.item(id: item.id) else { return }
         refreshedItem = latest
     }
-
-    /// Reloads the seasons or episodes after a change, so their watched counts come from the server.
-    private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, destination: nil, state: $watchState) { _ in
-            reloadCount += 1
-        }
-    }
-
-    /// The menu for a row: seasons can be marked watched or unwatched as a whole. Episodes have none here.
-    private func actions(for child: MediaItem) -> ItemRowActions? {
-        guard child.kind == .season else { return nil }
-        return watchActions.actions(for: child)
-    }
 }
 
-/// Seasons (for a series) or episodes (for a season) under a heading, each navigating to its own detail screen.
+/// A show's seasons: a row of posters under a heading, or the episodes of its only season (a mini series).
 struct ItemChildrenList: View {
-    /// A series or season.
+    /// A series.
     let item: MediaItem
 
     /// Changing this reloads the list, e.g. after a change on the server.
@@ -135,26 +107,14 @@ struct ItemChildrenList: View {
     var body: some View {
         AsyncContent(load: { try await appModel.service.children(of: item) }, reloadID: reloadID) { children in
             VStack(alignment: .leading, spacing: 12) {
-                if item.kind == .series, children.count == 1, let season = children.first {
+                if children.count == 1, let season = children.first {
                     // A show with a single season is a mini series: its episodes stand in for the one season.
-                    EpisodeShelf(season: season, reloadID: reloadID, open: open, play: play)
-                } else if item.kind == .series {
+                    EpisodeShelf(season: season, reloadID: reloadID, omitting: [.show, .season], open: open, play: play)
+                } else {
                     ShelfHeadingLink(title: "\(children.count) Seasons") { showsSeasonList = true }
                         .padding(.horizontal)
 
                     seasonShelf(children)
-                } else {
-                    Text("Episodes")
-                        .font(.title2.bold())
-
-                    ForEach(children) { child in
-                        ItemRow(item: child, actions: actions(child))
-                            // A button behind the row, so the row's menu button takes its own taps.
-                            .background {
-                                Button { open(child) } label: { Color.clear.contentShape(Rectangle()) }
-                                    .cardLinkStyle()
-                            }
-                    }
                 }
             }
         }
@@ -230,10 +190,14 @@ struct ShelfHeadingLink: View {
 
 /// A mini series' episodes in a row of widescreen cards, with a heading that opens the list of them all. The same
 /// shelf as the home screen's, so tapping plays and a long-press peeks.
-private struct EpisodeShelf: View {
+struct EpisodeShelf: View {
     /// The show's only season.
     let season: MediaItem
     let reloadID: Int
+
+    /// Menu links to leave out because the screen is already inside them.
+    let omitting: Set<RelatedLink>
+
     let open: (MediaItem) -> Void
     let play: (MediaItem) -> Void
 
@@ -253,13 +217,13 @@ private struct EpisodeShelf: View {
                     items: episodes,
                     onHeadingTap: { showsList = true },
                     isWide: true,
-                    omitting: [.show, .season],
+                    omitting: omitting,
                     onChange: { reloadCount += 1 },
                     navigation: ItemNavigation(open: open, play: play)
                 )
             }
         }
-        .navigationDestination(isPresented: $showsList) { ShelfListView(destination: .episodes(season)) }
+        .navigationDestination(isPresented: $showsList) { ShelfListView(destination: .episodes(season, omitsShow: omitting.contains(.show))) }
     }
 }
 
@@ -316,7 +280,7 @@ extension MediaItem {
     /// "Season 2", or the server's name for it (e.g. "Specials") if it has no regular number.
     var seasonTitle: String {
         guard let number = episodeNumber, number > 0 else { return title }
-        return String(localized: "Season \(number)")
+        return String(localized: "Season \(String(number))") // a year-like number has no thousands separator
     }
 
     /// e.g. "8 Episodes · 2021". Whichever part the server didn't give is left out.
