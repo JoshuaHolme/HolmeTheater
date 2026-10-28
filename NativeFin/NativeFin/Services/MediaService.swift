@@ -182,10 +182,17 @@ nonisolated protocol MediaService: Sendable {
 
     /// Asks the server how to play an item on this device.
     ///
-    /// - Parameter item: A movie or episode.
-    /// - Returns: A stream URL AVPlayer can load, and the details needed to report progress for it.
+    /// - Parameters:
+    ///   - item: A movie or episode.
+    ///   - options: The quality and tracks to ask for; pass empty options to let the server choose.
+    /// - Returns: A stream URL AVPlayer can load, the tracks on offer, and the details needed to report
+    ///   progress for it.
     /// - Throws: ``MediaServiceError/itemNotPlayable`` if the server offers no usable stream.
-    func playbackInfo(for item: MediaItem) async throws -> PlaybackInfo
+    func playbackInfo(for item: MediaItem, options: PlaybackOptions) async throws -> PlaybackInfo
+
+    /// The intro, credits and other stretches the server has marked in an item, so the player can offer to skip
+    /// them. Empty if the server has none, or can't say: this is only a convenience, so it never throws.
+    func segments(for item: MediaItem) async -> [MediaSegment]
 
     /// Tells the server about playback progress, so watch state and "Continue Watching" stay current.
     ///
