@@ -234,14 +234,38 @@ nonisolated struct MockMediaService: MediaService {
 
     // MARK: Playback
 
-    func playbackInfo(for item: MediaItem) async throws -> PlaybackInfo {
+    func segments(for item: MediaItem) async -> [MediaSegment] {
+        [
+            MediaSegment(kind: .recap, start: 0, end: 20),
+            MediaSegment(kind: .intro, start: 20, end: 60),
+            MediaSegment(kind: .outro, start: 400, end: 600)
+        ]
+    }
+
+    func playbackInfo(for item: MediaItem, options: PlaybackOptions) async throws -> PlaybackInfo {
         try await simulateLatency()
         // Apple's public HLS sample stream stands in for a Jellyfin transcode URL.
         guard let url = URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8") else {
             throw MediaServiceError.itemNotPlayable
         }
         let resume = (item.playedFraction ?? 0) * (item.runtime ?? 0)
-        return PlaybackInfo(url: url, resumePosition: resume, playSessionID: "mock-play-session", mediaSourceID: nil, method: .transcode)
+        return PlaybackInfo(
+            url: url,
+            resumePosition: resume,
+            playSessionID: "mock-play-session",
+            mediaSourceID: nil,
+            method: .transcode,
+            audioTracks: [
+                MediaTrack(index: 1, title: "English - AAC - Stereo", isExternal: false),
+                MediaTrack(index: 2, title: "English - Commentary", isExternal: false)
+            ],
+            subtitleTracks: [MediaTrack(index: 3, title: "English - SRT", isExternal: true)],
+            audioIndex: options.audioIndex ?? 1,
+            subtitleIndex: options.subtitleIndex.flatMap { $0 == PlaybackOptions.noSubtitles ? nil : $0 },
+            sourceBitrate: 20_000_000,
+            sourceHeight: 1080,
+            maxBitrate: options.maxBitrate
+        )
     }
 
     func report(_ event: PlaybackEvent, for item: MediaItem, info: PlaybackInfo, position: TimeInterval, isPaused: Bool) async {}

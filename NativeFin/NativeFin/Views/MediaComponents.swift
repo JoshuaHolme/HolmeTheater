@@ -27,6 +27,30 @@ enum Layout {
     }
 }
 
+/// Gives a card its width, which grows with the text size (up to twice as wide) so the caption under the
+/// artwork stays readable at accessibility sizes instead of being cut to a few letters.
+private struct ScaledCardWidth: ViewModifier {
+    private let base: CGFloat
+    // The value here is replaced in `init`, where it's set from `base`.
+    @ScaledMetric(relativeTo: .subheadline) private var width: CGFloat = 0
+
+    init(base: CGFloat) {
+        self.base = base
+        _width = ScaledMetric(wrappedValue: base, relativeTo: .subheadline)
+    }
+
+    func body(content: Content) -> some View {
+        content.frame(width: min(width, base * 2))
+    }
+}
+
+extension View {
+    /// Frames a card at `base` points wide, or wider at larger text sizes. See `ScaledCardWidth`.
+    func cardWidth(_ base: CGFloat) -> some View {
+        modifier(ScaledCardWidth(base: base))
+    }
+}
+
 extension MediaItem {
     /// Whether the item can be played directly (as opposed to being a container like a series).
     var isPlayable: Bool { kind == .movie || kind == .episode || kind == .extra }
@@ -235,6 +259,8 @@ struct ItemCaption: View {
     /// Lines to show instead of the item's usual caption.
     var lines: [String]?
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
         let lines = lines ?? item.captionLines
 
@@ -243,7 +269,8 @@ struct ItemCaption: View {
                 Text(line)
                     .font(index == 0 ? .subheadline.weight(.medium) : .caption)
                     .foregroundStyle(index == 0 ? .primary : .secondary)
-                    .lineLimit(1)
+                    // Cards are a fixed width, so at accessibility sizes a one-line title would be cut to a few letters.
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
             }
 
             ForEach(lines.count..<max(lines.count, reservedLines), id: \.self) { _ in
@@ -261,6 +288,9 @@ struct WatchedBadge: View {
         Image(systemName: "checkmark.circle.fill")
             // Large enough to spot at a glance on a busy poster.
             .font(.title)
+            // It sits on artwork that doesn't grow with the text (a 130pt poster), so at accessibility sizes it
+            // would cover most of the poster.
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             .foregroundStyle(.white, .green)
             .artworkOverlayEdge()
             .padding(6)
@@ -428,10 +458,10 @@ struct MediaShelf: View {
     private func cardBody(for item: MediaItem) -> some View {
         if isWide {
             WideCard(item: item)
-                .frame(width: Layout.wideCardWidth)
+                .cardWidth(Layout.wideCardWidth)
         } else {
             PosterCard(item: item)
-                .frame(width: Layout.posterWidth)
+                .cardWidth(Layout.posterWidth)
         }
     }
 
@@ -442,9 +472,11 @@ struct MediaShelf: View {
                 .accessibilityLabel("\(title), show all")
         } else if let destination {
             NavigationLink(value: destination) {
-                HStack(spacing: 6) {
+                // The chevron stays beside the first line when the heading wraps.
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(title)
                         .font(.title2.bold())
+                        .multilineTextAlignment(.leading)
                     Image(systemName: "chevron.right")
                         .font(.headline)
                         .foregroundStyle(.secondary)
@@ -685,6 +717,9 @@ struct ItemActionsMenu: View {
     /// the padded label plus some slack for a finger.
     static let reservedWidth: CGFloat = 56
 
+    /// The smallest the button's touch target gets, in each direction.
+    static let minimumTarget: CGFloat = 44
+
     var body: some View {
         Menu {
             ItemActionButtons(entries: actions.menuEntries(for: item))
@@ -696,6 +731,8 @@ struct ItemActionsMenu: View {
                 // Over artwork it sits at the card's bottom edge, so it's padded less vertically to sit low.
                 .padding(.horizontal, overArtwork ? 10 : 8)
                 .padding(.vertical, overArtwork ? 6 : 8)
+                // At least the 44-point minimum touch target, whatever the text size.
+                .frame(minWidth: Self.minimumTarget, minHeight: Self.minimumTarget)
                 .contentShape(Rectangle())
         }
         // Plain leaves the label's color alone. Tinting the menu instead would gray its items' icons too.
@@ -793,9 +830,12 @@ struct ShelfGridCard: View {
             }
         }
         .font(.subheadline.weight(.semibold))
+        // The bar sits on artwork that doesn't grow with the text, so at accessibility sizes its time left was cut to
+        // a few characters. It stops growing at the largest regular size, which still fits.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .foregroundStyle(.white)
         // The same height with or without the "more" button, so every card's bar lines up.
-        .frame(minHeight: 36)
+        .frame(minHeight: ItemActionsMenu.minimumTarget)
         .padding(.leading, 12)
         .padding(.trailing, 4)
         .padding(.top, 32)

@@ -71,7 +71,7 @@ struct SeasonsSection: View {
         #if os(iOS)
         // A UIKit layer over the card, so that tapping the preview can open the season, as on the home screen.
         SeasonCard(season: season)
-            .frame(width: Layout.posterWidth)
+            .cardWidth(Layout.posterWidth)
             .peekAndPop(WatchActions.peekSpec(for: season, actions: actions, navigation: seasonNavigation))
         #else
         Button { open(season) } label: {
@@ -104,9 +104,11 @@ struct ShelfHeadingLink: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            // The chevron stays beside the first line when the heading wraps.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title)
                     .font(.title2.bold())
+                    .multilineTextAlignment(.leading)
                 Image(systemName: "chevron.right")
                     .font(.headline)
                     .foregroundStyle(.secondary)
@@ -234,6 +236,8 @@ extension MediaItem {
 private struct SeasonCard: View {
     let season: MediaItem
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ArtworkView(url: season.posterURL, aspectRatio: 2.0 / 3.0)
@@ -246,13 +250,13 @@ private struct SeasonCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(season.seasonTitle)
                     .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
 
                 if let subtitle = season.seasonDetailLine {
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
                 }
             }
         }

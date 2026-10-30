@@ -24,6 +24,10 @@ struct PersonDetailView: View {
     @State private var showsBiography = false
 
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// The narrowest a poster gets, wider at larger text sizes so captions stay readable.
+    @ScaledMetric(relativeTo: .subheadline) private var posterMinimum: CGFloat = Layout.posterWidth
 
     /// A watch-state change waiting for confirmation, or an error to show.
     @State private var watchState = WatchActionState()
@@ -48,7 +52,8 @@ struct PersonDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                HStack(spacing: 16) {
+                // The name goes under the portrait at accessibility sizes, where beside it there'd be room for a word.
+                (dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 16)) : AnyLayout(HStackLayout(spacing: 16))) {
                     // Tapping the photo opens it full screen, if there is one.
                     Button { showsPhoto = true } label: {
                         PersonPortrait(person: person, size: 120)
@@ -113,7 +118,7 @@ struct PersonDetailView: View {
                 // Like the genre line on a show's page: callout size, in the bright primary color.
                 Text(line)
                     .font(.callout)
-                    .lineLimit(2)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
             }
 
             if let biography = details.biography {
@@ -196,7 +201,7 @@ struct PersonDetailView: View {
                     .font(.title2.bold())
                     .accessibilityAddTraits(.isHeader)
 
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: Layout.posterWidth), spacing: 12, alignment: .top)], spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: min(posterMinimum, Layout.posterWidth * 2)), spacing: 12, alignment: .top)], spacing: 16) {
                     ForEach(credits) { credit in
                         creditPeek(credit)
                     }
@@ -252,7 +257,7 @@ struct PersonDetailView: View {
                 Text(role)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
             }
         }
         .contentShape(Rectangle())

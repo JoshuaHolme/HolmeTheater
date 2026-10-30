@@ -62,11 +62,13 @@ struct SignInView: View {
                     } footer: {
                         // Plain HTTP is common for home servers, but the user should know before typing a password.
                         if server.url.scheme?.lowercased() == "http" {
-                            Label(
-                                "This connection isn't encrypted. Your password and what you watch can be seen by others on the same network.",
-                                systemImage: "lock.open"
-                            )
-                            .foregroundStyle(.orange)
+                            // Only the icon is orange: orange text is about 2:1 on the form's background in Light Mode.
+                            Label {
+                                Text("This connection isn't encrypted. Your password and what you watch can be seen by others on the same network.")
+                            } icon: {
+                                Image(systemName: "lock.open")
+                                    .foregroundStyle(.orange)
+                            }
                         }
                     }
 

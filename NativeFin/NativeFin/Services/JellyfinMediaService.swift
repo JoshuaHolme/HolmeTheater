@@ -259,7 +259,7 @@ actor JellyfinMediaService: MediaService {
             userID: session.userID,
             // The cast, and the streams that say what the picture and sound are, are big, so only a single item
             // asks for them, not every list.
-            fields: Self.itemFields + [.people, .mediaSources, .mediaStreams],
+            fields: Self.itemFields + [.people, .chapters, .mediaSources, .mediaStreams],
             enableUserData: true,
             ids: [id]
         ))
@@ -429,17 +429,25 @@ actor JellyfinMediaService: MediaService {
 
     // MARK: - Playback
 
-    func playbackInfo(for item: MediaItem) async throws -> PlaybackInfo {
+    func playbackInfo(for item: MediaItem, options: PlaybackOptions) async throws -> PlaybackInfo {
         let (client, session) = try signedIn()
 
         // Describe what this device can play (`deviceProfile`) and let the server pick the cheapest
-        // way to deliver it: direct play, then remux, then transcode.
+        // way to deliver it: direct play, then remux, then transcode. A bitrate cap below the file's own
+        // rules out the first two, and the server scales the picture down to fit.
         let body = PlaybackInfoDto(
+            audioStreamIndex: options.audioIndex,
             deviceProfile: Self.deviceProfile,
+            // Direct play must stay on: with it off, the server doesn't remux a file AVPlayer can already play, but
+            // re-encodes its video, and a 4K re-encode can't keep up with playback, so the buffer drains and the
+            // picture freezes. (The player waiting to minimise stalling, set in `PlaybackSession`, is what keeps a
+            // direct-play file from freezing the picture while the audio carries on.)
             enableDirectPlay: true,
             enableDirectStream: true,
             enableTranscoding: true,
-            maxStreamingBitrate: Self.deviceProfile.maxStreamingBitrate,
+            maxStreamingBitrate: options.maxBitrate ?? Self.deviceProfile.maxStreamingBitrate,
+            mediaSourceID: options.mediaSourceID,
+            subtitleStreamIndex: options.subtitleIndex,
             userID: session.userID
         )
         let response = try await send(Paths.getPostedPlaybackInfo(itemID: item.id, parameters: nil, body), with: client)
@@ -472,13 +480,59 @@ actor JellyfinMediaService: MediaService {
 
         guard let url = client.url(path: path) else { throw MediaServiceError.itemNotPlayable }
 
+        let streams = source.mediaStreams ?? []
+        func tracks(of type: MediaStreamType) -> [MediaTrack] {
+            streams.compactMap { stream in
+                guard stream.type == type, let index = stream.index else { return nil }
+                let title = stream.displayTitle ?? stream.title ?? stream.language ?? String(localized: "Track \(index)")
+                // Text subtitles are fetched as WebVTT and drawn by the app (see `SubtitleOverlay`): the player's
+                // own HLS subtitles drift out of step with the speech.
+                let subtitleURL = type == .subtitle && stream.isTextSubtitleStream == true
+                    ? client.url(path: "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.vtt")
+                        .map { Self.addingAccessToken(client.accessToken, to: $0) }
+                    : nil
+                return MediaTrack(index: index, title: title, isExternal: stream.isExternal == true, url: subtitleURL)
+            }
+        }
+
+        // The server echoes the tracks it picked as the source's defaults; -1 means none.
+        let audioIndex = options.audioIndex ?? source.defaultAudioStreamIndex
+        let subtitleIndex = (options.subtitleIndex ?? source.defaultSubtitleStreamIndex)
+            .flatMap { $0 == PlaybackOptions.noSubtitles ? nil : $0 }
+        let subtitleStream = streams.first { $0.type == .subtitle && $0.index == subtitleIndex }
+
         return PlaybackInfo(
             url: Self.addingAccessToken(client.accessToken, to: url),
             resumePosition: (item.playedFraction ?? 0) * (item.runtime ?? 0),
             playSessionID: response.playSessionID,
             mediaSourceID: sourceID,
-            method: method
+            method: method,
+            audioTracks: tracks(of: .audio),
+            subtitleTracks: tracks(of: .subtitle),
+            audioIndex: audioIndex,
+            subtitleIndex: subtitleIndex,
+            subtitlesBurnedIn: subtitleStream?.deliveryMethod == .encode,
+            sourceBitrate: source.bitrate,
+            sourceHeight: streams.first { $0.type == .video }?.height,
+            maxBitrate: options.maxBitrate
         )
+    }
+
+    func segments(for item: MediaItem) async -> [MediaSegment] {
+        guard let client, let result = try? await send(Paths.getItemSegments(itemID: item.id), with: client) else { return [] }
+        return (result.items ?? []).compactMap { segment in
+            guard let start = segment.startTicks, let end = segment.endTicks, end > start else { return nil }
+            let kind: MediaSegment.Kind = switch segment.type {
+            case .intro: .intro
+            case .outro: .outro
+            case .recap: .recap
+            case .preview: .preview
+            case .commercial: .commercial
+            case .unknown, nil: .unknown
+            }
+            return MediaSegment(kind: kind, start: Double(start) / Self.ticksPerSecond, end: Double(end) / Self.ticksPerSecond)
+        }
+        .sorted { $0.start < $1.start }
     }
 
     func report(_ event: PlaybackEvent, for item: MediaItem, info: PlaybackInfo, position: TimeInterval, isPaused: Bool) async {
@@ -554,6 +608,18 @@ actor JellyfinMediaService: MediaService {
         ],
         maxStreamingBitrate: 120_000_000,
         name: "Native AVPlayer",
+        // Without these the server assumes we can't show subtitles itself and burns them into the video.
+        // Text subtitles are delivered separately, and the app draws them from the player's clock, the way the
+        // web client does. Inside the HLS stream they drift out of step with the speech.
+        subtitleProfiles: [
+            SubtitleProfile(format: "vtt", method: .external),
+            SubtitleProfile(format: "webvtt", method: .external),
+            SubtitleProfile(format: "srt", method: .external),
+            SubtitleProfile(format: "subrip", method: .external),
+            SubtitleProfile(format: "ass", method: .external),
+            SubtitleProfile(format: "ssa", method: .external),
+            SubtitleProfile(format: "mov_text", method: .external)
+        ],
         transcodingProfiles: [
             TranscodingProfile(
                 protocol: .hls,
@@ -753,8 +819,22 @@ actor JellyfinMediaService: MediaService {
             tagline: dto.taglines?.first(where: { !$0.isEmpty }),
             trailerURL: dto.remoteTrailers?.lazy.compactMap { $0.url.flatMap(webURL(from:)) }.first,
             isFavorite: dto.userData?.isFavorite ?? false,
-            people: people(of: dto, client: client)
+            people: people(of: dto, client: client),
+            chapters: chapters(of: dto, id: id, client: client)
         )
+    }
+
+    /// The item's chapters, with a still for each that has one.
+    private static func chapters(of dto: BaseItemDto, id: String, client: JellyfinClient) -> [MediaChapter] {
+        (dto.chapters ?? []).enumerated().map { index, chapter in
+            MediaChapter(
+                name: chapter.name ?? "",
+                start: Double(chapter.startPositionTicks ?? 0) / ticksPerSecond,
+                imageURL: chapter.imageTag.flatMap {
+                    client.url(path: "/Items/\(id)/Images/Chapter/\(index)?maxWidth=\(backdropWidth / 4)&tag=\($0)")
+                }
+            )
+        }
     }
 
     /// The item's own logo, falling back to its parent's (a series' logo, for its seasons and episodes).

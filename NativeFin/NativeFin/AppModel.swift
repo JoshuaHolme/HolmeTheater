@@ -31,13 +31,24 @@ final class AppModel {
     /// The backend the UI talks to. Swap in `MockMediaService` for previews and demos.
     let service: any MediaService
 
+    /// The playback the player is showing, or the last one. Kept here rather than in the player, because SwiftUI
+    /// can rebuild the player when the window changes shape (rotating, folding), and playback must carry on
+    /// through that instead of starting again.
+    @ObservationIgnored var playback: PlaybackSession?
+
+    /// A show the player asked to open ("Go to Show"). The main view pushes it onto the current tab and clears it.
+    var pendingShow: MediaItem?
+
     @ObservationIgnored private let keychain: KeychainStore
     private static let sessionAccount = "session"
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NativeFin", category: "Session")
 
     init(service: any MediaService) {
         self.service = service
-        self.keychain = KeychainStore(service: Bundle.main.bundleIdentifier ?? "JellyfinClient")
+        // Mock runs (`-UseMockService`) get their own Keychain namespace; otherwise the canned session they save
+        // would be restored against the real server on the next normal launch, which can never sign it in.
+        let namespace = Bundle.main.bundleIdentifier ?? "JellyfinClient"
+        self.keychain = KeychainStore(service: service is MockMediaService ? namespace + ".mock" : namespace)
     }
 
     /// Creates a model already in `state`, for SwiftUI previews and tests.
@@ -128,6 +139,8 @@ final class AppModel {
 
     /// Signs out on the server, deletes the saved session and cached artwork, and returns to the sign-in screen.
     func signOut() async {
+        playback?.stop()
+        playback = nil
         await service.signOut()
         keychain.delete(account: Self.sessionAccount)
         // So the next person on a shared device doesn't see the previous user's artwork or profile picture.

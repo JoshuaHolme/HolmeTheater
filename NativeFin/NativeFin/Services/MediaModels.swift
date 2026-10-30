@@ -217,6 +217,21 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
 
     /// The cast and crew, in the server's order. Only filled in when a single item is fetched, not in lists.
     var people: [MediaPerson] = []
+
+    /// The chapters, in order. Only filled in when a single item is fetched, not in lists.
+    var chapters: [MediaChapter] = []
+}
+
+/// A chapter of a movie or episode, as the server lists it.
+nonisolated struct MediaChapter: Hashable, Sendable {
+    /// The chapter's name.
+    let name: String
+
+    /// Where it starts, in seconds.
+    let start: TimeInterval
+
+    /// A still from the chapter, ready to load, or `nil` if the server has none.
+    let imageURL: URL?
 }
 
 /// What the server knows about a person beyond their name and photo. Any of it can be missing, depending on what
@@ -314,6 +329,81 @@ nonisolated struct PlaybackInfo: Hashable, Sendable {
 
     /// How the server is delivering the stream.
     let method: PlaybackMethod
+
+    /// The audio tracks in the file, whichever one this stream carries.
+    var audioTracks: [MediaTrack] = []
+
+    /// The subtitle tracks in the file, whichever one this stream carries.
+    var subtitleTracks: [MediaTrack] = []
+
+    /// The ``MediaTrack/index`` of the audio track this stream plays.
+    var audioIndex: Int?
+
+    /// The ``MediaTrack/index`` of the subtitle track this stream carries, or nil for none.
+    var subtitleIndex: Int?
+
+    /// Whether the server has drawn the subtitles into the picture, so the player can't hide them.
+    var subtitlesBurnedIn = false
+
+    /// The original file's bitrate in bits per second, if known: the most any stream of it can need.
+    var sourceBitrate: Int?
+
+    /// The original file's picture height in pixels, if known.
+    var sourceHeight: Int?
+
+    /// The bitrate cap this stream was requested with, or nil for none.
+    var maxBitrate: Int?
+}
+
+/// A stretch of a movie or episode the server knows the purpose of, which the player offers to skip.
+nonisolated struct MediaSegment: Hashable, Sendable {
+    nonisolated enum Kind: Hashable, Sendable {
+        case intro, outro, recap, preview, commercial
+        /// Something the server found but couldn't name.
+        case unknown
+    }
+
+    let kind: Kind
+
+    /// Where it starts and ends, in seconds.
+    let start: TimeInterval
+    let end: TimeInterval
+}
+
+/// One audio or subtitle track in a video file.
+nonisolated struct MediaTrack: Identifiable, Hashable, Sendable {
+    /// The server's number for the track within its file, which playback requests refer to.
+    let index: Int
+
+    /// A name for menus, e.g. "English - Dolby Digital - 5.1".
+    let title: String
+
+    /// Whether the track is in a separate file next to the video rather than inside it.
+    let isExternal: Bool
+
+    /// For a text subtitle track: where to fetch it as WebVTT, so the app can show it itself. `nil` for anything
+    /// else, including picture-based subtitles, which only the server can draw (by burning them into the video).
+    var url: URL? = nil
+
+    var id: Int { index }
+}
+
+/// What to ask the server for when (re)starting a stream. Nil fields leave the choice to the server.
+nonisolated struct PlaybackOptions: Hashable, Sendable {
+    /// The version of the item to play (an item can have several, e.g. 4K and HD).
+    var mediaSourceID: String?
+
+    /// The most bits per second the stream may use, or nil for the best the source allows.
+    var maxBitrate: Int?
+
+    /// The ``MediaTrack/index`` of the audio track to play.
+    var audioIndex: Int?
+
+    /// The ``MediaTrack/index`` of the subtitle track to show, or ``PlaybackOptions/noSubtitles``.
+    var subtitleIndex: Int?
+
+    /// The `subtitleIndex` that asks for no subtitles at all.
+    static let noSubtitles = -1
 }
 
 // `url` carries the access token in its query, so printing playback info omits it.
