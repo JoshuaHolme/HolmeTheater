@@ -45,7 +45,10 @@ final class AppModel {
 
     init(service: any MediaService) {
         self.service = service
-        self.keychain = KeychainStore(service: Bundle.main.bundleIdentifier ?? "JellyfinClient")
+        // Mock runs (`-UseMockService`) get their own Keychain namespace; otherwise the canned session they save
+        // would be restored against the real server on the next normal launch, which can never sign it in.
+        let namespace = Bundle.main.bundleIdentifier ?? "JellyfinClient"
+        self.keychain = KeychainStore(service: service is MockMediaService ? namespace + ".mock" : namespace)
     }
 
     /// Creates a model already in `state`, for SwiftUI previews and tests.

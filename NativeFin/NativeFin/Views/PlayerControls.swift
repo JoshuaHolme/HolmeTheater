@@ -51,7 +51,18 @@ final class PlayerControlsModel {
     /// Whether the video is zoomed to fill the screen (cropping its edges) rather than fitting inside it.
     private(set) var fillsScreen = false
 
+    /// Bumped when the picture is tapped while the display is folded, so the controls, which sit in the other half,
+    /// show or hide as if they had been tapped themselves.
+    private(set) var pictureTaps = 0
+
+    /// Whether the status bar is showing, which it does with the controls. The picture's screen reads this when
+    /// it measures its corners, to tell the status bar from a camera.
+    @ObservationIgnored var statusBarShown = false
+
+    func tapPicture() { pictureTaps += 1 }
+
     @ObservationIgnored private var timeObserver: Any?
+    @ObservationIgnored private var statusObservation: NSKeyValueObservation?
     @ObservationIgnored private var hasServerChapters = false
     @ObservationIgnored private var pip: AVPictureInPictureController?
 
@@ -74,12 +85,18 @@ final class PlayerControlsModel {
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+        // The periodic observer goes quiet once time stops moving, so on its own it would miss a stall starting
+        // (or ending) and leave the controls showing "playing" with no spinner.
+        statusObservation = player.observe(\.timeControlStatus) { [weak self] _, _ in
+            Task { @MainActor in self?.tick() }
+        }
         Task { await loadChapters() }
     }
 
     func stop() {
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
+        statusObservation = nil
     }
 
     private func tick() {
@@ -266,8 +283,14 @@ struct PlayerScreen: Equatable {
     /// several, ``corners`` keeps the most each corner has covered and ``cutouts`` the least. Folding, or
     /// rotating so something turns up in a corner that was clear (turning the phone over leaves the size the
     /// same), starts afresh.
-    mutating func update(_ shape: Shape) {
-        let isNewCorner = zip(Self.obstructed(shape.corners), Self.obstructed(corners)).contains { $0 && !$1 }
+    ///
+    /// - Parameter statusBarShown: Whether the status bar is showing. Something turning up in a corner then is
+    ///   most likely the status bar itself (as on iPhone Duo's inner display, which has no camera), not a camera,
+    ///   so it doesn't start afresh: it would move the picture aside for the status bar, until the status bar
+    ///   next hid. (Turning the phone over with it showing is read the same way, and sorts itself out when it hides.)
+    mutating func update(_ shape: Shape, statusBarShown: Bool = false) {
+        let isNewCorner = !statusBarShown
+            && zip(Self.obstructed(shape.corners), Self.obstructed(corners)).contains { $0 && !$1 }
         guard shape.size == size, !isNewCorner else {
             size = shape.size
             corners = shape.corners
@@ -490,11 +513,8 @@ struct PlayerSurface: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ view: SurfaceView, context: Context) {
-        let gravity: AVLayerVideoGravity = model.fillsScreen ? .resizeAspectFill : .resizeAspect
-        guard view.playerLayer.videoGravity != gravity else { return }
-        UIView.animate(withDuration: 0.25) { view.playerLayer.videoGravity = gravity }
-    }
+    /// Zooming to fill scales this view (see `CustomPlayer`), so the layer always just fits the video to its bounds.
+    func updateUIView(_ view: SurfaceView, context: Context) {}
 
     final class SurfaceView: UIView {
         override static var layerClass: AnyClass { AVPlayerLayer.self }
@@ -651,11 +671,11 @@ struct PlayerControlsView: View {
     /// the bottom controls are tall enough that, above them, it would sit on the playback buttons in the middle.
     private var skipSitsAtTop: Bool { controlsAreShown && dynamicTypeSize.isAccessibilitySize }
 
-    /// Folded, the controls are always showing: their half has no picture under it to tap through to.
-    ///
-    /// Also with VoiceOver or Switch Control on: controls that hide themselves after a few seconds are gone before
+    /// Always with VoiceOver or Switch Control on: controls that hide themselves after a few seconds are gone before
     /// anyone using them has found their way around.
-    private var controlsAreShown: Bool { showsControls || isFolded || voiceOverIsOn || switchControlIsOn }
+    private var controlsAreShown: Bool { showsControls || voiceOverIsOn || switchControlIsOn }
+
+    private var statusBarIsHidden: Bool { isFolded || !controlsAreShown || model.showsTiming }
 
     private var showsExpandedPanelBar: Bool { !dynamicTypeSize.isAccessibilitySize }
 
@@ -667,10 +687,7 @@ struct PlayerControlsView: View {
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
-                .onTapGesture {
-                    if isFolded || model.showsTiming { return }
-                    if panel != nil { panel = nil; touch() } else { setControls(visible: !showsControls) }
-                }
+                .onTapGesture { toggleControls() }
 
             if model.isBuffering || session.isSwitching {
                 ProgressView().controlSize(.large).tint(.white)
@@ -685,25 +702,31 @@ struct PlayerControlsView: View {
 
             // Offered while the picture is in a stretch the server has marked, whether or not the controls are
             // showing; above the bottom row when they are.
-            SkipSegmentButton(session: session, model: model)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: skipSitsAtTop ? .topTrailing : .bottomTrailing)
-                .padding(.trailing, screen.rowInsets(top: skipSitsAtTop).trailing)
-                .padding(.top, skipSitsAtTop ? screen.topPadding(isCompact: isCompact) + Self.buttonSize + 12 : 0)
-                .padding(.bottom, skipSitsAtTop ? 0 : screen.bottomPadding + floatingButtonsLift)
-                .opacity(model.showsTiming || panel != nil ? 0 : 1)
-                .allowsHitTesting(!model.showsTiming && panel == nil)
-                .accessibilityHidden(model.showsTiming || panel != nil)
-                .animation(.smooth(duration: 0.3), value: controlsAreShown)
+            // Folded, it goes over the picture in the other half instead (see `CustomPlayer`).
+            if !isFolded {
+                SkipSegmentButton(session: session, model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: skipSitsAtTop ? .topTrailing : .bottomTrailing)
+                    .padding(.trailing, screen.rowInsets(top: skipSitsAtTop).trailing)
+                    .padding(.top, skipSitsAtTop ? screen.topPadding(isCompact: isCompact) + Self.buttonSize + 12 : 0)
+                    .padding(.bottom, skipSitsAtTop ? 0 : screen.bottomPadding + floatingButtonsLift)
+                    .opacity(model.showsTiming || panel != nil ? 0 : 1)
+                    .allowsHitTesting(!model.showsTiming && panel == nil)
+                    .accessibilityHidden(model.showsTiming || panel != nil)
+                    .animation(.smooth(duration: 0.3), value: controlsAreShown)
+            }
 
             // Near the end of an episode: the next one, with a countdown to starting it.
-            NextEpisodeOverlay(session: session, model: model, play: playNext)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(.trailing, screen.rowInsets(top: false).trailing)
-                .padding(.bottom, screen.bottomPadding + floatingButtonsLift)
-                .opacity(model.showsTiming || panel != nil ? 0 : 1)
-                .allowsHitTesting(!model.showsTiming && panel == nil)
-                .accessibilityHidden(model.showsTiming || panel != nil)
-                .animation(.smooth(duration: 0.3), value: controlsAreShown)
+            // Folded, it goes over the picture in the other half instead (see `CustomPlayer`).
+            if !isFolded {
+                NextEpisodeOverlay(session: session, model: model, play: playNext)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, screen.rowInsets(top: false).trailing)
+                    .padding(.bottom, screen.bottomPadding + floatingButtonsLift)
+                    .opacity(model.showsTiming || panel != nil ? 0 : 1)
+                    .allowsHitTesting(!model.showsTiming && panel == nil)
+                    .accessibilityHidden(model.showsTiming || panel != nil)
+                    .animation(.smooth(duration: 0.3), value: controlsAreShown)
+            }
 
             // Folded, the picture is in the other half, so the panel goes in this one, on its own.
             if model.showsTiming && isFolded {
@@ -721,8 +744,12 @@ struct PlayerControlsView: View {
         // in the Apple TV app, instead of turning pale in Light Mode.
         .environment(\.colorScheme, .dark)
         .onGeometryChange(for: Bool.self) { $0.size.width < $0.size.height } action: { isCompact = $0 }
-        // As in the Apple TV app, the clock and battery show with the controls.
-        .statusBarHidden(!controlsAreShown || model.showsTiming)
+        // As in the Apple TV app, the clock and battery show with the controls. Folded, the other half holds the
+        // picture, and the status bar would sit over it.
+        .statusBarHidden(statusBarIsHidden)
+        .onChange(of: statusBarIsHidden, initial: true) { model.statusBarShown = !statusBarIsHidden }
+        // A tap on the picture, in the other half when folded, does the same as one here.
+        .onChange(of: model.pictureTaps) { toggleControls() }
         // Out of the way of the timing panel, which is over the picture beneath this view (unless folded).
         .allowsHitTesting(!model.showsTiming || isFolded)
         .persistentSystemOverlays(.hidden)
@@ -1125,6 +1152,11 @@ struct PlayerControlsView: View {
 
     // MARK: Behaviour
 
+    private func toggleControls() {
+        if model.showsTiming { return }
+        if panel != nil { panel = nil; touch() } else { setControls(visible: !showsControls) }
+    }
+
     private func setControls(visible: Bool) {
         showsControls = visible
         interactions += 1
@@ -1272,7 +1304,7 @@ struct SubtitleTimingPanel: View {
 /// The episode that follows, offered near the end of one: its still, number, title and description, and a countdown
 /// to starting it, which can be cancelled. Tapping it plays the episode at once. Reads the position itself, so the
 /// rest of the controls aren't rebuilt as it moves.
-private struct NextEpisodeOverlay: View {
+struct NextEpisodeOverlay: View {
     let session: PlaybackSession
     let model: PlayerControlsModel
     let play: (MediaItem) -> Void
@@ -1464,7 +1496,7 @@ private struct NextEpisodeCard: View {
 
 /// "Skip Intro", "Skip Credits" and so on, while the picture is in a stretch the server has marked. Reads the
 /// position itself, so the rest of the controls aren't rebuilt as it moves.
-private struct SkipSegmentButton: View {
+struct SkipSegmentButton: View {
     let session: PlaybackSession
     let model: PlayerControlsModel
 

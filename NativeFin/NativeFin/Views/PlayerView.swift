@@ -235,8 +235,9 @@ final class PlaybackSession {
         self.subtitleIndex = info.subtitleIndex
         self.subtitleOffset = UserDefaults.standard.double(forKey: Self.offsetKey(for: item))
         self.player = AVPlayer(playerItem: Self.makePlayerItem(for: item, info: info))
-        // A direct-play file starts as soon as the first bytes arrive; HLS needs the default buffering.
-        player.automaticallyWaitsToMinimizeStalling = info.method != .directPlay
+        // Waiting lets the player hold back to build a buffer and carry on by itself after a stall. Without it, a
+        // dip in the network pauses a direct-play file for good (4K files at high bitrates stall often on Wi-Fi).
+        player.automaticallyWaitsToMinimizeStalling = true
 
         #if os(iOS)
         // Paused, the screen may lock as usual.
@@ -258,6 +259,8 @@ final class PlaybackSession {
 
     private static func makePlayerItem(for item: MediaItem, info: PlaybackInfo) -> AVPlayerItem {
         let playerItem = AVPlayerItem(url: info.url)
+        // Buffer well ahead so a short dip in the network doesn't run the buffer dry. (The default is a few seconds.)
+        playerItem.preferredForwardBufferDuration = 30
         let title = AVMutableMetadataItem()
         title.identifier = .commonIdentifierTitle
         title.value = item.title as NSString
@@ -353,8 +356,9 @@ final class PlaybackSession {
     func start() async {
         #if os(iOS) || os(tvOS)
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        // Active, so the volume slider hears about changes made with the hardware buttons.
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // Active, so the volume slider hears about changes made with the hardware buttons. Asynchronously, as
+        // activating can block the calling thread for a noticeable time.
+        AVAudioSession.sharedInstance().activate { _, _ in }
         #endif
 
         if info.resumePosition > 1 {
@@ -407,7 +411,7 @@ final class PlaybackSession {
         player.replaceCurrentItem(with: nil)
         #if os(iOS) || os(tvOS)
         // Let whatever was playing before (music, a podcast) carry on.
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        AVAudioSession.sharedInstance().deactivate(options: .notifyOthersOnDeactivation) { _, _ in }
         #endif
 
         guard let startReport else {
@@ -511,7 +515,7 @@ final class PlaybackSession {
         }
 
         player.replaceCurrentItem(with: Self.makePlayerItem(for: item, info: newInfo))
-        player.automaticallyWaitsToMinimizeStalling = newInfo.method != .directPlay
+        player.automaticallyWaitsToMinimizeStalling = true
         await player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
         guard !isStopped else { return }
         if wasPlaying { player.play() }
@@ -570,6 +574,8 @@ private struct CustomPlayer: View {
     /// Whether the display is partially folded, as iPhone Duo is in laptop view: the picture and subtitles are
     /// above the fold and every control below it.
     @State private var isFolded = false
+    /// While pinching: how far the picture is between fitted (0) and filling the screen (1), following the fingers.
+    @State private var pinchProgress: CGFloat?
 
     init(item: MediaItem, session: PlaybackSession, playNext: @escaping (MediaItem) -> Void, close: @escaping () -> Void) {
         self.item = item
@@ -581,15 +587,24 @@ private struct CustomPlayer: View {
 
     var body: some View {
         layout
-            // Pinch out to fill the screen, pinch in to fit the video back inside it.
+            // Pinch out to fill the screen, pinch in to fit the video back inside it. The picture follows the
+            // fingers, then springs to whichever it's nearer, or the way the pinch was heading if it was quick.
             .simultaneousGesture(
-                MagnifyGesture().onEnded { value in
-                    if value.magnification > 1.1 {
-                        model.setFillsScreen(true)
-                    } else if value.magnification < 0.9 {
-                        model.setFillsScreen(false)
+                MagnifyGesture()
+                    .onChanged { value in
+                        let range = fillScale - 1
+                        guard range > 0.01 else { return }
+                        let startScale = model.fillsScreen ? fillScale : 1
+                        pinchProgress = Self.rubberBand((startScale * value.magnification - 1) / range)
                     }
-                }
+                    .onEnded { value in
+                        guard let progress = pinchProgress else { return }
+                        let projected = progress + value.velocity * 0.15 / (fillScale - 1)
+                        withAnimation(.spring(duration: 0.35, bounce: 0.15)) {
+                            pinchProgress = nil
+                            model.setFillsScreen(projected > 0.5)
+                        }
+                    }
             )
             .onAppear { model.start() }
             .onDisappear { model.stop() }
@@ -633,7 +648,26 @@ private struct CustomPlayer: View {
             video
             SubtitleOverlay(session: session, model: model, frame: pictureFrame)
             timingPanel
+            // Folded, the skip button and "Up Next" card go over the picture, bottom trailing, rather than in the
+            // controls' half. They're never both showing.
+            if isFolded {
+                ZStack {
+                    SkipSegmentButton(session: session, model: model)
+                    NextEpisodeOverlay(session: session, model: model, play: playNext)
+                }
+                    // What the controls give them when they're in their half: white text, and dark materials.
+                    .foregroundStyle(.white)
+                    .environment(\.colorScheme, .dark)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(16)
+                    .frame(width: pictureFrame.width, height: pictureFrame.height)
+                    .position(x: pictureFrame.midX, y: pictureFrame.midY)
+            }
         }
+        // Folded, the picture is in its own half with the controls in the other, so tapping it toggles them.
+        // Flat, the controls layer covers the picture and takes the tap itself.
+        .contentShape(Rectangle())
+        .onTapGesture { if isFolded { model.tapPicture() } }
         .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: { videoScreen.safeArea = $0 }
     }
 
@@ -658,17 +692,17 @@ private struct CustomPlayer: View {
     private var video: some View {
         Color.clear
             .overlay(alignment: .topLeading) {
-                PlayerSurface(model: model, bindsPictureInPicture: true)
-                    .frame(width: pictureFrame.width, height: pictureFrame.height)
-                    .offset(x: pictureFrame.minX, y: pictureFrame.minY)
+                surface(bindsPictureInPicture: true, in: .zero)
             }
             // With a panel open, the lower part of the picture blurs: a second copy of the video, blurred and
             // masked to start just below the panel buttons.
             .overlay(alignment: .topLeading) {
                 if let top = model.blurTop {
                     let frame = pictureFrame
-                    PlayerSurface(model: model, bindsPictureInPicture: false)
+                    Color.clear
                         .frame(width: frame.width, height: frame.height)
+                        .overlay(alignment: .topLeading) { surface(bindsPictureInPicture: false, in: frame) }
+                        .clipped()
                         .blur(radius: 14, opaque: true)
                         // With Increase Contrast or Reduce Transparency on, darken it so the white text over it reads.
                         .overlay(Color.black.opacity(contrast == .increased || reduceTransparency ? 0.5 : 0))
@@ -687,21 +721,74 @@ private struct CustomPlayer: View {
                 }
             }
             .animation(.smooth(duration: 0.3), value: model.blurTop == nil)
+            // Zoomed, the picture runs past its region; folded, it would otherwise spill into the controls' half.
+            .clipped()
             // Measured and laid out inside `ignoresSafeArea`, so against the whole region. (Outside it, the
             // view still reports the safe area's frame.)
             .onGeometryChange(for: PlayerScreen.Shape.self) { proxy in
                 PlayerScreen.Shape(size: proxy.size, corners: proxy.containerCornerInsets)
-            } action: { videoScreen.update($0) }
+            } action: { videoScreen.update($0, statusBarShown: model.statusBarShown) }
             .ignoresSafeArea()
     }
 
-    /// Where the picture is on the screen: all of it when zoomed to fill, otherwise as big as it fits.
-    private var pictureFrame: CGRect {
-        if model.fillsScreen { return CGRect(origin: .zero, size: videoScreen.size) }
+    /// The video, laid out at its fitted size and scaled up to the zoom. Scaling, rather than resizing the layer or
+    /// switching its gravity, is what lets the zoom follow a pinch and animate smoothly.
+    /// - Parameter container: The frame, on the screen, of the view this is placed in, from its top leading corner.
+    private func surface(bindsPictureInPicture: Bool, in container: CGRect) -> some View {
+        let fitted = fittedFrame
+        let shown = displayedFrame
+        return PlayerSurface(model: model, bindsPictureInPicture: bindsPictureInPicture)
+            .frame(width: fitted.width, height: fitted.height)
+            .scaleEffect(fitted.width > 0 ? shown.width / fitted.width : 1)
+            .offset(x: shown.midX - fitted.width / 2 - container.minX, y: shown.midY - fitted.height / 2 - container.minY)
+    }
+
+    /// How far the picture is between fitted (0) and filling the screen (1); a little past either end while a
+    /// pinch overshoots.
+    private var zoomProgress: CGFloat { pinchProgress ?? (model.fillsScreen ? 1 : 0) }
+
+    /// Where the picture is when it fits: as big as it can be while keeping clear of the camera.
+    private var fittedFrame: CGRect {
         // Folded, the picture has a half to itself with nothing in it to keep clear of: no safe area applies.
-        return isFolded
+        isFolded
             ? videoScreen.unobstructedPictureFrame(aspectRatio: aspectRatio)
             : videoScreen.pictureFrame(aspectRatio: aspectRatio)
+    }
+
+    /// How much the fitted picture is scaled up to fill the screen, centred on it.
+    private var fillScale: CGFloat {
+        let fitted = fittedFrame
+        guard fitted.width > 0, fitted.height > 0 else { return 1 }
+        return max(1, videoScreen.size.width / fitted.width, videoScreen.size.height / fitted.height)
+    }
+
+    /// The whole picture as drawn at the current zoom, including any part cropped off the screen.
+    private var displayedFrame: CGRect {
+        let fitted = fittedFrame
+        let progress = zoomProgress
+        let scale = 1 + (fillScale - 1) * progress
+        let size = CGSize(width: fitted.width * scale, height: fitted.height * scale)
+        let center = CGPoint(
+            x: fitted.midX + (videoScreen.size.width / 2 - fitted.midX) * progress,
+            y: fitted.midY + (videoScreen.size.height / 2 - fitted.midY) * progress
+        )
+        return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+    }
+
+    /// Where the picture can be seen on the screen, for laying out what goes over it: all of the screen when
+    /// zoomed to fill, otherwise as big as it fits.
+    private var pictureFrame: CGRect {
+        let visible = displayedFrame.intersection(CGRect(origin: .zero, size: videoScreen.size))
+        return visible.isNull ? fittedFrame : visible
+    }
+
+    /// Lets a pinch carry on a little past fitted or filled, with growing resistance, rather than stopping dead.
+    private static func rubberBand(_ progress: CGFloat) -> CGFloat {
+        let limit: CGFloat = 0.12
+        func band(_ over: CGFloat) -> CGFloat { limit * (1 - 1 / (1 + over / limit / 3)) }
+        if progress > 1 { return 1 + band(progress - 1) }
+        if progress < 0 { return -band(-progress) }
+        return progress
     }
 
     /// The picture's width over its height; widescreen until the stream reports its size.

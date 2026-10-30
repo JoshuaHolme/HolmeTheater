@@ -438,6 +438,10 @@ actor JellyfinMediaService: MediaService {
         let body = PlaybackInfoDto(
             audioStreamIndex: options.audioIndex,
             deviceProfile: Self.deviceProfile,
+            // Direct play must stay on: with it off, the server doesn't remux a file AVPlayer can already play, but
+            // re-encodes its video, and a 4K re-encode can't keep up with playback, so the buffer drains and the
+            // picture freezes. (The player waiting to minimise stalling, set in `PlaybackSession`, is what keeps a
+            // direct-play file from freezing the picture while the audio carries on.)
             enableDirectPlay: true,
             enableDirectStream: true,
             enableTranscoding: true,
