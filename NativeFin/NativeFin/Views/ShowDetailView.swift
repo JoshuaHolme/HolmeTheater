@@ -42,6 +42,9 @@ struct ShowDetailView: View {
     /// The show's special features. Empty until they arrive, or if there are none.
     @State private var specialFeatures: [MediaItem] = []
 
+    /// The height of the details over the hero's bottom-left corner, without the padding around them.
+    @State private var detailsHeight: CGFloat = 0
+
     /// Whether the full list of special features is open.
     @State private var showsFeatureList = false
 
@@ -58,6 +61,11 @@ struct ShowDetailView: View {
     @State private var favoriteOverride: Bool?
 
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// How many lines a short line of the hero's text gets: two, or all it needs at accessibility sizes, where
+    /// two lines would cut off most of it.
+    private var shortTextLineLimit: Int? { dynamicTypeSize.isAccessibilitySize ? nil : 2 }
 
     private var isSeason: Bool { item.kind == .season }
     private var isEpisode: Bool { item.kind == .episode }
@@ -154,7 +162,7 @@ struct ShowDetailView: View {
                 // The episode's own name, with where it falls in the show beneath.
                 Text(item.title)
                     .font(.title2.bold())
-                    .lineLimit(3)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
                     .accessibilityAddTraits(.isHeader)
                 if let position = item.seasonEpisodeText {
                     Text(position)
@@ -167,14 +175,14 @@ struct ShowDetailView: View {
             if let details = detailsLine {
                 Text(details)
                     .font(.callout)
-                    .lineLimit(2)
+                    .lineLimit(shortTextLineLimit)
             }
 
             if let tagline = current.tagline {
                 Text(tagline)
                     .font(.callout.italic())
                     .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(2)
+                    .lineLimit(shortTextLineLimit)
             }
 
             if let overview = current.overview {
@@ -207,6 +215,8 @@ struct ShowDetailView: View {
         .foregroundStyle(.white)
         // The details sit on a dark fade whatever the appearance, so their secondary colors are the light ones.
         .environment(\.colorScheme, .dark)
+        // How tall the details are, so the fade behind them can reach up past their top.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailsHeight = $0 }
         .padding(.horizontal)
         .padding(.bottom, 20)
         // If the details make the hero taller than its usual height, some artwork still shows above them, clear
@@ -279,17 +289,13 @@ struct ShowDetailView: View {
             .overlay {
                 // Eased rather than linear: it starts gently, so the artwork's top half is untouched, then deepens
                 // behind the details. Easing also avoids the visible edge a straight ramp leaves where it begins.
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0.3),
-                        .init(color: .black.opacity(0.2), location: 0.45),
-                        .init(color: .black.opacity(0.5), location: 0.6),
-                        .init(color: .black.opacity(0.7), location: 0.78),
-                        .init(color: .black.opacity(0.85), location: 1)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
+                GeometryReader { proxy in
+                    LinearGradient(
+                        stops: scrimStops(heroHeight: proxy.size.height),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
             }
             // Pulled down past the top, the backdrop grows from its bottom edge to cover the gap the overscroll
             // opens above it. After the clip, so the growth isn't clipped away.
@@ -300,6 +306,34 @@ struct ShowDetailView: View {
                 return content.scaleEffect(scale, anchor: .bottom)
             }
             .accessibilityHidden(true)
+    }
+
+    /// Where the fade over the backdrop begins, as a fraction of the hero's height, when the details are short.
+    private static let usualScrimStart: CGFloat = 0.3
+
+    /// How far above the details the fade begins, so their first line isn't over bare artwork.
+    private static let scrimLead: CGFloat = 60
+
+    /// The fade's opacity at each fraction of its length, easing in from nothing to the strongest.
+    private static let scrimProfile: [(position: CGFloat, opacity: Double)] = [
+        (0, 0), (0.214, 0.2), (0.429, 0.5), (0.686, 0.7), (1, 0.85)
+    ]
+
+    /// The stops of the fade that darkens the backdrop behind the details.
+    ///
+    /// It usually begins 30% of the way down. With larger text or more lines the details are taller and would reach
+    /// up past that, onto bare artwork where white text can be unreadable, so the fade begins above their top
+    /// instead. The same shape is stretched over whatever length it has.
+    private func scrimStops(heroHeight: CGFloat) -> [Gradient.Stop] {
+        var start = Self.usualScrimStart
+        if heroHeight > 0, detailsHeight > 0 {
+            // The details, their bottom padding, and a little lead-in above them.
+            let covered = detailsHeight + 20 + Self.scrimLead
+            start = min(start, max(0, 1 - covered / heroHeight))
+        }
+        return Self.scrimProfile.map { step in
+            Gradient.Stop(color: .black.opacity(step.opacity), location: start + (1 - start) * step.position)
+        }
     }
 
     /// e.g. "Comedy · Drama · HBO": the genres, then the network the show aired on. Nil if neither is known.

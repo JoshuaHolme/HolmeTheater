@@ -825,7 +825,7 @@ actor JellyfinMediaService: MediaService {
         (dto.chapters ?? []).enumerated().map { index, chapter in
             MediaChapter(
                 name: chapter.name ?? "",
-                start: Double(chapter.startPositionTicks ?? 0) / 10_000_000,
+                start: Double(chapter.startPositionTicks ?? 0) / ticksPerSecond,
                 imageURL: chapter.imageTag.flatMap {
                     client.url(path: "/Items/\(id)/Images/Chapter/\(index)?maxWidth=\(backdropWidth / 4)&tag=\($0)")
                 }

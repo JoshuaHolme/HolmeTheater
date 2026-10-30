@@ -21,6 +21,8 @@ struct PlayerView: View {
     @State private var errorMessage: String?
     /// The episode playing after "Up Next" moved on from the one this view was opened with. Nil until then.
     @State private var followingItem: MediaItem?
+    /// The load of the following episode, so closing the player can cancel it.
+    @State private var followingLoad: Task<Void, Never>?
 
     /// What's playing: the item this view was opened with, or the episode that followed it.
     private var playing: MediaItem { followingItem ?? item }
@@ -57,7 +59,10 @@ struct PlayerView: View {
         // model, a rebuilt player picks the same one up, and it only stops when the player closes for real.
         .task { await load() }
         .onAppear { session?.viewerAppeared() }
-        .onDisappear { session?.viewerDisappeared() }
+        .onDisappear {
+            followingLoad?.cancel()
+            session?.viewerDisappeared()
+        }
     }
 
     /// Picks up the item's playback if it's already going, or asks the server how to play it and starts.
@@ -107,10 +112,11 @@ struct PlayerView: View {
         session = nil
         errorMessage = nil
         followingItem = next
-        Task { await load() }
+        followingLoad = Task { await load() }
     }
 
     private func close() {
+        followingLoad?.cancel()
         session?.stop(then: onStop)
         dismiss()
     }
@@ -303,6 +309,14 @@ final class PlaybackSession {
         return episodes[(index + 1)...].first { $0.kind == .episode }
     }
 
+    #if DEBUG
+    /// Sets what a preview shows, which has no server to ask.
+    func setPreview(nextEpisode: MediaItem?, segments: [MediaSegment]) {
+        self.nextEpisode = nextEpisode
+        self.segments = segments
+    }
+    #endif
+
     /// The marked stretch `time` is in, if any.
     func segment(at time: TimeInterval) -> MediaSegment? {
         segments.first { $0.start <= time && time < $0.end }
@@ -391,6 +405,10 @@ final class PlaybackSession {
         player.pause()
         // Drop the item so AVPlayer closes its network connection now rather than when it's deallocated.
         player.replaceCurrentItem(with: nil)
+        #if os(iOS) || os(tvOS)
+        // Let whatever was playing before (music, a podcast) carry on.
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
 
         guard let startReport else {
             completion()
@@ -481,6 +499,17 @@ final class PlaybackSession {
         info = newInfo
         audioIndex = newInfo.audioIndex
         subtitleIndex = newInfo.subtitleIndex
+
+        // Close the old stream on the server (which ends its transcode) before announcing the new one. Queued
+        // now, before the waits below, so closing the player during them still ends the old play session:
+        // `stop()` reports the new one only after this has gone out.
+        let (service, item, previous) = (service, item, startReport)
+        startReport = Task {
+            await previous?.value
+            await service.report(.stopped, for: item, info: oldInfo, position: resumeAt, isPaused: true)
+            await service.report(.started, for: item, info: newInfo, position: resumeAt, isPaused: !wasPlaying)
+        }
+
         player.replaceCurrentItem(with: Self.makePlayerItem(for: item, info: newInfo))
         player.automaticallyWaitsToMinimizeStalling = newInfo.method != .directPlay
         await player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
@@ -488,14 +517,6 @@ final class PlaybackSession {
         if wasPlaying { player.play() }
         await applyTrackSelection()
         loadSubtitleCues()
-
-        // Close the old stream on the server (which ends its transcode) before announcing the new one.
-        let (service, item, previous) = (service, item, startReport)
-        startReport = Task {
-            await previous?.value
-            await service.report(.stopped, for: item, info: oldInfo, position: resumeAt, isPaused: true)
-            await service.report(.started, for: item, info: newInfo, position: resumeAt, isPaused: !wasPlaying)
-        }
     }
 
     /// Makes the player show `subtitleIndex` (and, for a direct-played file, play `audioIndex`) from the tracks
@@ -542,6 +563,8 @@ private struct CustomPlayer: View {
     @State private var model: PlayerControlsModel
     /// What the picture is laid out against, and what the controls are. The same screen, except when iPhone Duo is
     /// partially folded and the two sit in separate halves.
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var videoScreen = PlayerScreen()
     @State private var controlsScreen = PlayerScreen()
     /// Whether the display is partially folded, as iPhone Duo is in laptop view: the picture and subtitles are
@@ -635,7 +658,7 @@ private struct CustomPlayer: View {
     private var video: some View {
         Color.clear
             .overlay(alignment: .topLeading) {
-                PlayerSurface(model: model)
+                PlayerSurface(model: model, bindsPictureInPicture: true)
                     .frame(width: pictureFrame.width, height: pictureFrame.height)
                     .offset(x: pictureFrame.minX, y: pictureFrame.minY)
             }
@@ -644,9 +667,11 @@ private struct CustomPlayer: View {
             .overlay(alignment: .topLeading) {
                 if let top = model.blurTop {
                     let frame = pictureFrame
-                    PlayerSurface(model: model)
+                    PlayerSurface(model: model, bindsPictureInPicture: false)
                         .frame(width: frame.width, height: frame.height)
                         .blur(radius: 14, opaque: true)
+                        // With Increase Contrast or Reduce Transparency on, darken it so the white text over it reads.
+                        .overlay(Color.black.opacity(contrast == .increased || reduceTransparency ? 0.5 : 0))
                         .mask {
                             // A long, soft fade into the blur rather than a hard edge.
                             VStack(spacing: 0) {

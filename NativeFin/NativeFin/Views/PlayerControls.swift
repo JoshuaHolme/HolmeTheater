@@ -10,12 +10,12 @@ import SwiftUI
 
 /// A chapter of the video being played.
 struct PlayerChapter: Identifiable, Hashable {
+    /// Its place in the list. Chapters can share a start time, so that can't identify them.
+    let id: Int
     let title: String
     let start: TimeInterval
     /// A still from the chapter, when the server has one.
     var imageURL: URL?
-
-    var id: TimeInterval { start }
 }
 
 /// What the on-screen controls need from the player: position, state, chapters and Picture in Picture.
@@ -35,6 +35,11 @@ final class PlayerControlsModel {
     private(set) var videoSize: CGSize = .zero
     var videoHeight: CGFloat { videoSize.height }
     private(set) var chapters: [PlayerChapter] = []
+
+    #if DEBUG
+    /// Moves the position for a preview, which has no video to play.
+    func setPreviewPosition(_ seconds: TimeInterval) { currentTime = seconds }
+    #endif
 
     /// Whether the panel for adjusting the subtitles' timing is open over the picture. Everything else is cleared
     /// away while it is, so the player's views both read it.
@@ -166,7 +171,7 @@ final class PlayerControlsModel {
         guard let asset = player.currentItem?.asset,
               let groups = try? await asset.loadChapterMetadataGroups(bestMatchingPreferredLanguages: Locale.preferredLanguages)
         else {
-            chapters = []
+            if !hasServerChapters { chapters = [] }
             return
         }
         var found: [PlayerChapter] = []
@@ -174,10 +179,13 @@ final class PlayerControlsModel {
             let titleItem = AVMetadataItem.metadataItems(from: group.items, filteredByIdentifier: .commonIdentifierTitle).first
             let title = (try? await titleItem?.load(.stringValue)) ?? nil
             found.append(PlayerChapter(
+                id: found.count,
                 title: title ?? String(localized: "Chapter \(found.count + 1)"),
                 start: group.timeRange.start.seconds
             ))
         }
+        // The server's list may have arrived while the stream's was loading, and it's the better of the two.
+        guard !hasServerChapters else { return }
         chapters = found
     }
 
@@ -196,8 +204,10 @@ final class PlayerControlsModel {
 
     // MARK: Picture in Picture
 
+    /// Binds Picture in Picture to the layer showing the video. A controller belongs to one layer, so it's made
+    /// again if SwiftUI replaces the layer, as it can when the window changes shape.
     func attach(_ layer: AVPlayerLayer) {
-        guard pip == nil, AVPictureInPictureController.isPictureInPictureSupported() else { return }
+        guard AVPictureInPictureController.isPictureInPictureSupported(), pip?.playerLayer !== layer else { return }
         let controller = AVPictureInPictureController(playerLayer: layer)
         controller?.canStartPictureInPictureAutomaticallyFromInline = true
         pip = controller
@@ -469,12 +479,14 @@ struct PlayerScreen: Equatable {
 /// The video itself, with no controls.
 struct PlayerSurface: UIViewRepresentable {
     let model: PlayerControlsModel
+    /// Whether Picture in Picture follows this layer. Only the main picture's, not the blurred copy under a panel.
+    let bindsPictureInPicture: Bool
 
     func makeUIView(context: Context) -> SurfaceView {
         let view = SurfaceView()
         view.playerLayer.player = model.player
         view.playerLayer.videoGravity = .resizeAspect
-        model.attach(view.playerLayer)
+        if bindsPictureInPicture { model.attach(view.playerLayer) }
         return view
     }
 
@@ -514,12 +526,15 @@ struct SubtitleOverlay: View {
     /// Where the picture is on the screen.
     let frame: CGRect
 
+    /// The text size setting, as a factor on the usual size: the subtitles follow it, up to a point.
+    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
+
     var body: some View {
         Color.clear
             .overlay(alignment: .topLeading) {
                 if let text = session.subtitleText(at: model.currentTime) {
                     Text(text)
-                        .font(.system(size: max(14, frame.height * 0.055), weight: .semibold))
+                        .font(.system(size: max(14, frame.height * 0.055) * min(textScale, 1.6), weight: .semibold))
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.white)
                         .shadow(color: .black, radius: 2)
@@ -534,6 +549,19 @@ struct SubtitleOverlay: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
     }
+}
+
+/// Dimmed white for secondary text over the picture, and fully white with Increase Contrast on.
+private struct SecondaryPlayerText: ViewModifier {
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(.white.opacity(contrast == .increased ? 1 : 0.8))
+    }
+}
+
+private extension View {
+    func secondaryPlayerText() -> some View { modifier(SecondaryPlayerText()) }
 }
 
 // MARK: - Controls
@@ -554,11 +582,17 @@ struct PlayerControlsView: View {
     let close: () -> Void
 
     @Environment(AppModel.self) private var appModel
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverIsOn
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControlIsOn
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// How tall the panel under the pills is, growing with the text size so cards and rows aren't clipped.
+    @ScaledMetric(relativeTo: .body) private var regularPanelHeight: CGFloat = 130
+    @ScaledMetric(relativeTo: .body) private var compactPanelHeight: CGFloat = 220
 
     /// Side of the round and capsule controls, sized to match the Apple TV app.
     static let buttonSize: CGFloat = 48
 
-    fileprivate enum Panel: String, Identifiable, CaseIterable {
+    enum Panel: String, Identifiable, CaseIterable {
         case info, cast, chapters
         var id: String { rawValue }
     }
@@ -576,6 +610,7 @@ struct PlayerControlsView: View {
         model: PlayerControlsModel,
         screen: PlayerScreen,
         isFolded: Bool = false,
+        initialPanel: Panel? = nil,
         playNext: @escaping (MediaItem) -> Void = { _ in },
         close: @escaping () -> Void
     ) {
@@ -587,6 +622,7 @@ struct PlayerControlsView: View {
         self.isFolded = isFolded
         self.close = close
         _showsControls = State(initialValue: session.controlsAreShowing)
+        _panel = State(initialValue: initialPanel)
     }
     /// Bumped on every interaction, restarting the hide timer.
     @State private var interactions = 0
@@ -601,8 +637,27 @@ struct PlayerControlsView: View {
     /// Portrait: the layout tightens to fit, as in the Apple TV app.
     @State private var isCompact = false
 
+    /// How tall the bottom block (title, progress bar and pills) is, which the buttons floating over the picture
+    /// stay above. It's taller at larger text sizes.
+    @State private var bottomBlockHeight: CGFloat = 0
+
+    /// How far above the bottom padding the skip and next-episode buttons sit: clear of the controls if they're
+    /// showing, otherwise just above the edge.
+    private var floatingButtonsLift: CGFloat {
+        controlsAreShown ? max(150, bottomBlockHeight + 12) : 24
+    }
+
+    /// Whether the skip button goes under the top bar instead of above the bottom controls. At accessibility sizes
+    /// the bottom controls are tall enough that, above them, it would sit on the playback buttons in the middle.
+    private var skipSitsAtTop: Bool { controlsAreShown && dynamicTypeSize.isAccessibilitySize }
+
     /// Folded, the controls are always showing: their half has no picture under it to tap through to.
-    private var controlsAreShown: Bool { showsControls || isFolded }
+    ///
+    /// Also with VoiceOver or Switch Control on: controls that hide themselves after a few seconds are gone before
+    /// anyone using them has found their way around.
+    private var controlsAreShown: Bool { showsControls || isFolded || voiceOverIsOn || switchControlIsOn }
+
+    private var showsExpandedPanelBar: Bool { !dynamicTypeSize.isAccessibilitySize }
 
     private var shouldStayVisible: Bool {
         !model.isPlaying || panel != nil || scrubFraction != nil || session.isSwitching || showsFullInfo || openedPerson != nil || model.showsTiming
@@ -625,24 +680,29 @@ struct PlayerControlsView: View {
             controls
                 .opacity(controlsAreShown && !model.showsTiming ? 1 : 0)
                 .allowsHitTesting(controlsAreShown && !model.showsTiming)
+                // Invisible isn't unreachable: VoiceOver would still read out controls that are faded away.
+                .accessibilityHidden(!controlsAreShown || model.showsTiming)
 
             // Offered while the picture is in a stretch the server has marked, whether or not the controls are
             // showing; above the bottom row when they are.
             SkipSegmentButton(session: session, model: model)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(.trailing, screen.rowInsets(top: false).trailing)
-                .padding(.bottom, screen.bottomPadding + (controlsAreShown ? 150 : 24))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: skipSitsAtTop ? .topTrailing : .bottomTrailing)
+                .padding(.trailing, screen.rowInsets(top: skipSitsAtTop).trailing)
+                .padding(.top, skipSitsAtTop ? screen.topPadding(isCompact: isCompact) + Self.buttonSize + 12 : 0)
+                .padding(.bottom, skipSitsAtTop ? 0 : screen.bottomPadding + floatingButtonsLift)
                 .opacity(model.showsTiming || panel != nil ? 0 : 1)
                 .allowsHitTesting(!model.showsTiming && panel == nil)
+                .accessibilityHidden(model.showsTiming || panel != nil)
                 .animation(.smooth(duration: 0.3), value: controlsAreShown)
 
             // Near the end of an episode: the next one, with a countdown to starting it.
             NextEpisodeOverlay(session: session, model: model, play: playNext)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                 .padding(.trailing, screen.rowInsets(top: false).trailing)
-                .padding(.bottom, screen.bottomPadding + (controlsAreShown ? 150 : 24))
+                .padding(.bottom, screen.bottomPadding + floatingButtonsLift)
                 .opacity(model.showsTiming || panel != nil ? 0 : 1)
                 .allowsHitTesting(!model.showsTiming && panel == nil)
+                .accessibilityHidden(model.showsTiming || panel != nil)
                 .animation(.smooth(duration: 0.3), value: controlsAreShown)
 
             // Folded, the picture is in the other half, so the panel goes in this one, on its own.
@@ -717,6 +777,7 @@ struct PlayerControlsView: View {
                     .padding(.trailing, screen.rowInsets(top: true).trailing)
                 Spacer(minLength: 16)
                 bottomBlock
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bottomBlockHeight = $0 }
                     .padding(.leading, screen.rowInsets(top: false).leading)
                     .padding(.trailing, screen.rowInsets(top: false).trailing)
             }
@@ -807,9 +868,11 @@ struct PlayerControlsView: View {
         VStack(alignment: .leading, spacing: 10) {
             // The info panel takes the place of the title and progress bar, as in the Apple TV app.
             if panel != .info {
-                HStack(alignment: .bottom, spacing: 12) {
+                // Side by side, the title would get a column a few letters wide at accessibility sizes, so the
+                // stream controls go under it.
+                (dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(alignment: .bottom, spacing: 12))) {
                     titleBlock
-                    Spacer(minLength: 0)
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
                     streamControls
                 }
                 .transition(.opacity)
@@ -824,7 +887,7 @@ struct PlayerControlsView: View {
                     model: model,
                     panels: availablePanels,
                     selection: $panel,
-                    height: isCompact ? 220 : 130,
+                    height: isCompact ? compactPanelHeight : regularPanelHeight,
                     isCompact: isCompact,
                     showMore: { showsFullInfo = true; touch() },
                     openPerson: { openedPerson = $0; touch() },
@@ -840,16 +903,18 @@ struct PlayerControlsView: View {
     }
 
     private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        // One line each, until the text is so large that a one-line title would be a few letters.
+        let lines = dynamicTypeSize.isAccessibilitySize ? 3 : 1
+        return VStack(alignment: .leading, spacing: 2) {
             if let line = showLine {
                 Text(line)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(1)
+                    .secondaryPlayerText()
+                    .lineLimit(lines)
             }
             Text(item.title)
                 .font(.headline)
-                .lineLimit(1)
+                .lineLimit(lines)
         }
     }
 
@@ -931,6 +996,7 @@ struct PlayerControlsView: View {
         }
         .menuOrder(.fixed)
         .accessibilityLabel("Audio")
+        .accessibilityValue(session.info.audioTracks.first { $0.index == session.audioIndex }?.title ?? "")
     }
 
     private var subtitlesMenu: some View {
@@ -955,6 +1021,7 @@ struct PlayerControlsView: View {
         }
         .menuOrder(.fixed)
         .accessibilityLabel("Subtitles")
+        .accessibilityValue(session.info.subtitleTracks.first { $0.index == session.subtitleIndex }?.title ?? String(localized: "Off"))
     }
 
     /// The cap chosen, or the resolution actually playing when there's no cap.
@@ -989,15 +1056,29 @@ struct PlayerControlsView: View {
     }
 
     /// Info, Cast and Chapters (each only if there's something to show), and the end time.
+    @ViewBuilder
     private var panelBar: some View {
-        HStack(spacing: 8) {
-            ForEach(availablePanels) { panel in
-                pill(panel)
+        if showsExpandedPanelBar {
+            HStack(spacing: 8) {
+                ForEach(availablePanels) { panel in
+                    pill(panel)
+                }
+                Spacer(minLength: 8)
+                if panel == nil {
+                    PlayerEndTime(model: model, scrubFraction: scrubFraction)
+                }
             }
-            Spacer(minLength: 8)
-            if panel == nil {
-                PlayerEndTime(model: model, scrubFraction: scrubFraction)
+        } else {
+            // At the largest text sizes the pills don't fit side by side, so they scroll, and the end time goes.
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(availablePanels) { panel in
+                        pill(panel)
+                    }
+                }
             }
+            .scrollIndicators(.hidden)
+            .scrollClipDisabled()
         }
     }
 
@@ -1079,6 +1160,7 @@ struct PlayerControlsView: View {
         people = full.people
         model.setServerChapters(full.chapters.enumerated().map { index, chapter in
             PlayerChapter(
+                id: index,
                 title: chapter.name.isEmpty ? String(localized: "Chapter \(index + 1)") : chapter.name,
                 start: chapter.start,
                 imageURL: chapter.imageURL
@@ -1122,6 +1204,8 @@ struct SubtitleTimingPanel: View {
     let touch: () -> Void
     let done: () -> Void
 
+    @Environment(\.colorSchemeContrast) private var contrast
+
     var body: some View {
         VStack(spacing: 12) {
             HStack {
@@ -1141,6 +1225,8 @@ struct SubtitleTimingPanel: View {
                     step: 0.1
                 )
                 .tint(.white)
+                .accessibilityLabel("Subtitle timing")
+                .accessibilityValue(Self.offsetText(session.subtitleOffset))
                 nudge("plus", label: "Show Later", by: 0.1)
             }
 
@@ -1148,14 +1234,17 @@ struct SubtitleTimingPanel: View {
                 Button("Reset") { session.resetSubtitleOffset(); touch() }
                     .foregroundStyle(.red)
                     .disabled(session.subtitleOffset == 0)
+                    .frame(minHeight: 44)
                 Spacer()
                 Button("Done", action: done)
                     .fontWeight(.semibold)
                     .foregroundStyle(.white)
+                    .frame(minHeight: 44)
             }
             .font(.subheadline)
         }
         .padding(16)
+        .background(.black.opacity(contrast == .increased ? 0.6 : 0.3), in: .rect(cornerRadius: 24))
         .glassEffect(.clear, in: .rect(cornerRadius: 24))
     }
 
@@ -1166,7 +1255,7 @@ struct SubtitleTimingPanel: View {
         } label: {
             Image(systemName: systemImage)
                 .font(.system(size: 16, weight: .semibold))
-                .frame(width: 40, height: 40)
+                .frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .circle)
@@ -1188,8 +1277,10 @@ private struct NextEpisodeOverlay: View {
     let model: PlayerControlsModel
     let play: (MediaItem) -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// How long the countdown runs from when the card appears, unless the episode ends first.
-    private static let countdown: TimeInterval = 15
+    fileprivate static let countdown: TimeInterval = 15
 
     /// With no credits marked by the server, the card appears this long before the end: longer than the countdown,
     /// so the countdown has time to run, with a little to spare.
@@ -1213,22 +1304,55 @@ private struct NextEpisodeOverlay: View {
 
     var body: some View {
         if let next = session.nextEpisode, Self.isShowing(session: session, model: model) {
-            let start = Self.appearance(session: session, duration: model.duration)
-            let due = min(start + Self.countdown, model.duration)
-            let remaining = max(0, due - model.currentTime)
-            card(for: next, remaining: remaining, total: max(1, due - start))
-                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottomTrailing)))
-                // Due: the countdown ran out, or the episode ended.
-                .onChange(of: remaining < 0.5 && !session.autoPlayCancelled, initial: true) { _, isDue in
-                    if isDue { play(next) }
-                }
+            NextEpisodeCard(session: session, model: model, next: next, play: play)
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96, anchor: .bottomTrailing)))
         }
     }
+}
 
-    private func card(for next: MediaItem, remaining: TimeInterval, total: TimeInterval) -> some View {
+/// The card itself. It lives only while the card is on screen, so each time it appears its countdown starts afresh,
+/// from wherever the position is then: landing in the credits by seeking or resuming doesn't start the next episode
+/// at once.
+private struct NextEpisodeCard: View {
+    let session: PlaybackSession
+    let model: PlayerControlsModel
+    let next: MediaItem
+    let play: (MediaItem) -> Void
+
+    /// The position when the card appeared, which the countdown runs from.
+    @State private var shownAt: TimeInterval
+
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var cardWidth: CGFloat = 320
+
+    init(session: PlaybackSession, model: PlayerControlsModel, next: MediaItem, play: @escaping (MediaItem) -> Void) {
+        self.session = session
+        self.model = model
+        self.next = next
+        self.play = play
+        _shownAt = State(initialValue: model.currentTime)
+    }
+
+    var body: some View {
+        // Never past the end of the episode, and never more than the countdown, if the position is moved back.
+        let due = min(shownAt + NextEpisodeOverlay.countdown, model.duration)
+        let remaining = min(max(0, due - model.currentTime), NextEpisodeOverlay.countdown)
+        card(remaining: remaining, total: max(1, due - shownAt))
+            .onAppear {
+                AccessibilityNotification.Announcement(String(localized: "Up next: \(next.title)")).post()
+            }
+            // Due: the countdown ran out, or the episode ended.
+            .onChange(of: remaining < 0.5 && !session.autoPlayCancelled, initial: true) { _, isDue in
+                if isDue { play(next) }
+            }
+    }
+
+    private func card(remaining: TimeInterval, total: TimeInterval) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Button { play(next) } label: {
-                HStack(alignment: .top, spacing: 12) {
+                // The title goes under the picture at accessibility sizes, where beside it there'd be a few letters.
+                (dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))) {
                     CachedAsyncImage(url: next.thumbnailURL ?? next.backdropURL) { phase in
                         if let image = phase.image {
                             image.resizable().scaledToFill()
@@ -1242,11 +1366,11 @@ private struct NextEpisodeOverlay: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Up Next")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.7))
+                            .secondaryPlayerText()
                         if let line = Self.numberLine(for: next) {
                             Text(line)
                                 .font(.caption)
-                                .foregroundStyle(.white.opacity(0.7))
+                                .secondaryPlayerText()
                         }
                         Text(next.title)
                             .font(.subheadline.weight(.semibold))
@@ -1259,48 +1383,73 @@ private struct NextEpisodeOverlay: View {
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Play \(next.title)")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Up next: \(Self.numberLine(for: next) ?? ""), \(next.title)")
+            .accessibilityHint("Plays the episode")
+            .accessibilityAddTraits(.isButton)
 
-            HStack {
-                Button { play(next) } label: {
-                    Label("Play", systemImage: "play.fill")
-                        .font(.headline)
-                        // Dark on white, like the Skip button and the show page's Play button.
-                        .foregroundStyle(.black)
+            // Side by side, or stacked when the text is too big for them to fit.
+            ViewThatFits {
+                HStack {
+                    playButton
+                    Spacer()
+                    countdownText(remaining)
                 }
-                .buttonStyle(.glassProminent)
-                .tint(.white)
-                .controlSize(.regular)
-
-                Spacer()
-
-                Text("Playing in \(Int(remaining.rounded(.up)))")
-                    .font(.subheadline.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .contentTransition(.numericText())
+                VStack(alignment: .leading, spacing: 8) {
+                    playButton
+                    countdownText(remaining)
+                }
             }
 
-            // The countdown, running out left to right the way the video does.
+            // The countdown, running out left to right the way the video does. The text above says it for
+            // VoiceOver.
             ProgressView(value: total - min(remaining, total), total: total)
                 .tint(.white)
+                .accessibilityHidden(true)
         }
         .padding(14)
-        .frame(width: 320)
+        .frame(maxWidth: cardWidth)
+        // A light scrim, since the glass is clear and the text is white over whatever the picture is showing.
+        .background(.black.opacity(contrast == .increased ? 0.6 : 0.3), in: .rect(cornerRadius: 24))
         .glassEffect(.clear, in: .rect(cornerRadius: 24))
         .overlay(alignment: .topTrailing) {
-            // Turns autoplay off and puts the card away.
+            // Turns autoplay off and puts the card away. A 44-point target around the 28-point circle.
             Button {
                 session.autoPlayCancelled = true
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .bold))
                     .frame(width: 28, height: 28)
+                    .glassEffect(.regular.interactive(), in: .circle)
+                    .frame(width: 44, height: 44)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .glassEffect(.regular.interactive(), in: .circle)
-            .padding(10)
+            .padding([.top, .trailing], 2)
             .accessibilityLabel("Cancel Autoplay")
         }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var playButton: some View {
+        Button { play(next) } label: {
+            Label("Play", systemImage: "play.fill")
+                .font(.headline)
+                // Dark on white, like the Skip button and the show page's Play button.
+                .foregroundStyle(.black)
+        }
+        .buttonStyle(.glassProminent)
+        .tint(.white)
+        .controlSize(.regular)
+    }
+
+    private func countdownText(_ remaining: TimeInterval) -> some View {
+        Text("Playing in \(Int(remaining.rounded(.up)))")
+            .font(.subheadline.monospacedDigit().weight(.semibold))
+            .foregroundStyle(.white.opacity(0.9))
+            .contentTransition(.numericText())
+            // The number changes every second; VoiceOver reads it when asked, not on each change.
+            .accessibilityAddTraits(.updatesFrequently)
     }
 
     /// "Season 2, Episode 4", or what's known of it.
@@ -1326,6 +1475,8 @@ private struct SkipSegmentButton: View {
             } label: {
                 Label(Self.title(for: segment.kind), systemImage: "forward.end.fill")
                     .font(.headline)
+                    // It floats over the picture and controls, so it stops growing before it covers them.
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
                     // Dark on white, like the show page's Play button.
                     .foregroundStyle(.black)
             }
@@ -1373,6 +1524,8 @@ private struct PlayerProgressRow: View {
             Text("−\(PlayerControlsView.clock(remaining))")
         }
         .font(.footnote.monospacedDigit().weight(.medium))
+        // The bar needs room between the times, and they're one line, so they stop growing before they'd be cut.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .foregroundStyle(.white.opacity(0.9))
         .lineLimit(1)
     }
@@ -1387,7 +1540,8 @@ private struct PlayerEndTime: View {
         let end = Date.now + max(0, model.duration - (scrubFraction.map { $0 * model.duration } ?? model.currentTime))
         Text("Ends \(end.formatted(date: .omitted, time: .shortened))")
             .font(.footnote.monospacedDigit().weight(.medium))
-            .foregroundStyle(.white.opacity(0.7))
+            .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+            .secondaryPlayerText()
             .lineLimit(1)
             .fixedSize()
     }
@@ -1405,6 +1559,8 @@ private struct ScrubBar: View {
     let onChange: (Double) -> Void
     let onEnd: (Double) -> Void
 
+    @Environment(\.colorSchemeContrast) private var contrast
+
     /// The finger's last horizontal position, while dragging.
     @State private var lastX: CGFloat?
 
@@ -1413,8 +1569,8 @@ private struct ScrubBar: View {
             let value = min(max(scrubFraction ?? fraction, 0), 1)
 
             ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.3))
-                Capsule().fill(.white.opacity(0.35)).frame(width: proxy.size.width * min(max(buffered, 0), 1))
+                Capsule().fill(.white.opacity(contrast == .increased ? 0.5 : 0.3))
+                Capsule().fill(.white.opacity(contrast == .increased ? 0.7 : 0.35)).frame(width: proxy.size.width * min(max(buffered, 0), 1))
                 Capsule().fill(.white).frame(width: proxy.size.width * value)
             }
             .frame(height: scrubFraction == nil ? 6 : 12)
@@ -1509,16 +1665,26 @@ private struct InfoPane: View {
     let fromBeginning: () -> Void
     let goToShow: (() -> Void)?
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
         // Vertical, so it never fights the sideways swipe between panes.
         ScrollView {
-            HStack(alignment: .top, spacing: 16) {
-                // Portrait has no room for the thumbnail, as in the Apple TV app.
-                if !isCompact { thumbnail(width: 190) }
-                text
-                Spacer(minLength: 0)
-                VStack(spacing: 8) { buttons }
-                    .frame(width: isCompact ? 150 : 190)
+            if dynamicTypeSize.isAccessibilitySize {
+                // Side by side there'd be room for a few letters of text, so the buttons go under it.
+                VStack(alignment: .leading, spacing: 16) {
+                    text
+                    VStack(spacing: 8) { buttons }
+                }
+            } else {
+                HStack(alignment: .top, spacing: 16) {
+                    // Portrait has no room for the thumbnail, as in the Apple TV app.
+                    if !isCompact { thumbnail(width: 190) }
+                    text
+                    Spacer(minLength: 0)
+                    VStack(spacing: 8) { buttons }
+                        .frame(width: isCompact ? 150 : 190)
+                }
             }
         }
         .scrollIndicators(.hidden)
@@ -1553,7 +1719,7 @@ private struct InfoPane: View {
             if !details.isEmpty {
                 Text(details.joined(separator: " · "))
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.6))
+                    .secondaryPlayerText()
                     .padding(.top, 2)
             }
         }
@@ -1581,7 +1747,7 @@ private struct InfoPane: View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .frame(maxWidth: .infinity, minHeight: 48)
         }
         .buttonStyle(.plain)
@@ -1594,11 +1760,13 @@ private struct FullInfoSheet: View {
     let item: MediaItem
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .top, spacing: 14) {
+                // The title goes under the thumbnail at accessibility sizes, where beside it there'd be a few letters.
+                (dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14)) : AnyLayout(HStackLayout(alignment: .top, spacing: 14))) {
                     CachedAsyncImage(url: item.thumbnailURL ?? item.backdropURL ?? item.posterURL) { phase in
                         if let image = phase.image {
                             image.resizable().scaledToFill()
@@ -1638,7 +1806,7 @@ private struct FullInfoSheet: View {
             Button { dismiss() } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .bold))
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .circle)
@@ -1664,26 +1832,33 @@ private struct CastPane: View {
     let people: [MediaPerson]
     let open: (MediaPerson) -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// A card's width, and its portrait's, which grow with the text (up to a point) so names aren't cut short.
+    @ScaledMetric(relativeTo: .caption) private var cardWidth: CGFloat = 124
+    @ScaledMetric(relativeTo: .caption) private var portraitSize: CGFloat = 52
+
     var body: some View {
+        let lines = dynamicTypeSize.isAccessibilitySize ? 3 : 1
         // Sideways, as in the Apple TV app. The panels aren't paged, so this has the swipe to itself.
-        ScrollView(.horizontal) {
+        return ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(people) { person in
                     Button { open(person) } label: {
                     VStack(spacing: 2) {
-                        PersonPortrait(person: person, size: 52)
+                        PersonPortrait(person: person, size: min(portraitSize, 52 * 1.5))
                             .padding(.bottom, 4)
                         Text(person.name)
                             .font(.caption.weight(.semibold))
-                            .lineLimit(1)
+                            .lineLimit(lines)
                         Text(person.subtitle ?? " ")
                             .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.6))
-                            .lineLimit(1)
+                            .secondaryPlayerText()
+                            .lineLimit(lines)
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 12)
-                    .frame(width: 124)
+                    .frame(width: min(cardWidth, 124 * 1.6))
                     .contentShape(.rect(cornerRadius: 24))
                     }
                     .buttonStyle(.plain)
@@ -1701,9 +1876,15 @@ private struct ChaptersPane: View {
     let model: PlayerControlsModel
     let done: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// A card's width, which grows with the text (up to a point) so chapter names aren't cut short.
+    @ScaledMetric(relativeTo: .caption) private var baseWidth: CGFloat = 140
+
     var body: some View {
+        let width = min(baseWidth, 140 * 1.6)
         // Sideways, like the cast row.
-        ScrollView(.horizontal) {
+        return ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(model.chapters) { chapter in
                     Button {
@@ -1719,17 +1900,17 @@ private struct ChaptersPane: View {
                                         Color.white.opacity(0.1)
                                     }
                                 }
-                                .frame(width: 140, height: 79)
+                                .frame(width: width, height: width * 79 / 140)
                                 .clipShape(.rect(cornerRadius: 12))
                             }
                             Text(chapter.title)
                                 .font(.caption.weight(.semibold))
-                                .lineLimit(1)
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
                             Text(PlayerControlsView.clock(chapter.start))
                                 .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.white.opacity(0.6))
+                                .secondaryPlayerText()
                         }
-                        .frame(width: 140, alignment: .leading)
+                        .frame(width: width, alignment: .leading)
                         .padding(8)
                     }
                     .buttonStyle(.plain)
@@ -1741,44 +1922,81 @@ private struct ChaptersPane: View {
     }
 }
 
-#Preview(traits: .landscapeLeft) {
-    @Previewable @State var session = PlaybackSession(
-        item: .previewPartlyWatched,
-        info: PlaybackInfo(
-            url: URL(filePath: "/dev/null"),
-            resumePosition: 0,
-            playSessionID: nil,
-            mediaSourceID: nil,
-            method: .transcode,
-            audioTracks: [MediaTrack(index: 1, title: "English - AAC - Stereo", isExternal: false)],
-            subtitleTracks: [MediaTrack(index: 2, title: "English - SRT", isExternal: true)],
-            audioIndex: 1,
-            sourceBitrate: 20_000_000,
-            sourceHeight: 1080
-        ),
-        service: MockMediaService()
-    )
-    @Previewable @State var model = PlayerControlsModel(player: AVPlayer(), runtime: 5400)
+/// Lays the controls out against the device the preview runs on, measured the way the player does, over a bright
+/// backdrop, so the white text is judged against the worst case. Used by the previews below.
+private struct ControlsPreviewHost: View {
+    let item: MediaItem
+    let session: PlaybackSession
+    let model: PlayerControlsModel
+    var initialPanel: PlayerControlsView.Panel?
 
-    ZStack {
-        Color.gray.ignoresSafeArea()
-        // iPhone Duo's outer display held sideways, as measured on the device: the camera in the bottom corner.
-        let screen = {
-            var screen = PlayerScreen()
-            screen.safeArea = EdgeInsets(top: 0, leading: 0, bottom: 34, trailing: 84)
-            screen.update(PlayerScreen.Shape(
-                size: CGSize(width: 678, height: 466),
-                corners: RectangleCornerInsets(
-                    topLeading: CGSize(width: 25, height: 25),
-                    topTrailing: CGSize(width: 25, height: 25),
-                    bottomLeading: CGSize(width: 25, height: 25),
-                    bottomTrailing: CGSize(width: 84, height: 82)
-                )
-            ))
-            return screen
-        }()
-        PlayerControlsView(item: .previewPartlyWatched, session: session, model: model, screen: screen) {}
+    @State private var screen = PlayerScreen()
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [.white, .gray.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+            Color.clear
+                .onGeometryChange(for: PlayerScreen.Shape.self) { proxy in
+                    PlayerScreen.Shape(size: proxy.size, corners: proxy.containerCornerInsets)
+                } action: { screen.update($0) }
+                .ignoresSafeArea()
+            PlayerControlsView(item: item, session: session, model: model, screen: screen, initialPanel: initialPanel) {}
+        }
+        .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: { screen.safeArea = $0 }
+        .environment(AppModel.preview())
     }
-    .environment(AppModel.preview())
+
+    static func make(
+        item: MediaItem = .previewEpisode,
+        position: TimeInterval = 600,
+        nextEpisode: MediaItem? = nil,
+        segments: [MediaSegment] = [],
+        panel: PlayerControlsView.Panel? = nil
+    ) -> some View {
+        let session = PlaybackSession(
+            item: item,
+            info: PlaybackInfo(
+                url: URL(filePath: "/dev/null"),
+                resumePosition: 0,
+                playSessionID: nil,
+                mediaSourceID: nil,
+                method: .transcode,
+                audioTracks: [
+                    MediaTrack(index: 1, title: "English - AAC - Stereo", isExternal: false),
+                    MediaTrack(index: 2, title: "English - Commentary", isExternal: false)
+                ],
+                subtitleTracks: [MediaTrack(index: 3, title: "English - SRT", isExternal: true)],
+                audioIndex: 1,
+                sourceBitrate: 20_000_000,
+                sourceHeight: 1080
+            ),
+            service: MockMediaService()
+        )
+        session.setPreview(nextEpisode: nextEpisode, segments: segments)
+        let model = PlayerControlsModel(player: AVPlayer(), runtime: 1500)
+        model.setPreviewPosition(position)
+        return ControlsPreviewHost(item: item, session: session, model: model, initialPanel: panel)
+    }
+}
+
+#Preview("Controls") {
+    ControlsPreviewHost.make()
+}
+
+#Preview("Info panel") {
+    ControlsPreviewHost.make(panel: .info)
+}
+
+#Preview("Cast panel") {
+    ControlsPreviewHost.make(panel: .cast)
+}
+
+#Preview("Up Next") {
+    ControlsPreviewHost.make(position: 1470, nextEpisode: .previewEpisode)
+}
+
+#Preview("Skip Intro") {
+    ControlsPreviewHost.make(position: 30, segments: [MediaSegment(kind: .intro, start: 10, end: 80)])
 }
 #endif

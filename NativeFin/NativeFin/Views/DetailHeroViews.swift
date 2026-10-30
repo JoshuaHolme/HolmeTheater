@@ -8,6 +8,8 @@ import SwiftUI
 struct ShowLogo: View {
     let item: MediaItem
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     /// What to type out instead of the item's own title, if there is no logo. Nil to use the title.
     var fallbackTitle: String?
 
@@ -47,7 +49,7 @@ struct ShowLogo: View {
     private var title: some View {
         Text(fallbackTitle ?? item.title)
             .font(.largeTitle.bold())
-            .lineLimit(3)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
             .accessibilityAddTraits(.isHeader)
     }
 }

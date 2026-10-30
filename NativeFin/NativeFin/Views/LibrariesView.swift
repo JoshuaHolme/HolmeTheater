@@ -25,6 +25,9 @@ struct LibraryView: View {
     let library: Library
     @Environment(AppModel.self) private var appModel
 
+    /// The narrowest a poster gets, wider at larger text sizes so captions stay readable.
+    @ScaledMetric(relativeTo: .subheadline) private var posterMinimum: CGFloat = Layout.posterWidth
+
     var body: some View {
         AsyncContent(load: loadItems) { items in
             if items.isEmpty {
@@ -32,7 +35,7 @@ struct LibraryView: View {
             } else {
                 ScrollView {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: Layout.posterWidth), spacing: 12, alignment: .top)],
+                        columns: [GridItem(.adaptive(minimum: min(posterMinimum, Layout.posterWidth * 2)), spacing: 12, alignment: .top)],
                         spacing: 16
                     ) {
                         ForEach(items) { item in

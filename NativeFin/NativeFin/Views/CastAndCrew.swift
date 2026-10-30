@@ -18,6 +18,11 @@ struct CastAndCrewShelf: View {
         #endif
     }
 
+    /// The width of one person's column as shown: wider at larger text sizes (up to 1.75 times) so names and
+    /// roles aren't broken into a few letters a line.
+    @ScaledMetric(relativeTo: .footnote) private var scaledWidth: CGFloat = CastAndCrewShelf.cardWidth
+    private var cardWidth: CGFloat { min(scaledWidth, Self.cardWidth * 1.75) }
+
     /// The person a tap or peek is opening, and the one whose photo is showing full screen.
     @State private var openedPerson: MediaPerson?
     @State private var photoPerson: MediaPerson?
@@ -34,8 +39,8 @@ struct CastAndCrewShelf: View {
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: 16) {
                         ForEach(people) { person in
-                            PersonCard(person: person, size: Self.cardWidth)
-                                .frame(width: Self.cardWidth)
+                            PersonCard(person: person, size: cardWidth)
+                                .frame(width: cardWidth)
                                 .personPeek(person, open: { openedPerson = person }, viewPhoto: { photoPerson = person })
                         }
                     }
@@ -59,6 +64,9 @@ struct CastListView: View {
     /// The person a tap or peek is opening, and the one whose photo is showing full screen.
     @State private var openedPerson: MediaPerson?
     @State private var photoPerson: MediaPerson?
+
+    /// The portrait's size, larger at larger text sizes (up to 1.5 times) so it keeps up with the name beside it.
+    @ScaledMetric(relativeTo: .body) private var portraitSize: CGFloat = 56
 
     var body: some View {
         List(people) { person in
@@ -237,20 +245,25 @@ struct PersonCard: View {
     /// The portrait's width and height.
     let size: CGFloat
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
+        // Two lines each, or three at accessibility sizes, where a name takes more of them.
+        let lines = dynamicTypeSize.isAccessibilitySize ? 3 : 2
+
         VStack(spacing: 6) {
             PersonPortrait(person: person, size: size)
 
             Text(person.name)
                 .font(.footnote.weight(.semibold))
-                .lineLimit(2)
+                .lineLimit(lines)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let subtitle = person.subtitle {
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(lines)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

@@ -5,12 +5,14 @@
 	<!--
 		Jellyfin servers are self-hosted and very commonly served over plain HTTP on a LAN
 		(e.g. http://192.168.1.10:8096), at addresses that aren't known when the app is built.
-		App Transport Security therefore has to allow HTTP; the sign-in flow still tries
-		HTTPS first when the user doesn't type a scheme.
+		Local networking lets HTTP through to IP addresses, .local names and single-label host names, which covers
+		those, while everything else (a public host name) has to use HTTPS: the access token travels in the query of
+		stream and subtitle URLs, so it shouldn't cross the internet in clear text. The sign-in flow still tries HTTPS
+		first when the user doesn't type a scheme.
 	-->
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
+		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<!-- Lets video keep playing in Picture in Picture. -->

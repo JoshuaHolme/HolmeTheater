@@ -32,10 +32,11 @@ nonisolated enum WebVTT {
                 .joined(separator: "\n")
                 .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
                 .replacingOccurrences(of: "\\{\\\\[^}]*\\}", with: "", options: .regularExpression)
-                .replacingOccurrences(of: "&amp;", with: "&")
                 .replacingOccurrences(of: "&lt;", with: "<")
                 .replacingOccurrences(of: "&gt;", with: ">")
                 .replacingOccurrences(of: "&nbsp;", with: " ")
+                // Last, so an escaped entity such as "&amp;lt;" isn't decoded a second time.
+                .replacingOccurrences(of: "&amp;", with: "&")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { cues.append(SubtitleCue(start: start, end: end, text: text)) }
         }
