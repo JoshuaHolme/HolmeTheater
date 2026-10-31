@@ -342,6 +342,7 @@ struct WideCard: View {
                         WatchedBadge()
                     }
                 }
+                .overlay(alignment: .topLeading) { DownloadedBadge(item: item) }
 
             // An episode's show is the screen it's on, so it shows only its own title and number. The most lines
             // an extra shows is three (title, kind, length); reserving them keeps the cards the same height.
@@ -374,6 +375,7 @@ struct PosterCard: View {
                         WatchedBadge()
                     }
                 }
+                .overlay(alignment: .topLeading) { DownloadedBadge(item: item) }
 
             // Three lines is the most any item shows (an episode); reserving them keeps every card the same height.
             ItemCaption(item: item, reservedLines: 3)
@@ -430,7 +432,7 @@ struct MediaShelf: View {
     }
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, destination: destination, state: $watchState) { effect in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: destination, state: $watchState) { effect in
             effects.append(effect)
             onChange()
         }
@@ -539,6 +541,10 @@ struct ItemRowActions {
     /// Both are nil where that doesn't apply, which hides the "Remove from Up Next" submenu.
     var removeShowWatched: (() -> Void)?
     var removeShowUnwatched: (() -> Void)?
+
+    /// The download entries for the item: download, pause, resume or remove, depending on where its download is. Empty
+    /// for anything that can't be downloaded. They're built with the item's download state, so they follow it.
+    var downloadEntries: [ItemMenuEntry] = []
 }
 
 /// Compact list row: thumbnail plus title and details.
@@ -570,6 +576,8 @@ struct ItemRow: View {
             ItemCaption(item: item, lines: captionLines)
 
             Spacer()
+
+            DownloadedRowIcon(item: item)
 
             if item.showsWatchedBadge {
                 Image(systemName: "checkmark.circle.fill")
@@ -603,6 +611,10 @@ struct ItemMenuEntry: Identifiable {
         case removeFromUpNext
         case markAllEpisodesWatched
         case markAllEpisodesUnwatched
+        case download
+        case pauseDownload
+        case resumeDownload
+        case removeDownload
         case viewPhoto
         case openLink
         case copyLink
@@ -617,7 +629,7 @@ struct ItemMenuEntry: Identifiable {
 }
 
 extension ItemRowActions {
-    /// The menu entries for an item: "Go to …" (if given), then the watch-state actions.
+    /// The menu entries for an item: "Go to …" (if given), then the watch-state actions, then the download actions.
     func menuEntries(for item: MediaItem) -> [ItemMenuEntry] {
         var entries: [ItemMenuEntry] = []
         if let goTo {
@@ -629,7 +641,7 @@ extension ItemRowActions {
         if let goToShow {
             entries.append(ItemMenuEntry(id: .goToShow, title: String(localized: "Go to Show"), systemImage: "tv", perform: goToShow))
         }
-        return entries + watchEntries(for: item)
+        return entries + watchEntries(for: item) + downloadEntries
     }
 
     /// The watch-state entries for an item.
@@ -802,6 +814,7 @@ struct ShelfGridCard: View {
                         WatchedBadge()
                     }
                 }
+                .overlay(alignment: .topLeading) { DownloadedBadge(item: item) }
                 // The status bar's gradient is square; clip it to the image's rounded corners.
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 // The image and the caption each get a peek layer, so the whole card responds. The image's

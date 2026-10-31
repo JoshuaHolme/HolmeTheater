@@ -149,7 +149,9 @@ struct StreamQuality: Identifiable, Hashable {
 
     /// The caps worth offering for a file: lower than its own bitrate, and no taller than its picture.
     static func choices(for info: PlaybackInfo) -> [StreamQuality] {
-        all.filter { quality in
+        // A downloaded file is only ever the quality it was saved in.
+        if info.url.isFileURL { return [] }
+        return all.filter { quality in
             (info.sourceBitrate.map { quality.maxBitrate < $0 } ?? true)
                 && (info.sourceHeight.map { quality.height <= max($0, 360) } ?? true)
         }
@@ -478,7 +480,8 @@ final class PlaybackSession {
 
     /// Asks the server for a new stream with `change` applied, and carries on from the same point in it.
     private func switchStream(_ change: (inout PlaybackOptions) -> Void) async {
-        guard !isStopped, !isSwitching else { return }
+        // A downloaded file can't be asked to come in another form.
+        guard !isStopped, !isSwitching, !info.url.isFileURL else { return }
         var options = PlaybackOptions(
             mediaSourceID: info.mediaSourceID,
             maxBitrate: info.maxBitrate,

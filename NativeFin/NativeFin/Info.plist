@@ -21,6 +21,9 @@
 	-->
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<!-- Lets the progress of downloads show on the Lock Screen and in the Dynamic Island. -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<!-- Lets video keep playing in Picture in Picture. -->
 	<key>UIBackgroundModes</key>
 	<array>

@@ -44,7 +44,7 @@ struct SearchView: View {
     }
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, destination: nil, state: $watchState) { effect in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: nil, state: $watchState) { effect in
             results = results.applying(effect)
         }
     }

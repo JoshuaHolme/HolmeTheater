@@ -50,6 +50,7 @@ struct AccountButton: View {
 
 /// Adds a profile button to the navigation bar that presents `AccountView` in a sheet.
 private struct AccountToolbarModifier: ViewModifier {
+    @Environment(AppModel.self) private var appModel
     @State private var isPresented = false
 
     func body(content: Content) -> some View {
@@ -59,8 +60,11 @@ private struct AccountToolbarModifier: ViewModifier {
                     Button {
                         isPresented = true
                     } label: {
-                        Label("Account", systemImage: "person.crop.circle")
+                        // The user's profile picture, or a generic person icon if they have none. The bar draws the
+                        // glass around it.
+                        AvatarView(url: appModel.session?.avatarURL, size: 30)
                     }
+                    .accessibilityLabel("Account")
                 }
             }
             .sheet(isPresented: $isPresented) {

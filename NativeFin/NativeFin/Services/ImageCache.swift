@@ -186,6 +186,8 @@ nonisolated final class ImageCache: @unchecked Sendable {
 
     /// The image's bytes: from disk if cached there, otherwise downloaded and saved.
     private func data(for url: URL) async -> Data? {
+        // Artwork saved with a download is already a file, so there's nothing to fetch or cache.
+        if url.isFileURL { return try? Data(contentsOf: url) }
         if let data = try? Data(contentsOf: diskURL(for: url)) { return data }
 
         let task = lock.withLock { () -> Task<Data?, Never> in
