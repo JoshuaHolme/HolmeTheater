@@ -259,8 +259,10 @@ final class PlaybackSession {
 
     private static func makePlayerItem(for item: MediaItem, info: PlaybackInfo) -> AVPlayerItem {
         let playerItem = AVPlayerItem(url: info.url)
-        // Buffer well ahead so a short dip in the network doesn't run the buffer dry. (The default is a few seconds.)
-        playerItem.preferredForwardBufferDuration = 30
+        // Buffer well ahead so a dip in the network doesn't run the buffer dry. (The default is a few seconds.) This
+        // is only a hint: the system still caps it by memory, and a transcode can only be buffered as far as the
+        // server has produced.
+        playerItem.preferredForwardBufferDuration = 300
         let title = AVMutableMetadataItem()
         title.identifier = .commonIdentifierTitle
         title.value = item.title as NSString

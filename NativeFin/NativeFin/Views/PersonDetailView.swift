@@ -98,6 +98,10 @@ struct PersonDetailView: View {
             ShowOverviewSheet(title: person.name, subtitle: person.subtitle, overview: details?.biography)
         }
         .task { details = try? await appModel.service.details(ofPerson: person.personID) }
+        .pullToRefresh {
+            reloadCount += 1
+            if let fresh = try? await appModel.service.details(ofPerson: person.personID) { details = fresh }
+        }
         .watchActionAlerts(watchActions)
         .navigationDestination(item: $openedItem) { ItemDetailView(item: $0) }
         #if !os(tvOS)

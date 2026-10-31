@@ -134,6 +134,7 @@ struct ShowDetailView: View {
         .toolbar { toolbarButtons }
         #endif
         .task(id: reloadCount) { await load() }
+        .pullToRefresh { await load() }
         .task(id: current.people.map(\.id)) { await preloadCastPortraits() }
         .fullScreenCover(item: $playingItem) {
             PlayerView(item: $0, onStop: { reloadCount += 1 })
@@ -542,22 +543,13 @@ struct ShowDetailView: View {
         }
     }
 
-    /// "Play First Episode" for season 1 episode 1, otherwise e.g. "Play S2, E4". "Resume S1, E1" if it's partly
-    /// watched, even the first episode.
+    /// What the Play button says for `episode`; see ``MediaItem/playButtonTitle(forShow:)``.
     private func ownPlayTitle(for episode: MediaItem) -> String {
-        episode.playedFraction != nil ? String(localized: "Resume") : String(localized: "Play")
+        episode.playButtonTitle(forShow: false)
     }
 
     private func playTitle(for episode: MediaItem) -> String {
-        let resumes = episode.playedFraction != nil
-        if !resumes, episode.seasonNumber == 1, episode.episodeNumber == 1 {
-            return String(localized: "Play First Episode")
-        }
-        guard let number = episode.episodeNumber else {
-            return resumes ? String(localized: "Resume") : String(localized: "Play")
-        }
-        let code = episode.seasonNumber.map { String(localized: "S\(String($0)), E\(number)") } ?? String(localized: "E\(number)")
-        return resumes ? String(localized: "Resume \(code)") : String(localized: "Play \(code)")
+        episode.playButtonTitle(forShow: true)
     }
 
     /// Fetches the episode to play, and the show again (for its full details, and after playback or a change so

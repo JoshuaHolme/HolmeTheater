@@ -112,6 +112,30 @@ nonisolated protocol MediaService: Sendable {
     /// - Returns: Up to `limit` items. A page shorter than `limit` is the last one.
     func recentlyAddedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem]
 
+    /// Fetches one page of what's been released most recently in a library, newest release first, whenever it was added
+    /// to the library. Nothing that hasn't come out yet.
+    ///
+    /// Like ``recentlyAddedPage(in:offset:limit:)``, this returns individual playable items: episodes for a TV library,
+    /// movies for a movie library.
+    ///
+    /// - Parameters:
+    ///   - library: The library to list.
+    ///   - offset: The number of items already loaded; 0 for the first page.
+    ///   - limit: The maximum number of items to return.
+    /// - Returns: Up to `limit` items. A page shorter than `limit` is the last one.
+    func recentlyReleasedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem]
+
+    /// Fetches the movies and shows, in every library, that first came out on today's date in some year.
+    ///
+    /// - Returns: Everything with a premiere date on today's month and day, newest year first.
+    func itemsOnThisDay() async throws -> [MediaItem]
+
+    /// Fetches several items in one request, with only the details lists have (no cast, chapters or streams).
+    ///
+    /// - Parameter ids: The items' IDs.
+    /// - Returns: The items the server found, in no particular order. Any it doesn't have are left out.
+    func items(withIDs ids: [String]) async throws -> [MediaItem]
+
     /// Fetches one item afresh, e.g. to pick up its latest watch progress after playback.
     ///
     /// - Parameter id: The item's ID.
@@ -177,6 +201,17 @@ nonisolated protocol MediaService: Sendable {
     /// - Parameter query: The text to search for.
     /// - Returns: Matching items, most relevant first.
     func search(_ query: String) async throws -> [MediaItem]
+
+    /// Fetches the genres that movies and shows on the server are filed under.
+    ///
+    /// - Returns: The genres, sorted by name.
+    func genres() async throws -> [Genre]
+
+    /// Fetches the movies and series filed under a genre, sorted by name.
+    ///
+    /// - Parameter genre: The genre to list.
+    /// - Returns: Its movies and series.
+    func items(in genre: Genre) async throws -> [MediaItem]
 
     // MARK: Playback
 

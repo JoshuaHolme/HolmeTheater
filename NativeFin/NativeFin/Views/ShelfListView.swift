@@ -11,6 +11,10 @@ enum ShelfDestination: Hashable {
     case nextUp
     /// Everything recently added to a library (episodes for TV, movies for film).
     case recentlyAdded(Library)
+    /// Everything recently released in a library, whenever it was added to it.
+    case recentlyReleased(Library)
+    /// Movies and shows from every library that first came out on today's date in some year.
+    case onThisDay
     /// Other movies or shows on the server that resemble this one.
     case similar(MediaItem)
     /// The special features (extras) of a movie or show.
@@ -24,6 +28,8 @@ enum ShelfDestination: Hashable {
         case .continueWatching: String(localized: "Continue Watching")
         case .nextUp: String(localized: "Up Next")
         case .recentlyAdded(let library): String(localized: "Recently Added \(library.name)")
+        case .recentlyReleased(let library): String(localized: "Recently Released \(library.name)")
+        case .onThisDay: String(localized: "On This Day")
         case .similar: String(localized: "More Like This")
         case .specialFeatures: String(localized: "Special Features")
         case .episodes: String(localized: "Episodes")
@@ -130,6 +136,7 @@ struct ShelfListView: View {
             pageFooter
         }
         .listStyle(.plain)
+        .pullToRefresh { await refresh() }
     }
 
     private var grid: some View {
@@ -149,6 +156,7 @@ struct ShelfListView: View {
             }
             .padding()
         }
+        .pullToRefresh { await refresh() }
     }
 
     /// On iOS the peek layer handles taps. Elsewhere, this button behind a row or card does: it sits behind,
@@ -252,6 +260,11 @@ struct ShelfListView: View {
             return try await service.nextUpItems(offset: offset, limit: limit)
         case .recentlyAdded(let library):
             return try await service.recentlyAddedPage(in: library, offset: offset, limit: limit)
+        case .recentlyReleased(let library):
+            return try await service.recentlyReleasedPage(in: library, offset: offset, limit: limit)
+        case .onThisDay:
+            // The server can't page these (they're filtered here by date), so it's asked for them all and cut here.
+            return Array(try await service.itemsOnThisDay().dropFirst(offset).prefix(limit))
         case .episodes(let season, _):
             // The server pages these, but a season is short and in order, so it's asked for them all and cut here.
             return Array(try await service.children(of: season).dropFirst(offset).prefix(limit))
