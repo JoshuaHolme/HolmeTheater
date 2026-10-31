@@ -15,6 +15,12 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!--
+		Without this, an iPhone with a 120 Hz display runs the app's animations at 60 fps at most, which shows as
+		choppiness in anything that slides. Scrolling is smooth either way; it's the app's own animations it unlocks.
+	-->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<!-- Lets video keep playing in Picture in Picture. -->
 	<key>UIBackgroundModes</key>
 	<array>

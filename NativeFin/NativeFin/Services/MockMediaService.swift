@@ -177,6 +177,17 @@ nonisolated struct MockMediaService: MediaService {
         return Array(all.dropFirst(offset).prefix(limit))
     }
 
+    func recentlyReleasedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
+        try await simulateLatency()
+        let all = library.kind == .tvShows ? Self.shows.flatMap { Self.episodes(of: $0) } : Self.movies
+        return Array(all.reversed().dropFirst(offset).prefix(limit))
+    }
+
+    func itemsOnThisDay() async throws -> [MediaItem] {
+        try await simulateLatency()
+        return Array(Self.movies.prefix(4))
+    }
+
     func item(id: String) async throws -> MediaItem {
         try await simulateLatency()
         let all = Self.movies + Self.shows + Self.shows.flatMap { Self.episodes(of: $0) }
@@ -230,6 +241,18 @@ nonisolated struct MockMediaService: MediaService {
         return (Self.movies + Self.shows).filter {
             $0.title.localizedStandardContains(query)
         }
+    }
+
+    func categories() async throws -> [Category] {
+        try await simulateLatency()
+        return ["Comedy", "Drama", "Horror", "Sci-Fi"].map {
+            Category(id: "genre-\($0)", name: $0, imageURL: nil)
+        }
+    }
+
+    func items(in category: Category) async throws -> [MediaItem] {
+        try await simulateLatency()
+        return Self.movies + Self.shows
     }
 
     // MARK: Playback

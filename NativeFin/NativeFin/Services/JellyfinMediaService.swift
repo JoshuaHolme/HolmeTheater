@@ -253,6 +253,67 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
+    func recentlyReleasedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+
+        let includeTypes: [BaseItemKind]? = switch library.kind {
+        case .movies: [.movie]
+        case .tvShows: [.episode]
+        case .music, .other: nil
+        }
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            // Not past today, so what's still to come isn't first in the list.
+            maxPremiereDate: .now,
+            startIndex: offset,
+            limit: limit,
+            isRecursive: includeTypes != nil,
+            sortOrder: [.descending],
+            parentID: library.id,
+            fields: Self.itemFields,
+            includeItemTypes: includeTypes,
+            // Sorted by release date.
+            sortBy: [.premiereDate],
+            enableUserData: true
+        ))
+        return try await mapItems(send(request, with: client), client: client)
+    }
+
+    /// What was found for one day, so the home screen and the list behind its shelf don't ask the server again.
+    private var onThisDayCache: (month: Int, day: Int, items: [MediaItem])?
+
+    func itemsOnThisDay() async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+
+        let today = Calendar.current.dateComponents([.month, .day], from: .now)
+        guard let month = today.month, let day = today.day else { return [] }
+        if let cache = onThisDayCache, cache.month == month, cache.day == day {
+            return cache.items
+        }
+
+        // The server can't filter by month and day, only by date range, so it's asked for every movie and show and
+        // they're filtered here. Only the little that cards need is requested, since there can be thousands.
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            isRecursive: true,
+            fields: [.primaryImageAspectRatio, .childCount, .recursiveItemCount],
+            includeItemTypes: [.movie, .series],
+            enableUserData: true
+        ))
+        let items = try await mapItems(send(request, with: client), client: client)
+
+        // Premiere dates are calendar dates stored at midnight UTC, so they're read as UTC, not in the user's zone.
+        let matches = items
+            .filter { item in
+                guard let date = item.releaseDate else { return false }
+                let components = Calendar.utc.dateComponents([.month, .day], from: date)
+                return components.month == month && components.day == day
+            }
+            .sorted { ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast) }
+        onThisDayCache = (month, day, matches)
+        return matches
+    }
+
     func item(id: String) async throws -> MediaItem {
         let (client, session) = try signedIn()
         let request = Paths.getItems(parameters: .init(
@@ -315,6 +376,38 @@ actor JellyfinMediaService: MediaService {
             item.people = []
             return PersonCredit(item: item, roles: roles)
         }
+    }
+
+    func categories() async throws -> [Category] {
+        let (client, session) = try signedIn()
+        let request = Paths.getGenres(parameters: .init(
+            includeItemTypes: [.movie, .series],
+            userID: session.userID,
+            sortBy: [.sortName],
+            sortOrder: [.ascending]
+        ))
+        return try await send(request, with: client).items?.compactMap { dto in
+            guard let id = dto.id, let name = dto.name else { return nil }
+            let image = dto.imageTags?[ImageType.primary.rawValue].flatMap {
+                Self.imageURL(itemID: id, type: .primary, tag: $0, width: Self.posterWidth, client: client)
+            }
+            return Category(id: id, name: name, imageURL: image)
+        } ?? []
+    }
+
+    func items(in category: Category) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            isRecursive: true,
+            sortOrder: [.ascending],
+            fields: Self.itemFields,
+            includeItemTypes: [.movie, .series],
+            sortBy: [.sortName],
+            enableUserData: true,
+            genreIDs: [category.id]
+        ))
+        return try await mapItems(send(request, with: client), client: client)
     }
 
     func similarItems(to item: MediaItem) async throws -> [MediaItem] {
@@ -593,7 +686,7 @@ actor JellyfinMediaService: MediaService {
 
     /// Extra per-item fields requested beyond the defaults.
     private static let itemFields: [ItemFields] = [
-        .overview, .primaryImageAspectRatio, .childCount, .recursiveItemCount, .genres, .studios
+        .overview, .primaryImageAspectRatio, .childCount, .recursiveItemCount, .genres, .studios, .dateCreated
     ]
 
     /// Tells the server what AVPlayer can play natively so it only transcodes when it has to.
@@ -820,7 +913,9 @@ actor JellyfinMediaService: MediaService {
             trailerURL: dto.remoteTrailers?.lazy.compactMap { $0.url.flatMap(webURL(from:)) }.first,
             isFavorite: dto.userData?.isFavorite ?? false,
             people: people(of: dto, client: client),
-            chapters: chapters(of: dto, id: id, client: client)
+            chapters: chapters(of: dto, id: id, client: client),
+            dateAdded: dto.dateCreated,
+            releaseDate: dto.premiereDate
         )
     }
 

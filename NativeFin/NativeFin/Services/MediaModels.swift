@@ -89,6 +89,18 @@ nonisolated struct Library: Identifiable, Hashable, Sendable {
     let kind: Kind
 }
 
+/// A genre such as "Comedy", as a way to browse movies and shows other than by library.
+nonisolated struct Category: Identifiable, Hashable, Sendable {
+    /// The genre's unique ID on the server.
+    let id: String
+
+    /// The display name, e.g. "Sci-Fi".
+    let name: String
+
+    /// Artwork the server has for the genre, if any.
+    let imageURL: URL?
+}
+
 /// Something browsable or playable: a movie, series, season, or episode.
 nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     /// The kind of item.
@@ -220,6 +232,12 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
 
     /// The chapters, in order. Only filled in when a single item is fetched, not in lists.
     var chapters: [MediaChapter] = []
+
+    /// When the item was added to the server's library. `nil` if the server doesn't say.
+    var dateAdded: Date? = nil
+
+    /// The day the movie or show was first released or aired. `nil` if the server doesn't say.
+    var releaseDate: Date? = nil
 }
 
 /// A chapter of a movie or episode, as the server lists it.

@@ -27,6 +27,10 @@ struct AsyncContent<Value, Content: View>: View {
     /// Changing this reloads silently, keeping what's on screen until the new value arrives.
     var reloadID = 0
 
+    /// If given, it's true while a load is running, for a caller that needs to wait for the load it started (e.g. to
+    /// keep a pull-to-refresh spinner showing until the new content is in).
+    var isLoading: Binding<Bool>?
+
     /// Builds the loaded UI from the fetched value.
     @ViewBuilder let content: (Value) -> Content
 
@@ -55,9 +59,13 @@ struct AsyncContent<Value, Content: View>: View {
         }
         // Keyed on `reloadID`, so changing it runs the load again (and cancels one still in flight).
         .task(id: reloadID) { await run() }
+        // Pulling down a scroll view inside reloads, silently like the other reloads, with the system's spinner.
+        .pullToRefresh { await run() }
     }
 
     private func run() async {
+        isLoading?.wrappedValue = true
+        defer { isLoading?.wrappedValue = false }
         do {
             let value = try await load()
             // Superseded by a newer load (or the view went away): that load's result is the one to show.
@@ -70,6 +78,19 @@ struct AsyncContent<Value, Content: View>: View {
             if case .loaded = phase { return }
             phase = .failed(error.localizedDescription)
         }
+    }
+}
+
+extension View {
+    /// Lets the user pull down a scroll view in this view to run `action`, with the system's spinner showing until it
+    /// finishes. Does nothing on tvOS, where there's no pulling.
+    @ViewBuilder
+    func pullToRefresh(_ action: @escaping @MainActor @Sendable () async -> Void) -> some View {
+        #if os(tvOS)
+        self
+        #else
+        refreshable(action: action)
+        #endif
     }
 }
 

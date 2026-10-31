@@ -13,26 +13,56 @@ struct SearchView: View {
     @State private var isSearching = false
     @State private var errorMessage: String?
 
+    /// A watch-state change waiting for confirmation, or an error to show.
+    @State private var watchState = WatchActionState()
+
+    /// The item a result's "Go to …" is opening; setting it pushes its detail screen.
+    @State private var goToItem: MediaItem?
+
+    /// The item being played; setting it presents the full-screen player.
+    @State private var playingItem: MediaItem?
+
     var body: some View {
         Group {
             if let errorMessage {
                 ContentUnavailableView("Search Failed", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
             } else if query.isEmpty {
-                ContentUnavailableView("Search", systemImage: "magnifyingglass", description: Text("Find movies, shows, and episodes."))
+                CategoryBrowser()
             } else if results.isEmpty && !isSearching {
                 ContentUnavailableView.search(text: query)
             } else {
-                List(results) { item in
-                    NavigationLink(value: item) {
-                        ItemRow(item: item)
-                    }
-                }
+                resultsList
             }
         }
         .navigationTitle("Search")
         .searchable(text: $query)
+        .watchActionAlerts(watchActions)
+        .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
+        .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: {}) }
         // Restarts (and cancels the previous run) whenever the query changes.
         .task(id: query) { await search() }
+    }
+
+    private var watchActions: WatchActions {
+        WatchActions(service: appModel.service, destination: nil, state: $watchState) { effect in
+            results = results.applying(effect)
+        }
+    }
+
+    private var navigation: ItemNavigation {
+        ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
+    }
+
+    /// One row per result: poster, title and a line of details, with a menu of actions on the right.
+    private var resultsList: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(results) { item in
+                    SearchResultRow(item: item, actions: watchActions.actions(for: item, navigation: navigation))
+                }
+            }
+            .padding(.horizontal)
+        }
     }
 
     /// Runs one debounced search for the current query. Cancelled by SwiftUI when the query changes.
@@ -59,6 +89,108 @@ struct SearchView: View {
             results = []
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+/// A search result: a poster, the title, and what kind of thing it is, with a menu of actions on the right.
+private struct SearchResultRow: View {
+    let item: MediaItem
+    let actions: ItemRowActions?
+
+    private var posterWidth: CGFloat {
+        #if os(tvOS)
+        return 120
+        #else
+        return 56
+        #endif
+    }
+
+    /// "Movie · Comedy · 2012": the kind of item, its first genre, and for a movie its year.
+    private var details: String {
+        var parts: [String] = []
+        switch item.kind {
+        case .movie: parts.append(String(localized: "Movie"))
+        case .series: parts.append(String(localized: "TV Show"))
+        case .season: parts.append(String(localized: "Season"))
+        case .episode: parts.append(String(localized: "Episode"))
+        case .extra: parts.append(String(localized: "Extra"))
+        case .other: break
+        }
+        if let genre = item.genres.first { parts.append(genre) }
+        if item.kind == .movie, let year = item.year { parts.append(String(year)) }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            NavigationLink(value: item) {
+                HStack(spacing: 16) {
+                    ArtworkView(url: item.posterURL, aspectRatio: 2.0 / 3.0)
+                        .frame(width: posterWidth)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                            .font(.body)
+                            .lineLimit(1)
+                        Text(details)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .cardLinkStyle()
+
+            if let actions {
+                ItemActionsMenu(item: item, actions: actions)
+            }
+        }
+        .padding(.vertical, 10)
+        // A divider that starts at the text, not the poster.
+        .overlay(alignment: .bottomTrailing) {
+            Divider().padding(.leading, posterWidth + 16)
+        }
+    }
+}
+
+/// Genres as a grid of posters, for browsing when nothing has been searched for.
+private struct CategoryBrowser: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        AsyncContent(load: { try await appModel.service.categories() }) { categories in
+            ScrollView {
+                // Two posters across, whatever the screen width.
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: 2), spacing: 16) {
+                    ForEach(categories) { category in
+                        NavigationLink(value: category) {
+                            CollageCard(title: category.name, aspectRatio: 2.0 / 3.0, cacheKey: "genre-\(category.id)") {
+                                // A handful of the genre's posters.
+                                let items = (try? await appModel.service.items(in: category)) ?? []
+                                return items.prefix(16).compactMap(\.posterURL)
+                            }
+                        }
+                        .cardLinkStyle()
+                    }
+                }
+                .padding()
+            }
+        }
+    }
+}
+
+/// The movies and shows in a genre, as a poster grid.
+struct CategoryView: View {
+    let category: Category
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        AsyncContent(load: { try await appModel.service.items(in: category) }) { items in
+            PosterBrowser(items: items)
+        }
+        .navigationTitle(category.name)
     }
 }
 

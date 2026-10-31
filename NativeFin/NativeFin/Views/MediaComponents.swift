@@ -186,6 +186,7 @@ extension View {
     func mediaNavigationDestinations() -> some View {
         navigationDestination(for: MediaItem.self) { ItemDetailView(item: $0) }
             .navigationDestination(for: Library.self) { LibraryView(library: $0) }
+            .navigationDestination(for: Category.self) { CategoryView(category: $0) }
             .navigationDestination(for: ShelfDestination.self) { ShelfListView(destination: $0) }
     }
 
