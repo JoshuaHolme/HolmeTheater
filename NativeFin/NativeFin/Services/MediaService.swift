@@ -130,6 +130,12 @@ nonisolated protocol MediaService: Sendable {
     /// - Returns: Everything with a premiere date on today's month and day, newest year first.
     func itemsOnThisDay() async throws -> [MediaItem]
 
+    /// Fetches several items in one request, with only the details lists have (no cast, chapters or streams).
+    ///
+    /// - Parameter ids: The items' IDs.
+    /// - Returns: The items the server found, in no particular order. Any it doesn't have are left out.
+    func items(withIDs ids: [String]) async throws -> [MediaItem]
+
     /// Fetches one item afresh, e.g. to pick up its latest watch progress after playback.
     ///
     /// - Parameter id: The item's ID.
@@ -199,13 +205,13 @@ nonisolated protocol MediaService: Sendable {
     /// Fetches the genres that movies and shows on the server are filed under.
     ///
     /// - Returns: The genres, sorted by name.
-    func categories() async throws -> [Category]
+    func genres() async throws -> [Genre]
 
     /// Fetches the movies and series filed under a genre, sorted by name.
     ///
-    /// - Parameter category: The genre to list.
+    /// - Parameter genre: The genre to list.
     /// - Returns: Its movies and series.
-    func items(in category: Category) async throws -> [MediaItem]
+    func items(in genre: Genre) async throws -> [MediaItem]
 
     // MARK: Playback
 

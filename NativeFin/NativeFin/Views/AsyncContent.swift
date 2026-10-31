@@ -27,14 +27,22 @@ struct AsyncContent<Value, Content: View>: View {
     /// Changing this reloads silently, keeping what's on screen until the new value arrives.
     var reloadID = 0
 
-    /// If given, it's true while a load is running, for a caller that needs to wait for the load it started (e.g. to
-    /// keep a pull-to-refresh spinner showing until the new content is in).
-    var isLoading: Binding<Bool>?
+    /// Lets a view outside this one reload it and wait for the result, e.g. a pull to refresh on a scroll view that
+    /// holds this view, which this view's own pull to refresh can't reach.
+    var refresher: ContentRefresher?
+
+    /// Whether a pull down on a scroll view inside reloads this content. Turn off when a scroll view around this view
+    /// owns the pull to refresh, so it isn't also attached to the scroll views inside.
+    var pullsToRefresh = true
 
     /// Builds the loaded UI from the fetched value.
     @ViewBuilder let content: (Value) -> Content
 
     @State private var phase: Phase = .loading
+
+    /// Counts loads as they start, so a load that finishes after a newer one has started is thrown away. The
+    /// `.task` cancels its own runs, but a pull to refresh or Retry runs outside it.
+    @State private var latestRun = 0
 
     var body: some View {
         Group {
@@ -58,22 +66,25 @@ struct AsyncContent<Value, Content: View>: View {
             }
         }
         // Keyed on `reloadID`, so changing it runs the load again (and cancels one still in flight).
-        .task(id: reloadID) { await run() }
+        .task(id: reloadID) {
+            refresher?.action = { await run() }
+            await run()
+        }
         // Pulling down a scroll view inside reloads, silently like the other reloads, with the system's spinner.
-        .pullToRefresh { await run() }
+        .pullToRefresh(enabled: pullsToRefresh) { await run() }
     }
 
     private func run() async {
-        isLoading?.wrappedValue = true
-        defer { isLoading?.wrappedValue = false }
+        latestRun += 1
+        let thisRun = latestRun
         do {
             let value = try await load()
             // Superseded by a newer load (or the view went away): that load's result is the one to show.
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, thisRun == latestRun else { return }
             phase = .loaded(value)
         } catch {
             // The task is cancelled when the view disappears; that isn't a failure.
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, thisRun == latestRun else { return }
             // A failed reload keeps what's on screen, which is only out of date. Only a first load shows the error.
             if case .loaded = phase { return }
             phase = .failed(error.localizedDescription)
@@ -81,15 +92,31 @@ struct AsyncContent<Value, Content: View>: View {
     }
 }
 
+/// A handle for reloading an ``AsyncContent`` from outside it, and waiting until the new value is showing.
+@MainActor
+final class ContentRefresher {
+    /// Set by the ``AsyncContent`` it's given to.
+    fileprivate var action: (@MainActor () async -> Void)?
+
+    /// Reloads the content and returns once the load has finished. Does nothing if the content isn't showing.
+    func refresh() async {
+        await action?()
+    }
+}
+
 extension View {
     /// Lets the user pull down a scroll view in this view to run `action`, with the system's spinner showing until it
     /// finishes. Does nothing on tvOS, where there's no pulling.
     @ViewBuilder
-    func pullToRefresh(_ action: @escaping @MainActor @Sendable () async -> Void) -> some View {
+    func pullToRefresh(enabled: Bool = true, _ action: @escaping @MainActor @Sendable () async -> Void) -> some View {
         #if os(tvOS)
         self
         #else
-        refreshable(action: action)
+        if enabled {
+            refreshable(action: action)
+        } else {
+            self
+        }
         #endif
     }
 }

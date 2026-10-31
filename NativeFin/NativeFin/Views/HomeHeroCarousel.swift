@@ -45,6 +45,22 @@ struct HomeHeroCarousel<Header: View>: View {
     /// The position of the item showing.
     @State private var index = 0
 
+    /// With either of these on, it doesn't move by itself: content sliding away unasked is hard to follow, and with
+    /// VoiceOver it would move what's being read.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+
+    /// How long after a swipe a tap on the page is ignored. The finger lifting reaches the page's button a moment after
+    /// the swipe ends, and would otherwise open the item.
+    private static var tapSuppressionAfterSwipe: Duration { .milliseconds(300) }
+
+    /// How much further, in seconds of the finger's speed, a swipe is taken to coast when deciding where it lands.
+    private static var swipeCoastTime: CGFloat { 0.25 }
+
+    /// How far a swipe has to coast, or be dragged, as a share of the width, to move to the next item.
+    private static var flickThreshold: CGFloat { 0.4 }
+    private static var dragThreshold: CGFloat { 0.25 }
+
     /// How far a finger has dragged the pages sideways.
     @State private var dragOffset: CGFloat = 0
 
@@ -81,12 +97,20 @@ struct HomeHeroCarousel<Header: View>: View {
             ForEach(Array(items.enumerated()), id: \.element.id) { position, item in
                 let distance = offset(of: position)
                 if abs(distance) <= 1 {
-                    HeroPage(item: item, playTarget: playTargets[item.id], safeArea: safeArea, open: { if !isSwiping { open($0) } }, play: { if !isSwiping { play($0) } })
-                        // The closures are new each time this runs, which would redraw every page for every frame of a drag.
-                        // A page only changes with its item, so that's all it's compared by.
-                        .equatable()
-                        .frame(width: width, height: height)
-                        .offset(x: CGFloat(distance) * width)
+                    HeroPage(
+                        item: item,
+                        playTarget: playTargets[item.id],
+                        safeArea: safeArea,
+                        open: { if !isSwiping { open($0) } },
+                        play: { if !isSwiping { play($0) } }
+                    )
+                    // The closures are new each time this runs, which would redraw every page for every frame of a
+                    // drag. See `HeroPage.==` for why comparing without them is safe.
+                    .equatable()
+                    .frame(width: width, height: height)
+                    .offset(x: CGFloat(distance) * width)
+                    // The neighbors are only there to slide in; VoiceOver reads the one showing.
+                    .accessibilityHidden(distance != 0)
                 }
             }
         }
@@ -112,8 +136,12 @@ struct HomeHeroCarousel<Header: View>: View {
         .ignoresSafeArea(edges: .horizontal)
         // Restarts whenever the item changes, whether it moved by itself or was swiped, and while a finger is down,
         // so the wait is always the full interval from the last touch. Cancelled when the screen goes away.
-        .task(id: Advance(index: index, isDragging: isDragging)) {
+        .task(id: Advance(index: index, isDragging: isDragging, isPaused: reduceMotion || voiceOverEnabled)) {
             await advanceAfterWait()
+        }
+        // A reload can bring fewer items; start again from the first rather than point past the end.
+        .onChange(of: items.count) { _, count in
+            if index >= count { index = 0 }
         }
     }
 
@@ -121,6 +149,7 @@ struct HomeHeroCarousel<Header: View>: View {
     private struct Advance: Hashable {
         let index: Int
         let isDragging: Bool
+        let isPaused: Bool
     }
 
     /// The slide when it moves by itself: a slow, even glide.
@@ -141,17 +170,15 @@ struct HomeHeroCarousel<Header: View>: View {
     private func swipeEnded(translation: CGFloat, velocity: CGFloat) {
         guard isDragging else { return }
         isDragging = false
-        // The finger lifting is reported to the page's button a moment after this, so the flag stays up a bit.
         Task {
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: Self.tapSuppressionAfterSwipe)
             isSwiping = false
         }
-        // Where it would come to rest if it coasted, a quarter second more.
-        let travel = translation + velocity * 0.25
+        let travel = translation + velocity * Self.swipeCoastTime
         withAnimation(Self.swipeSlide) {
-            if travel < -width * 0.4 || translation < -width * 0.25 {
+            if travel < -width * Self.flickThreshold || translation < -width * Self.dragThreshold {
                 index = (index + 1) % items.count
-            } else if travel > width * 0.4 || translation > width * 0.25 {
+            } else if travel > width * Self.flickThreshold || translation > width * Self.dragThreshold {
                 index = (index + items.count - 1) % items.count
             }
             dragOffset = 0
@@ -165,7 +192,7 @@ struct HomeHeroCarousel<Header: View>: View {
         reset.disablesAnimations = true
         withTransaction(reset) { progress = 0 }
 
-        guard items.count > 1, !isDragging else { return }
+        guard items.count > 1, !isDragging, !reduceMotion, !voiceOverEnabled else { return }
         withAnimation(.linear(duration: Double(Self.advanceInterval.components.seconds))) { progress = 1 }
         try? await Task.sleep(for: Self.advanceInterval)
         guard !Task.isCancelled else { return }
@@ -210,13 +237,26 @@ struct HomeHeroCarousel<Header: View>: View {
         .animation(.easeInOut(duration: 0.25), value: index)
         .padding(.bottom, 4)
         .environment(\.colorScheme, .dark)
-        .accessibilityHidden(true)
+        // One element for VoiceOver, which swipes up and down to move between the items.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Featured")
+        .accessibilityValue(items.indices.contains(index) ? "\(items[index].title), \(index + 1) of \(items.count)" : "")
+        .accessibilityAdjustableAction { direction in
+            guard !items.isEmpty else { return }
+            switch direction {
+            case .increment: index = (index + 1) % items.count
+            case .decrement: index = (index + items.count - 1) % items.count
+            @unknown default: break
+            }
+        }
     }
 }
 
-/// One item's hero: its artwork under a fade, with a "New" badge, its logo, what it is, and Play and info buttons over
-/// the bottom-left corner.
+/// One item's hero: its artwork under a fade, with its logo, what it is, and a Play button over the bottom-left corner.
 private struct HeroPage: View, Equatable {
+    /// Compares what the page shows, not its closures, which can't be compared and are new on every redraw. That's safe
+    /// because they only reach state through the carousel's `@State`, which is the same storage however often they're
+    /// remade. A closure that captured a changing value would need to be part of this comparison.
     static func == (lhs: HeroPage, rhs: HeroPage) -> Bool {
         lhs.item == rhs.item && lhs.playTarget == rhs.playTarget && lhs.safeArea == rhs.safeArea
     }

@@ -188,6 +188,12 @@ nonisolated struct MockMediaService: MediaService {
         return Array(Self.movies.prefix(4))
     }
 
+    func items(withIDs ids: [String]) async throws -> [MediaItem] {
+        try await simulateLatency()
+        let all = Self.movies + Self.shows + Self.shows.flatMap { Self.episodes(of: $0) }
+        return all.filter { ids.contains($0.id) }
+    }
+
     func item(id: String) async throws -> MediaItem {
         try await simulateLatency()
         let all = Self.movies + Self.shows + Self.shows.flatMap { Self.episodes(of: $0) }
@@ -243,14 +249,14 @@ nonisolated struct MockMediaService: MediaService {
         }
     }
 
-    func categories() async throws -> [Category] {
+    func genres() async throws -> [Genre] {
         try await simulateLatency()
         return ["Comedy", "Drama", "Horror", "Sci-Fi"].map {
-            Category(id: "genre-\($0)", name: $0, imageURL: nil)
+            Genre(id: "genre-\($0)", name: $0, imageURL: nil)
         }
     }
 
-    func items(in category: Category) async throws -> [MediaItem] {
+    func items(in genre: Genre) async throws -> [MediaItem] {
         try await simulateLatency()
         return Self.movies + Self.shows
     }

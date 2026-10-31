@@ -39,7 +39,14 @@ actor JellyfinMediaService: MediaService {
     private var server: ServerInfo?
 
     /// Set once signed in; nil while only connected.
-    private var session: UserSession?
+    private var session: UserSession? {
+        didSet {
+            // What was cached belongs to the account (and server) it was fetched for; another one starts empty.
+            if session?.userID != oldValue?.userID || session?.server.url != oldValue?.server.url {
+                onThisDayCache = nil
+            }
+        }
+    }
 
     init(identity: ClientIdentity) {
         self.identity = identity
@@ -314,6 +321,18 @@ actor JellyfinMediaService: MediaService {
         return matches
     }
 
+    func items(withIDs ids: [String]) async throws -> [MediaItem] {
+        guard !ids.isEmpty else { return [] }
+        let (client, session) = try signedIn()
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            fields: Self.itemFields,
+            enableUserData: true,
+            ids: ids
+        ))
+        return try await mapItems(send(request, with: client), client: client)
+    }
+
     func item(id: String) async throws -> MediaItem {
         let (client, session) = try signedIn()
         let request = Paths.getItems(parameters: .init(
@@ -378,7 +397,7 @@ actor JellyfinMediaService: MediaService {
         }
     }
 
-    func categories() async throws -> [Category] {
+    func genres() async throws -> [Genre] {
         let (client, session) = try signedIn()
         let request = Paths.getGenres(parameters: .init(
             includeItemTypes: [.movie, .series],
@@ -391,11 +410,11 @@ actor JellyfinMediaService: MediaService {
             let image = dto.imageTags?[ImageType.primary.rawValue].flatMap {
                 Self.imageURL(itemID: id, type: .primary, tag: $0, width: Self.posterWidth, client: client)
             }
-            return Category(id: id, name: name, imageURL: image)
+            return Genre(id: id, name: name, imageURL: image)
         } ?? []
     }
 
-    func items(in category: Category) async throws -> [MediaItem] {
+    func items(in genre: Genre) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
         let request = Paths.getItems(parameters: .init(
             userID: session.userID,
@@ -405,7 +424,7 @@ actor JellyfinMediaService: MediaService {
             includeItemTypes: [.movie, .series],
             sortBy: [.sortName],
             enableUserData: true,
-            genreIDs: [category.id]
+            genreIDs: [genre.id]
         ))
         return try await mapItems(send(request, with: client), client: client)
     }
@@ -686,7 +705,7 @@ actor JellyfinMediaService: MediaService {
 
     /// Extra per-item fields requested beyond the defaults.
     private static let itemFields: [ItemFields] = [
-        .overview, .primaryImageAspectRatio, .childCount, .recursiveItemCount, .genres, .studios, .dateCreated
+        .overview, .primaryImageAspectRatio, .childCount, .recursiveItemCount, .genres, .studios, .dateCreated, .sortName
     ]
 
     /// Tells the server what AVPlayer can play natively so it only transcodes when it has to.
@@ -915,7 +934,8 @@ actor JellyfinMediaService: MediaService {
             people: people(of: dto, client: client),
             chapters: chapters(of: dto, id: id, client: client),
             dateAdded: dto.dateCreated,
-            releaseDate: dto.premiereDate
+            releaseDate: dto.premiereDate,
+            sortName: dto.sortName
         )
     }
 

@@ -97,18 +97,21 @@ struct PosterFilter: Equatable {
 }
 
 private extension MediaItem {
-    /// What the item sorts by when ordered by name: its title without a leading "The", "A" or "An", as Jellyfin does.
+    /// What the item sorts by when ordered by name: the server's sort name, which drops a leading article in the
+    /// server's language and honors one set by hand. Without one, the title minus a leading English "The", "A" or "An".
     var sortKey: String {
+        if let sortName, !sortName.isEmpty { return sortName }
         for article in ["the ", "a ", "an "] where title.lowercased().hasPrefix(article) && title.count > article.count {
             return String(title.dropFirst(article.count))
         }
         return title
     }
 
-    /// The letter the item files under in the A to Z index, or "#" if its name doesn't start with one.
+    /// The letter the item files under in the A to Z index, or "#" if its name doesn't start with one of A to Z (once
+    /// accents are dropped). Names in other scripts file under "#" too, so every item can be reached from the index.
     var indexLetter: String {
         guard let first = sortKey.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).uppercased().first,
-              first.isLetter else { return "#" }
+              first.isASCII, first.isLetter else { return "#" }
         return String(first)
     }
 }
@@ -120,17 +123,28 @@ struct PosterBrowser: View {
     @State private var sort = PosterSort.nameAscending
     @State private var filter = PosterFilter()
 
+    /// The items as filtered and sorted, and the genres among them, kept rather than worked out on every redraw.
+    /// Sorting a big library by name is slow, and redraws are frequent. Updated when the items, sort or filter change.
+    @State private var visibleItems: [MediaItem]
+    @State private var genres: [String]
+
+    init(items: [MediaItem]) {
+        self.items = items
+        _visibleItems = State(initialValue: PosterSort.nameAscending.sorted(items))
+        _genres = State(initialValue: Self.genres(in: items))
+    }
+
     /// The narrowest a poster gets, wider at larger text sizes so captions stay readable.
     @ScaledMetric(relativeTo: .subheadline) private var posterMinimum: CGFloat = Layout.posterWidth
 
-    private var visibleItems: [MediaItem] {
-        sort.sorted(items.filter(filter.matches))
-    }
-
     private static let ratingChoices = [5.0, 6.0, 7.0, 8.0, 9.0]
 
-    private var genres: [String] {
+    private static func genres(in items: [MediaItem]) -> [String] {
         Set(items.flatMap(\.genres)).sorted()
+    }
+
+    private func updateVisibleItems() {
+        visibleItems = sort.sorted(items.filter(filter.matches))
     }
 
     var body: some View {
@@ -176,6 +190,12 @@ struct PosterBrowser: View {
                 #endif
             }
             .toolbar { toolbar }
+            .onChange(of: items) {
+                genres = Self.genres(in: items)
+                updateVisibleItems()
+            }
+            .onChange(of: sort) { updateVisibleItems() }
+            .onChange(of: filter) { updateVisibleItems() }
         }
     }
 
@@ -276,7 +296,7 @@ private struct AlphabetIndex: View {
 
     /// "#" comes first, because titles that start with a number sort before the letters.
     private var letters: [String] {
-        let ascending = ["#"] + (65...90).map { String(UnicodeScalar($0)!) }
+        let ascending = ["#"] + "ABCDEFGHIJKLMNOPQRSTUVWXYZ".map(String.init)
         return isDescending ? ascending.reversed() : ascending
     }
 

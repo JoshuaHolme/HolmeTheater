@@ -17,8 +17,8 @@ struct HomeView: View {
     /// How many of the newest items the carousel at the top shows.
     private static let heroCount = 10
 
-    /// Whether the shelves are loading, which a pull to refresh waits on.
-    @State private var isLoadingHome = false
+    /// Reloads the shelves for a pull to refresh, which is on the scroll view around them.
+    @State private var refresher = ContentRefresher()
 
     /// Bumped to reload the shelves after an item's watch state changes on the server.
     @State private var reloadCount = 0
@@ -35,9 +35,10 @@ struct HomeView: View {
     /// when it closes, so they show the latest progress.
     @State private var playingItem: MediaItem?
 
-    /// The newest items, for the carousel. When there are some, the carousel runs to the top of the screen with the
-    /// "Home" heading over it; until then, and when there are none, the heading sits above the shelves as usual.
-    @State private var heroItems: [MediaItem] = []
+    /// Whether the carousel is showing. When it is, it runs to the top of the screen with the "Home" heading over it;
+    /// otherwise (loading, failed, or nothing new) the heading sits above the shelves as usual. Set from the shelves
+    /// that are showing, so it always matches what's on screen, not from a load that may yet be thrown away.
+    @State private var showsHero = false
 
     /// One library's "Recently Added …" and "Recently Released …" shelves.
     private struct Row: Identifiable {
@@ -67,7 +68,7 @@ struct HomeView: View {
             let safeArea = proxy.safeAreaInsets
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if heroItems.isEmpty {
+                    if !showsHero {
                         header
                             .padding(.top, safeArea.top)
                             .padding(.top)
@@ -75,12 +76,24 @@ struct HomeView: View {
 
                     // Loads inside the scroll view, below the header, so the profile button stays
                     // reachable (e.g. to sign out) even if loading fails.
-                    AsyncContent(load: loadHome, reloadID: reloadCount, isLoading: $isLoadingHome) { data in
+                    AsyncContent(load: loadHome, reloadID: reloadCount, refresher: refresher, pullsToRefresh: false) { data in
                         LazyVStack(alignment: .leading, spacing: 24) {
                             if !data.hero.isEmpty {
-                                HomeHeroCarousel(items: data.hero, playTargets: data.heroPlayTargets, safeArea: safeArea, screenSize: CGSize(width: proxy.size.width + safeArea.leading + safeArea.trailing, height: proxy.size.height), open: { goToItem = $0 }, play: { playingItem = $0 }) {
+                                HomeHeroCarousel(
+                                    items: data.hero,
+                                    playTargets: data.heroPlayTargets,
+                                    safeArea: safeArea,
+                                    // The whole screen, past the side safe areas the carousel runs under.
+                                    screenSize: CGSize(
+                                        width: proxy.size.width + safeArea.leading + safeArea.trailing,
+                                        height: proxy.size.height
+                                    ),
+                                    open: { goToItem = $0 },
+                                    play: { playingItem = $0 }
+                                ) {
                                     header.foregroundStyle(.white)
                                 }
+
                             }
                             if !data.resume.isEmpty {
                                 shelf(.continueWatching, items: data.resume)
@@ -104,13 +117,14 @@ struct HomeView: View {
                                 ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
                             }
                         }
+                        .onChange(of: data.hero.isEmpty, initial: true) { _, isEmpty in showsHero = !isEmpty }
                     }
                 }
                 .padding(.bottom)
             }
             // The carousel runs under the status bar, up to the top edge of the screen.
             .ignoresSafeArea(edges: .top)
-            .pullToRefresh { await refreshHome() }
+            .pullToRefresh { await refresher.refresh() }
         }
         // The title is still set so pushed screens can show "Home" on their back button;
         // the bar itself is hidden because the header replaces it.
@@ -118,16 +132,6 @@ struct HomeView: View {
         .toolbarVisibility(.hidden, for: .navigationBar)
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: reload) }
-    }
-
-    /// Reloads the shelves, and waits for them, so the spinner stays until the new ones are in.
-    private func refreshHome() async {
-        reload()
-        // The load starts a moment after the count changes.
-        try? await Task.sleep(for: .milliseconds(150))
-        while isLoadingHome && !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(100))
-        }
     }
 
     /// A shelf whose heading opens `destination`'s full list. Its posters play here, and its watch-state
@@ -165,28 +169,23 @@ struct HomeView: View {
     private static func heroes(from newest: [MediaItem], limit: Int, service: any MediaService) async -> [MediaItem] {
         // Enough to still have `limit` once shows that repeat are gone.
         let candidates = Array(newest.prefix(limit * 3))
-        let resolved = await withTaskGroup(of: (Int, MediaItem?).self) { group in
-            for (index, item) in candidates.enumerated() {
-                group.addTask {
-                    switch item.kind {
-                    case .episode, .season:
-                        guard let seriesID = item.seriesID else { return (index, nil) }
-                        return (index, try? await service.item(id: seriesID))
-                    default:
-                        return (index, item)
-                    }
-                }
-            }
-            var results: [Int: MediaItem] = [:]
-            for await (index, item) in group {
-                if let item { results[index] = item }
-            }
-            return results
+
+        // Every show the episodes and seasons belong to, each once, fetched together in one request.
+        var seriesIDs: [String] = []
+        for item in candidates where item.kind == .episode || item.kind == .season {
+            if let seriesID = item.seriesID, !seriesIDs.contains(seriesID) { seriesIDs.append(seriesID) }
         }
+        let shows = (try? await service.items(withIDs: seriesIDs)) ?? []
+        let showsByID = Dictionary(shows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         var seen = Set<MediaItem.ID>()
-        return candidates.indices
-            .compactMap { resolved[$0] }
+        return candidates
+            .compactMap { item -> MediaItem? in
+                switch item.kind {
+                case .episode, .season: item.seriesID.flatMap { showsByID[$0] }
+                default: item
+                }
+            }
             .filter { seen.insert($0.id).inserted && ($0.backdropURL != nil || $0.posterURL != nil) }
             .prefix(limit)
             .map { $0 }
@@ -273,7 +272,6 @@ struct HomeView: View {
         ImageCache.shared.prefetch(Array(heroURLs.dropFirst(2)))
         await ImageCache.shared.preload(Array(heroURLs.prefix(2)))
 
-        heroItems = hero
         return HomeData(hero: hero, heroPlayTargets: heroPlayTargets, resume: resumeItems, onThisDay: onThisDay, nextUp: nextUpItems, rows: rows)
     }
 }

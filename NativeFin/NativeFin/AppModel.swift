@@ -28,6 +28,12 @@ final class AppModel {
         if case .signedIn(let session) = state { session } else { nil }
     }
 
+    /// Identifies the signed-in account and its server, for caches that must not show one account's data to another.
+    /// Empty when signed out.
+    var cacheScope: String {
+        session.map { "\($0.server.url.absoluteString)|\($0.userID)" } ?? ""
+    }
+
     /// The backend the UI talks to. Swap in `MockMediaService` for previews and demos.
     let service: any MediaService
 

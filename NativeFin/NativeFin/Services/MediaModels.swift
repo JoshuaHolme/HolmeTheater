@@ -90,7 +90,7 @@ nonisolated struct Library: Identifiable, Hashable, Sendable {
 }
 
 /// A genre such as "Comedy", as a way to browse movies and shows other than by library.
-nonisolated struct Category: Identifiable, Hashable, Sendable {
+nonisolated struct Genre: Identifiable, Hashable, Sendable {
     /// The genre's unique ID on the server.
     let id: String
 
@@ -238,6 +238,9 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
 
     /// The day the movie or show was first released or aired. `nil` if the server doesn't say.
     var releaseDate: Date? = nil
+
+    /// The name the server sorts the item by, e.g. "Godfather, The" or a name set by hand. `nil` if it doesn't say.
+    var sortName: String? = nil
 }
 
 /// A chapter of a movie or episode, as the server lists it.

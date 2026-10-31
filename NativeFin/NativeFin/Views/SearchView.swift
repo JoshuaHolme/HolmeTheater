@@ -27,7 +27,7 @@ struct SearchView: View {
             if let errorMessage {
                 ContentUnavailableView("Search Failed", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
             } else if query.isEmpty {
-                CategoryBrowser()
+                GenreBrowser()
             } else if results.isEmpty && !isSearching {
                 ContentUnavailableView.search(text: query)
             } else {
@@ -38,7 +38,7 @@ struct SearchView: View {
         .searchable(text: $query)
         .watchActionAlerts(watchActions)
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
-        .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: {}) }
+        .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: { Task { await refreshResults() } }) }
         // Restarts (and cancels the previous run) whenever the query changes.
         .task(id: query) { await search() }
     }
@@ -63,6 +63,16 @@ struct SearchView: View {
             }
             .padding(.horizontal)
         }
+    }
+
+    /// Fetches the current results again, e.g. after playback, so their watch state and progress are up to date. Keeps
+    /// what's showing if it fails; it's only out of date.
+    private func refreshResults() async {
+        let term = query.trimmingCharacters(in: .whitespaces)
+        guard !term.isEmpty, let fresh = try? await appModel.service.search(term) else { return }
+        // The query changed while this was loading; the search for the new one has the say.
+        guard term == query.trimmingCharacters(in: .whitespaces) else { return }
+        results = fresh
     }
 
     /// Runs one debounced search for the current query. Cancelled by SwiftUI when the query changes.
@@ -156,19 +166,19 @@ private struct SearchResultRow: View {
 }
 
 /// Genres as a grid of posters, for browsing when nothing has been searched for.
-private struct CategoryBrowser: View {
+private struct GenreBrowser: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.categories() }) { categories in
+        AsyncContent(load: { try await appModel.service.genres() }) { genres in
             ScrollView {
                 // Two posters across, whatever the screen width.
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: 2), spacing: 16) {
-                    ForEach(categories) { category in
-                        NavigationLink(value: category) {
-                            CollageCard(title: category.name, aspectRatio: 2.0 / 3.0, cacheKey: "genre-\(category.id)") {
+                    ForEach(genres) { genre in
+                        NavigationLink(value: genre) {
+                            CollageCard(title: genre.name, aspectRatio: 2.0 / 3.0, cacheKey: "\(appModel.cacheScope)|genre-\(genre.id)") {
                                 // A handful of the genre's posters.
-                                let items = (try? await appModel.service.items(in: category)) ?? []
+                                let items = (try? await appModel.service.items(in: genre)) ?? []
                                 return items.prefix(16).compactMap(\.posterURL)
                             }
                         }
@@ -182,15 +192,15 @@ private struct CategoryBrowser: View {
 }
 
 /// The movies and shows in a genre, as a poster grid.
-struct CategoryView: View {
-    let category: Category
+struct GenreView: View {
+    let genre: Genre
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.items(in: category) }) { items in
+        AsyncContent(load: { try await appModel.service.items(in: genre) }) { items in
             PosterBrowser(items: items)
         }
-        .navigationTitle(category.name)
+        .navigationTitle(genre.name)
     }
 }
 

@@ -26,7 +26,7 @@ struct LibrariesView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: 16)], spacing: 16) {
                     ForEach(libraries) { library in
                         NavigationLink(value: library) {
-                            CollageCard(title: library.name, systemImage: library.systemImage, cacheKey: "library-\(library.id)") {
+                            CollageCard(title: library.name, systemImage: library.systemImage, cacheKey: "\(appModel.cacheScope)|library-\(library.id)") {
                                 await posterURLs(for: library)
                             }
                         }
@@ -61,7 +61,8 @@ struct CollageCard: View {
     /// Width divided by height for a tall poster-shaped card, or `nil` for a wide card of fixed height.
     var aspectRatio: CGFloat?
 
-    /// Identifies the card's artwork in ``PosterURLCache``, so scrolling it away and back doesn't fetch it again.
+    /// Identifies the card's artwork in ``PosterURLCache``, so scrolling it away and back doesn't fetch it again. Include
+    /// ``AppModel/cacheScope``, so another account or server never gets this one's artwork.
     let cacheKey: String
 
     /// Fetches the artwork for the collage. Runs once, the first time the card appears.
@@ -93,6 +94,14 @@ struct CollageCard: View {
     /// Only read while focused, so cards that aren't focused don't update as the thumb moves.
     private var thumb: CGSize {
         isFocused ? CGSize(width: RemoteThumb.shared.x, height: RemoteThumb.shared.y) : .zero
+    }
+    /// Whether this card has asked ``RemoteThumb`` to listen, so it hands the remote back exactly once.
+    @State private var usesThumb = false
+
+    private func setUsesThumb(_ wanted: Bool) {
+        guard wanted != usesThumb else { return }
+        usesThumb = wanted
+        if wanted { RemoteThumb.shared.start() } else { RemoteThumb.shared.stop() }
     }
     #else
     private let thumb = CGSize.zero
@@ -151,8 +160,10 @@ struct CollageCard: View {
             // Lifts and tilts the whole card under the system's focus effect.
             .hoverEffect(.highlight)
             .onChange(of: isFocused) { _, focused in
-                if focused { RemoteThumb.shared.start() }
+                setUsesThumb(focused)
             }
+            // Scrolled away or the screen left while focused: it no longer needs the remote.
+            .onDisappear { setUsesThumb(false) }
             #endif
             .task { await loadPosters() }
     }
@@ -207,8 +218,14 @@ private final class RemoteThumb {
     private(set) var x: CGFloat = 0
     private(set) var y: CGFloat = 0
 
-    /// Starts listening to the remote. Safe to call again; every call installs the same handler.
+    /// How many cards want the thumb. Focus moving from one card to the next can start the new one before stopping the
+    /// old one, so the remote is only handed back when none do.
+    private var users = 0
+
+    /// Starts listening to the remote, for a card that's just been focused. Each call needs a matching ``stop()``.
     func start() {
+        users += 1
+        // Every call installs the same handler, so a remote that connected since the last call gets it too.
         for pad in GCController.controllers().compactMap(\.microGamepad) {
             pad.reportsAbsoluteDpadValues = true
             pad.dpad.valueChangedHandler = { _, x, y in
@@ -218,6 +235,19 @@ private final class RemoteThumb {
                 }
             }
         }
+    }
+
+    /// Stops listening, for a card that's lost focus. Once no card is listening, the remote goes back to how the
+    /// system had it, so nothing else in the app inherits absolute thumb positions or this handler.
+    func stop() {
+        users = max(0, users - 1)
+        guard users == 0 else { return }
+        for pad in GCController.controllers().compactMap(\.microGamepad) {
+            pad.dpad.valueChangedHandler = nil
+            pad.reportsAbsoluteDpadValues = false
+        }
+        x = 0
+        y = 0
     }
 }
 #endif

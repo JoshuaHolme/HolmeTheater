@@ -181,12 +181,35 @@ extension MediaItem {
     }
 }
 
+extension MediaItem {
+    /// What a Play button for this item says.
+    ///
+    /// For a movie or episode itself, "Play", or "Resume" if it's partly watched. For the episode a show's Play button
+    /// starts, "Play First Episode" for season 1 episode 1, otherwise e.g. "Play S2, E4", and "Resume S1, E1" if it's
+    /// partly watched, even the first episode.
+    ///
+    /// - Parameter isShow: Whether the button is for a show, which starts this episode, rather than for the item itself.
+    func playButtonTitle(forShow isShow: Bool) -> String {
+        let resumes = playedFraction != nil
+        guard isShow else { return resumes ? String(localized: "Resume") : String(localized: "Play") }
+
+        if !resumes, seasonNumber == 1, episodeNumber == 1 {
+            return String(localized: "Play First Episode")
+        }
+        guard let number = episodeNumber else {
+            return resumes ? String(localized: "Resume") : String(localized: "Play")
+        }
+        let code = seasonNumber.map { String(localized: "S\(String($0)), E\(number)") } ?? String(localized: "E\(number)")
+        return resumes ? String(localized: "Resume \(code)") : String(localized: "Play \(code)")
+    }
+}
+
 extension View {
     /// Registers navigation for media items and libraries; apply to the root of each NavigationStack.
     func mediaNavigationDestinations() -> some View {
         navigationDestination(for: MediaItem.self) { ItemDetailView(item: $0) }
             .navigationDestination(for: Library.self) { LibraryView(library: $0) }
-            .navigationDestination(for: Category.self) { CategoryView(category: $0) }
+            .navigationDestination(for: Genre.self) { GenreView(genre: $0) }
             .navigationDestination(for: ShelfDestination.self) { ShelfListView(destination: $0) }
     }
 
