@@ -35,6 +35,7 @@ struct AccountView: View {
 
             Section {
                 NavigationLink("Home Screen") { HomeSettingsView() }
+                NavigationLink("Themes") { ThemeSettingsView() }
             }
 
             Section {

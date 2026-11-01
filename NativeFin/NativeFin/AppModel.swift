@@ -43,6 +43,9 @@ final class AppModel {
     /// How the user has set up the home screen.
     let homeSettings: HomeSettings
 
+    /// Which seasonal or holiday theme the app wears, if any.
+    let themeSettings: ThemeSettings
+
     /// A short message to show over the tabs for a moment, e.g. that something worked. The main view clears it.
     var toastMessage: String?
 
@@ -61,6 +64,7 @@ final class AppModel {
     init(service: any MediaService) {
         let store = DownloadStore()
         self.homeSettings = HomeSettings()
+        self.themeSettings = ThemeSettings()
         self.service = OfflineFallbackMediaService(base: service, store: store)
         self.downloads = DownloadManager(service: service, store: store)
         // Mock runs (`-UseMockService`) get their own Keychain namespace; otherwise the canned session they save
@@ -81,6 +85,7 @@ final class AppModel {
         self.state = state
         // A preview's changes stay out of the real settings.
         self.homeSettings = HomeSettings(defaults: UserDefaults(suiteName: "HomeSettingsPreviews") ?? .standard)
+        self.themeSettings = ThemeSettings(defaults: UserDefaults(suiteName: "ThemeSettingsPreviews") ?? .standard)
         self.keychain = KeychainStore(service: (Bundle.main.bundleIdentifier ?? "JellyfinClient") + ".previews")
     }
 

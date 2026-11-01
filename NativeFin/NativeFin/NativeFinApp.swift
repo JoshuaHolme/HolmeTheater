@@ -27,6 +27,7 @@ import SwiftUI
         // Pick up profile changes made elsewhere each time the app comes back to the foreground.
         .onChange(of: scenePhase) {
             if scenePhase == .active {
+                appModel.themeSettings.refreshDate()
                 Task { await appModel.refreshProfile() }
             }
         }
