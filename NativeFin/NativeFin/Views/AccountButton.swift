@@ -4,6 +4,23 @@
 
 import SwiftUI
 
+/// Closes the account sheet. Call it like a function.
+struct DismissAccountAction: Equatable {
+    let action: () -> Void
+
+    func callAsFunction() { action() }
+
+    /// Any two are equal: there's only ever one account sheet open, and every action closes it the same way, through the
+    /// same binding. Without this, the environment couldn't tell a new action from the old one, and would update every
+    /// view reading it each time.
+    static func == (lhs: Self, rhs: Self) -> Bool { true }
+}
+
+extension EnvironmentValues {
+    /// Closes the account sheet, from any screen pushed inside it. Does nothing outside one.
+    @Entry var dismissAccount = DismissAccountAction {}
+}
+
 /// The account screen wrapped for presentation in a sheet, with a Done button.
 private struct AccountSheet: View {
     @Binding var isPresented: Bool
@@ -17,6 +34,8 @@ private struct AccountSheet: View {
                     }
                 }
         }
+        // On the stack itself, so the screens it pushes get it too; set on the root view, they may not.
+        .environment(\.dismissAccount, DismissAccountAction { isPresented = false })
     }
 }
 

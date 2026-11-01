@@ -33,6 +33,12 @@ nonisolated protocol MediaService: Sendable {
     ///   ``MediaServiceError`` if the server can't be reached.
     func signIn(username: String, password: String) async throws -> UserSession
 
+    /// Fetches how the server from the last successful ``connect(to:)`` is branded, for the sign-in screen.
+    ///
+    /// - Returns: The branding, or nil if the server has none or it couldn't be read. Never throws, since sign-in doesn't
+    ///   need it.
+    func serverBranding() async -> ServerBranding?
+
     /// Starts a Quick Connect sign-in against the server from the last successful ``connect(to:)``.
     ///
     /// The stream emits ``QuickConnectEvent/code(_:)`` once, then ``QuickConnectEvent/signedIn(_:)`` when the
@@ -41,6 +47,12 @@ nonisolated protocol MediaService: Sendable {
     ///
     /// - Returns: A stream of the flow's progress, which throws if Quick Connect fails or is unavailable.
     func quickConnect() -> AsyncThrowingStream<QuickConnectEvent, Error>
+
+    /// Approves another device's Quick Connect sign-in, as the signed-in user, with the code that device is showing.
+    ///
+    /// - Parameter code: The code shown on the device that's signing in.
+    /// - Throws: A ``MediaServiceError`` whose message says why it failed, such as a code that's wrong or has expired.
+    func authorizeQuickConnect(code: String) async throws
 
     /// Re-attaches a previously saved session, so the browsing and playback methods work without
     /// signing in again.
@@ -81,18 +93,20 @@ nonisolated protocol MediaService: Sendable {
     /// - Parameters:
     ///   - offset: The number of items already loaded; 0 for the first page.
     ///   - limit: The maximum number of items to return.
+    ///   - libraryIDs: The libraries to take items from, or nil for all of them.
     /// - Returns: Up to `limit` items. A page shorter than `limit` is the last one.
-    func resumeItems(offset: Int, limit: Int) async throws -> [MediaItem]
+    func resumeItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem]
 
     /// Fetches one page of "Up Next": for each show the user has been watching, the next episode to watch.
     ///
-    /// Episodes that are partly watched are left out, since they're in ``resumeItems(offset:limit:)``.
+    /// Episodes that are partly watched are left out, since they're in ``resumeItems(offset:limit:libraryIDs:)``.
     ///
     /// - Parameters:
     ///   - offset: The number of items already loaded; 0 for the first page.
     ///   - limit: The maximum number of items to return.
+    ///   - libraryIDs: The libraries to take episodes from, or nil for all of them.
     /// - Returns: Up to `limit` episodes, most recently watched show first. A page shorter than `limit` is the last one.
-    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem]
+    func nextUpItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem]
 
     /// Fetches a handful of the most recently added items in a library, for a home-screen shelf.
     ///
@@ -125,10 +139,19 @@ nonisolated protocol MediaService: Sendable {
     /// - Returns: Up to `limit` items. A page shorter than `limit` is the last one.
     func recentlyReleasedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem]
 
+    /// Fetches movies and shows picked at random from a library, for the home screen's carousel.
+    ///
+    /// - Parameters:
+    ///   - library: The library to pick from.
+    ///   - limit: The most to return.
+    /// - Returns: Up to `limit` movies or shows, in a random order.
+    func randomItems(in library: Library, limit: Int) async throws -> [MediaItem]
+
     /// Fetches the movies and shows, in every library, that first came out on today's date in some year.
     ///
+    /// - Parameter libraryIDs: The libraries to look in, or nil for all of them.
     /// - Returns: Everything with a premiere date on today's month and day, newest year first.
-    func itemsOnThisDay() async throws -> [MediaItem]
+    func itemsOnThisDay(libraryIDs: [String]?) async throws -> [MediaItem]
 
     /// Fetches several items in one request, with only the details lists have (no cast, chapters or streams).
     ///
@@ -295,5 +318,24 @@ extension MediaService {
     /// Services with nothing better to offer download what they'd stream.
     func downloadInfo(for item: MediaItem) async throws -> PlaybackInfo {
         try await playbackInfo(for: item, options: PlaybackOptions())
+    }
+}
+
+extension MediaService {
+    /// Fetches one page of Continue Watching followed by Up Next, as one list. Up Next only shows episodes that aren't
+    /// partly watched, so nothing is in both.
+    ///
+    /// - Parameters:
+    ///   - offset: The number of items already loaded; 0 for the first page.
+    ///   - limit: The maximum number of items to return.
+    ///   - libraryIDs: The libraries to take items from, or nil for all of them.
+    /// - Returns: Up to `limit` items. A page shorter than `limit` is the last one.
+    func continueWatchingAndUpNext(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
+        // Neither server list can be paged as one, so each is asked for enough to cover the page and they're cut here.
+        async let resume = resumeItems(offset: 0, limit: offset + limit, libraryIDs: libraryIDs)
+        async let nextUp = nextUpItems(offset: 0, limit: offset + limit, libraryIDs: libraryIDs)
+        var seen = Set<MediaItem.ID>()
+        let all = try await resume + nextUp
+        return Array(all.filter { seen.insert($0.id).inserted }.dropFirst(offset).prefix(limit))
     }
 }

@@ -83,6 +83,23 @@ actor JellyfinMediaService: MediaService {
         throw MediaServiceError.underlying("Couldn't connect to a Jellyfin server.\n" + failures.joined(separator: "\n"))
     }
 
+    func serverBranding() async -> ServerBranding? {
+        guard let client, let options = try? await client.send(Paths.getBrandingOptions).value else { return nil }
+
+        // The server's web page takes HTML here; this is plain text, so tags go and line breaks stay.
+        let disclaimer = options.loginDisclaimer?
+            .replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .decodingHTMLEntities()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let splash = options.isSplashscreenEnabled == true
+            ? client.configuration.url.appending(path: "Branding/Splashscreen")
+            : nil
+
+        let branding = ServerBranding(loginDisclaimer: disclaimer?.isEmpty == false ? disclaimer : nil, splashscreenURL: splash)
+        return branding.loginDisclaimer == nil && branding.splashscreenURL == nil ? nil : branding
+    }
+
     func signIn(username: String, password: String) async throws -> UserSession {
         let client = try connectedClient()
         do {
@@ -119,6 +136,21 @@ actor JellyfinMediaService: MediaService {
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func authorizeQuickConnect(code: String) async throws {
+        let (client, session) = try signedIn()
+        do {
+            _ = try await client.send(Paths.authorizeQuickConnect(code: code, userID: session.userID))
+        } catch APIError.unacceptableStatusCode(let status) where status == 400 || status == 404 {
+            throw MediaServiceError.underlying(String(localized: "That code isn't right, or it has expired."))
+        } catch APIError.unacceptableStatusCode(let status) where status == 403 {
+            // Quick Connect is off on the server, or this user can't use it. (A 401 is the saved token being refused,
+            // which `mapError` reports as an expired session, as everywhere else.)
+            throw MediaServiceError.underlying(String(localized: "Quick Connect isn't available on this server."))
+        } catch {
+            throw Self.mapError(error)
         }
     }
 
@@ -192,33 +224,81 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
-    func resumeItems(offset: Int, limit: Int) async throws -> [MediaItem] {
-        let (client, session) = try signedIn()
-        let request = Paths.getResumeItems(parameters: .init(
-            userID: session.userID,
-            startIndex: offset,
-            limit: limit,
-            fields: Self.itemFields,
-            mediaTypes: [.video],
-            enableUserData: true
-        ))
-        return try await mapItems(send(request, with: client), client: client)
+    /// Fetches a page that may come from several libraries, which the server can only filter one at a time. With more
+    /// than one, each is asked for enough to cover the page, and the results are merged: taking from each library in
+    /// turn, so one library's items can't crowd the others off the page, then, with `byLastPlayed`, by when each was last
+    /// played, newest first, which is the order the server would have given them in.
+    private func page(
+        from libraryIDs: [String]?,
+        offset: Int,
+        limit: Int,
+        byLastPlayed: Bool = false,
+        _ fetch: (_ parentID: String?, _ offset: Int, _ limit: Int) async throws -> [MediaItem]
+    ) async throws -> [MediaItem] {
+        guard let libraryIDs else { return try await fetch(nil, offset, limit) }
+        if libraryIDs.count == 1 { return try await fetch(libraryIDs[0], offset, limit) }
+
+        var lists: [[MediaItem]] = []
+        for id in libraryIDs {
+            lists.append(try await fetch(id, 0, offset + limit))
+        }
+
+        var seen = Set<MediaItem.ID>()
+        var merged: [MediaItem] = []
+        for position in 0..<(lists.map(\.count).max() ?? 0) {
+            for list in lists where position < list.count && seen.insert(list[position].id).inserted {
+                merged.append(list[position])
+            }
+        }
+        if byLastPlayed {
+            // Stable, so items played at the same moment (or never) keep their turn-by-turn order.
+            merged = merged.enumerated()
+                .sorted { a, b in
+                    switch (a.element.lastPlayedDate, b.element.lastPlayedDate) {
+                    case let (x?, y?) where x != y: x > y
+                    case (_?, nil): true
+                    case (nil, _?): false
+                    default: a.offset < b.offset
+                    }
+                }
+                .map(\.element)
+        }
+        return Array(merged.dropFirst(offset).prefix(limit))
     }
 
-    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem] {
+    func resumeItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
-        let request = Paths.getNextUp(parameters: .init(
-            userID: session.userID,
-            startIndex: offset,
-            limit: limit,
-            fields: Self.itemFields,
-            enableUserData: true,
-            // Partly watched episodes already show under Continue Watching, and a show you've finished
-            // shouldn't come back around.
-            enableResumable: false,
-            enableRewatching: false
-        ))
-        return try await mapItems(send(request, with: client), client: client)
+        return try await page(from: libraryIDs, offset: offset, limit: limit, byLastPlayed: true) { parentID, offset, limit in
+            let request = Paths.getResumeItems(parameters: .init(
+                userID: session.userID,
+                startIndex: offset,
+                limit: limit,
+                parentID: parentID,
+                fields: Self.itemFields,
+                mediaTypes: [.video],
+                enableUserData: true
+            ))
+            return try await mapItems(send(request, with: client), client: client)
+        }
+    }
+
+    func nextUpItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+        return try await page(from: libraryIDs, offset: offset, limit: limit) { parentID, offset, limit in
+            let request = Paths.getNextUp(parameters: .init(
+                userID: session.userID,
+                startIndex: offset,
+                limit: limit,
+                fields: Self.itemFields,
+                parentID: parentID,
+                enableUserData: true,
+                // Partly watched episodes already show under Continue Watching, and a show you've finished
+                // shouldn't come back around.
+                enableResumable: false,
+                enableRewatching: false
+            ))
+            return try await mapItems(send(request, with: client), client: client)
+        }
     }
 
     func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {
@@ -260,6 +340,21 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
+    func randomItems(in library: Library, limit: Int) async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            limit: limit,
+            isRecursive: true,
+            parentID: library.id,
+            fields: Self.itemFields,
+            includeItemTypes: library.kind == .tvShows ? [.series] : [.movie],
+            sortBy: [.random],
+            enableUserData: true
+        ))
+        return try await mapItems(send(request, with: client), client: client)
+    }
+
     func recentlyReleasedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
 
@@ -286,28 +381,34 @@ actor JellyfinMediaService: MediaService {
         return try await mapItems(send(request, with: client), client: client)
     }
 
-    /// What was found for one day, so the home screen and the list behind its shelf don't ask the server again.
-    private var onThisDayCache: (month: Int, day: Int, items: [MediaItem])?
+    /// What was found for one day in one set of libraries, so the home screen and the list behind its shelf don't
+    /// ask the server again.
+    private var onThisDayCache: (month: Int, day: Int, libraryIDs: [String]?, items: [MediaItem])?
 
-    func itemsOnThisDay() async throws -> [MediaItem] {
+    func itemsOnThisDay(libraryIDs: [String]?) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
 
         let today = Calendar.current.dateComponents([.month, .day], from: .now)
         guard let month = today.month, let day = today.day else { return [] }
-        if let cache = onThisDayCache, cache.month == month, cache.day == day {
+        if let cache = onThisDayCache, cache.month == month, cache.day == day, cache.libraryIDs == libraryIDs {
             return cache.items
         }
 
         // The server can't filter by month and day, only by date range, so it's asked for every movie and show and
         // they're filtered here. Only the little that cards need is requested, since there can be thousands.
-        let request = Paths.getItems(parameters: .init(
-            userID: session.userID,
-            isRecursive: true,
-            fields: [.primaryImageAspectRatio, .childCount, .recursiveItemCount],
-            includeItemTypes: [.movie, .series],
-            enableUserData: true
-        ))
-        let items = try await mapItems(send(request, with: client), client: client)
+        let parentIDs: [String?] = libraryIDs ?? [nil]
+        var items: [MediaItem] = []
+        for parentID in parentIDs {
+            let request = Paths.getItems(parameters: .init(
+                userID: session.userID,
+                isRecursive: true,
+                parentID: parentID,
+                fields: [.primaryImageAspectRatio, .childCount, .recursiveItemCount],
+                includeItemTypes: [.movie, .series],
+                enableUserData: true
+            ))
+            items += try await mapItems(send(request, with: client), client: client)
+        }
 
         // Premiere dates are calendar dates stored at midnight UTC, so they're read as UTC, not in the user's zone.
         let matches = items
@@ -317,7 +418,7 @@ actor JellyfinMediaService: MediaService {
                 return components.month == month && components.day == day
             }
             .sorted { ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast) }
-        onThisDayCache = (month, day, matches)
+        onThisDayCache = (month, day, libraryIDs, matches)
         return matches
     }
 
@@ -885,6 +986,7 @@ actor JellyfinMediaService: MediaService {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
+        // What the user typed with a scheme is used as it is; without one, secure first, then plain.
         let strings = trimmed.contains("://") ? [trimmed] : ["https://\(trimmed)", "http://\(trimmed)"]
         return strings.compactMap { string in
             guard let url = URL(string: string), url.host() != nil else { return nil }
@@ -987,7 +1089,8 @@ actor JellyfinMediaService: MediaService {
             chapters: chapters(of: dto, id: id, client: client),
             dateAdded: dto.dateCreated,
             releaseDate: dto.premiereDate,
-            sortName: dto.sortName
+            sortName: dto.sortName,
+            lastPlayedDate: dto.userData?.lastPlayedDate
         )
     }
 
@@ -1234,5 +1337,46 @@ private extension Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .gmt
         return calendar
+    }
+}
+
+private extension String {
+    /// The text with HTML character references (`&amp;`, `&nbsp;`, `&#39;`, `&#x2014;`) turned into the characters they
+    /// stand for. Ones it doesn't know are left as they are.
+    nonisolated func decodingHTMLEntities() -> String {
+        guard contains("&") else { return self }
+        let named: [String: String] = [
+            "amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "nbsp": "\u{00A0}",
+            "ndash": "\u{2013}", "mdash": "\u{2014}", "hellip": "\u{2026}", "copy": "\u{00A9}", "reg": "\u{00AE}",
+            "trade": "\u{2122}", "lsquo": "\u{2018}", "rsquo": "\u{2019}", "ldquo": "\u{201C}", "rdquo": "\u{201D}"
+        ]
+        var result = ""
+        var rest = self[...]
+        while let ampersand = rest.firstIndex(of: "&") {
+            result += rest[..<ampersand]
+            let afterAmpersand = rest.index(after: ampersand)
+            // A reference is short; a lone "&" in ordinary text has no ";" soon after it.
+            guard let semicolon = rest[afterAmpersand...].prefix(10).firstIndex(of: ";") else {
+                result += "&"
+                rest = rest[afterAmpersand...]
+                continue
+            }
+            let name = rest[afterAmpersand..<semicolon]
+            let decoded: String? = if name.hasPrefix("#x") || name.hasPrefix("#X") {
+                UInt32(name.dropFirst(2), radix: 16).flatMap(Unicode.Scalar.init).map { String(Character($0)) }
+            } else if name.hasPrefix("#") {
+                UInt32(name.dropFirst()).flatMap(Unicode.Scalar.init).map { String(Character($0)) }
+            } else {
+                named[String(name)]
+            }
+            if let decoded {
+                result += decoded
+                rest = rest[rest.index(after: semicolon)...]
+            } else {
+                result += "&"
+                rest = rest[afterAmpersand...]
+            }
+        }
+        return result + rest
     }
 }

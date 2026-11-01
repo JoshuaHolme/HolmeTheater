@@ -40,6 +40,12 @@ final class AppModel {
     /// Movies and episodes saved for offline viewing. ``service`` answers from them when the server can't.
     let downloads: DownloadManager
 
+    /// How the user has set up the home screen.
+    let homeSettings: HomeSettings
+
+    /// A short message to show over the tabs for a moment, e.g. that something worked. The main view clears it.
+    var toastMessage: String?
+
     /// The playback the player is showing, or the last one. Kept here rather than in the player, because SwiftUI
     /// can rebuild the player when the window changes shape (rotating, folding), and playback must carry on
     /// through that instead of starting again.
@@ -54,6 +60,7 @@ final class AppModel {
 
     init(service: any MediaService) {
         let store = DownloadStore()
+        self.homeSettings = HomeSettings()
         self.service = OfflineFallbackMediaService(base: service, store: store)
         self.downloads = DownloadManager(service: service, store: store)
         // Mock runs (`-UseMockService`) get their own Keychain namespace; otherwise the canned session they save
@@ -72,6 +79,8 @@ final class AppModel {
         self.service = OfflineFallbackMediaService(base: service, store: store)
         self.downloads = DownloadManager(service: service, store: store, background: false)
         self.state = state
+        // A preview's changes stay out of the real settings.
+        self.homeSettings = HomeSettings(defaults: UserDefaults(suiteName: "HomeSettingsPreviews") ?? .standard)
         self.keychain = KeychainStore(service: (Bundle.main.bundleIdentifier ?? "JellyfinClient") + ".previews")
     }
 

@@ -4,7 +4,8 @@
 
 import SwiftUI
 
-/// Continue Watching, Up Next, plus a "Recently Added" shelf for each movie / TV library.
+/// The shelves the user has chosen (Continue Watching, Up Next, Recently Released and Recently Added for each movie / TV
+/// library, and so on), in their order, under an optional carousel. See ``HomeSettings``.
 ///
 /// Instead of a system navigation title, it draws its own large "Home" heading as part of the scrolling content. The
 /// profile button is in the navigation bar, as on the other tabs.
@@ -23,6 +24,14 @@ struct HomeView: View {
     /// Bumped to reload the shelves after an item's watch state changes on the server.
     @State private var reloadCount = 0
 
+    /// Changes when the screen needs to load again: after a watch-state change, or when the user changes how the screen is set up.
+    private var reloadID: Int {
+        var hasher = Hasher()
+        hasher.combine(reloadCount)
+        hasher.combine(appModel.homeSettings.revision)
+        return hasher.finalize()
+    }
+
     private func reload() {
         reloadCount += 1
     }
@@ -40,26 +49,20 @@ struct HomeView: View {
     /// that are showing, so it always matches what's on screen, not from a load that may yet be thrown away.
     @State private var showsHero = false
 
-    /// One library's "Recently Added …" and "Recently Released …" shelves.
-    private struct Row: Identifiable {
-        let library: Library
-        /// What was added most recently.
+    /// One shelf on the home screen.
+    private struct Shelf: Identifiable {
+        let id: String
+        let destination: ShelfDestination
         let items: [MediaItem]
-        /// What came out most recently, whenever it was added.
-        let released: [MediaItem]
-        var id: String { library.id }
     }
 
     private struct HomeData {
-        /// The newest items on the server, for the carousel at the top.
+        /// The newest items on the server, for the carousel at the top. Empty if the user turned the carousel off.
         let hero: [MediaItem]
         /// What each hero's Play button plays, by the hero's ID. A hero with nothing to play is missing.
         let heroPlayTargets: [MediaItem.ID: MediaItem]
-        let resume: [MediaItem]
-        /// Movies and shows that first came out on today's date in some year.
-        let onThisDay: [MediaItem]
-        let nextUp: [MediaItem]
-        let rows: [Row]
+        /// The shelves that have something on them, in the order the user chose.
+        let shelves: [Shelf]
     }
 
     var body: some View {
@@ -76,7 +79,7 @@ struct HomeView: View {
 
                     // Loads inside the scroll view, below the header, so the profile button in the bar stays
                     // reachable (e.g. to sign out) even if loading fails.
-                    AsyncContent(load: loadHome, reloadID: reloadCount, refresher: refresher, pullsToRefresh: false, offersDownloads: true) { data in
+                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, offersDownloads: true) { data in
                         LazyVStack(alignment: .leading, spacing: 24) {
                             if !data.hero.isEmpty {
                                 HomeHeroCarousel(
@@ -95,25 +98,10 @@ struct HomeView: View {
                                 }
 
                             }
-                            if !data.resume.isEmpty {
-                                shelf(.continueWatching, items: data.resume)
+                            ForEach(data.shelves) { shelf in
+                                self.shelf(shelf.destination, items: shelf.items)
                             }
-                            if !data.nextUp.isEmpty {
-                                shelf(.nextUp, items: data.nextUp)
-                            }
-                            if !data.onThisDay.isEmpty {
-                                shelf(.onThisDay, items: data.onThisDay)
-                            }
-                            ForEach(data.rows) { row in
-                                // Released above added, since a new release is the likelier thing to want to watch.
-                                if !row.released.isEmpty {
-                                    shelf(.recentlyReleased(row.library), items: row.released)
-                                }
-                                if !row.items.isEmpty {
-                                    shelf(.recentlyAdded(row.library), items: row.items)
-                                }
-                            }
-                            if data.resume.isEmpty && data.nextUp.isEmpty && data.rows.isEmpty && data.onThisDay.isEmpty {
+                            if data.shelves.isEmpty {
                                 ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
                             }
                         }
@@ -192,23 +180,54 @@ struct HomeView: View {
             .map { $0 }
     }
 
-    /// Fetches the resume list and each movie/TV library's recently added items.
-    /// Music and other libraries are skipped, since the app doesn't play them yet.
+    /// Fetches the sections the user has turned on, and each movie/TV library's recently added items for them and
+    /// the carousel. Music and other libraries are skipped, since the app doesn't play them yet.
     private func loadHome() async throws -> HomeData {
         let service = appModel.service
-        async let resume = service.resumeItems(offset: 0, limit: Self.shelfLimit)
-        async let nextUp = service.nextUpItems(offset: 0, limit: Self.shelfLimit)
-        // Only a shelf, so if it fails the rest of the screen still loads.
-        async let onThisDayItems = try? await service.itemsOnThisDay()
-        let libraries = try await service.libraries().filter { $0.kind == .movies || $0.kind == .tvShows }
+        let settings = appModel.homeSettings
+        let sections = settings.visibleSections
+        let combined = settings.combinesUpNext
+        let allLibraries = try await service.libraries()
+        let libraries = allLibraries.filter { $0.kind == .movies || $0.kind == .tvShows }
 
-        // Fetch every library's shelves at once rather than one after another.
+        // A section's libraries, or nil for all of them. Out of every library, since one of a kind the settings don't
+        // list (a mixed library, say) can't have been turned off and still belongs in Continue Watching.
+        func ids(_ section: HomeSettings.Section) -> [String]? { settings.libraryIDs(for: section, among: allLibraries) }
+
+        let continueIDs = ids(.continueWatching)
+        let nextUpIDs = ids(.nextUp)
+        let onThisDayIDs = ids(.onThisDay)
+        let wantsResume = sections.contains(.continueWatching)
+        let wantsNextUp = sections.contains(.nextUp)
+        let wantsOnThisDay = sections.contains(.onThisDay)
+        let showsHero = settings.showsHero
+        let heroOrder = settings.heroOrder
+
+        async let resume: [MediaItem] = wantsResume
+            ? (combined
+                ? service.continueWatchingAndUpNext(offset: 0, limit: Self.shelfLimit, libraryIDs: continueIDs)
+                : service.resumeItems(offset: 0, limit: Self.shelfLimit, libraryIDs: continueIDs))
+            : []
+        async let nextUp: [MediaItem] = wantsNextUp
+            ? service.nextUpItems(offset: 0, limit: Self.shelfLimit, libraryIDs: nextUpIDs)
+            : []
+        // Only a shelf, so if it fails the rest of the screen still loads.
+        async let onThisDayItems: [MediaItem]? = wantsOnThisDay ? try? await service.itemsOnThisDay(libraryIDs: onThisDayIDs) : []
+
+        // Fetch every library's shelves at once rather than one after another. A library is only asked for what
+        // something on screen uses.
         let shelves = try await withThrowingTaskGroup(of: (Int, [MediaItem], [MediaItem]).self) { group in
             for (index, library) in libraries.enumerated() {
+                let heroUses = showsHero && settings.heroIncludes(library)
+                let wantsAdded = (sections.contains(.recentlyAdded) && settings.includes(library, in: .recentlyAdded))
+                    || (heroUses && heroOrder == .recentlyAdded)
+                let wantsReleased = (sections.contains(.recentlyReleased) && settings.includes(library, in: .recentlyReleased))
+                    || (heroUses && heroOrder == .recentlyReleased)
+                guard wantsAdded || wantsReleased else { continue }
                 group.addTask {
-                    async let added = service.recentlyAddedItems(in: library)
+                    async let added = wantsAdded ? service.recentlyAddedItems(in: library) : []
                     // A failure here only costs this shelf; the rest of the screen still loads.
-                    async let released = service.recentlyReleasedPage(in: library, offset: 0, limit: Self.shelfLimit)
+                    async let released = wantsReleased ? service.recentlyReleasedPage(in: library, offset: 0, limit: Self.shelfLimit) : []
                     return (index, try await added, (try? await released) ?? [])
                 }
             }
@@ -217,34 +236,91 @@ struct HomeView: View {
             return results
         }
         // They finish in any order; put them back in the server's library order.
-        let rows = shelves
-            .sorted { $0.0 < $1.0 }
-            .compactMap { index, added, released in
-                added.isEmpty && released.isEmpty ? nil : Row(library: libraries[index], items: added, released: released)
-            }
+        let fetched = shelves.sorted { $0.0 < $1.0 }
         let resumeItems = try await resume
         let nextUpItems = try await nextUp
         let onThisDay = Array((await onThisDayItems ?? []).prefix(Self.shelfLimit))
 
-        // The carousel shows the newest items across every library, which is where a library's shelf starts.
-        let newest = rows.flatMap(\.items)
-            .filter { $0.backdropURL != nil || $0.posterURL != nil }
-            .enumerated()
-            .sorted { a, b in
-                // Newest first, keeping the shelves' order for items with no date (or the same one).
-                switch (a.element.dateAdded, b.element.dateAdded) {
-                case let (x?, y?) where x != y: x > y
-                case (_?, nil): true
-                case (nil, _?): false
-                default: a.offset < b.offset
+        let byLibrary = Dictionary(uniqueKeysWithValues: fetched.map { (libraries[$0.0].id, (added: $0.1, released: $0.2)) })
+
+        // Each section's shelves, top to bottom as the user ordered them.
+        var homeShelves: [Shelf] = []
+        for section in sections {
+            switch section {
+            case .continueWatching:
+                homeShelves.append(Shelf(id: "continue", destination: combined ? .continueWatchingAndUpNext : .continueWatching, items: resumeItems))
+            case .nextUp:
+                homeShelves.append(Shelf(id: "nextUp", destination: .nextUp, items: nextUpItems))
+            case .onThisDay:
+                homeShelves.append(Shelf(id: "onThisDay", destination: .onThisDay, items: onThisDay))
+            case .recentlyReleased:
+                for library in settings.ordered(libraries, for: .recentlyReleased) where settings.includes(library, in: .recentlyReleased) {
+                    homeShelves.append(Shelf(id: "released-\(library.id)", destination: .recentlyReleased(library), items: byLibrary[library.id]?.released ?? []))
+                }
+            case .recentlyAdded:
+                for library in settings.ordered(libraries, for: .recentlyAdded) where settings.includes(library, in: .recentlyAdded) {
+                    homeShelves.append(Shelf(id: "added-\(library.id)", destination: .recentlyAdded(library), items: byLibrary[library.id]?.added ?? []))
                 }
             }
-            .map(\.element)
+        }
+        homeShelves.removeAll { $0.items.isEmpty }
+
+        // The carousel's candidates, best first, from the libraries it's set to use.
+        let heroLibraries = showsHero ? libraries.enumerated().filter { settings.heroIncludes($0.element) } : []
+        let hasArtwork = { (item: MediaItem) in item.backdropURL != nil || item.posterURL != nil }
+        let newest: [MediaItem]
+        switch showsHero ? heroOrder : nil {
+        case nil:
+            newest = []
+        case .recentlyAdded?:
+            // The newest across libraries, keeping the shelves' order for items with no date (or the same one).
+            newest = fetched
+                .filter { settings.heroIncludes(libraries[$0.0]) }
+                .flatMap(\.1)
+                .filter(hasArtwork)
+                .enumerated()
+                .sorted { a, b in
+                    switch (a.element.dateAdded, b.element.dateAdded) {
+                    case let (x?, y?) where x != y: x > y
+                    case (_?, nil): true
+                    case (nil, _?): false
+                    default: a.offset < b.offset
+                    }
+                }
+                .map(\.element)
+        case .recentlyReleased?:
+            newest = fetched
+                .filter { settings.heroIncludes(libraries[$0.0]) }
+                .flatMap(\.2)
+                .filter(hasArtwork)
+                .enumerated()
+                .sorted { a, b in
+                    switch (a.element.releaseDate, b.element.releaseDate) {
+                    case let (x?, y?) where x != y: x > y
+                    case (_?, nil): true
+                    case (nil, _?): false
+                    default: a.offset < b.offset
+                    }
+                }
+                .map(\.element)
+        case .random?:
+            // Picked by the server from everything in the library, not just what's new. A library that fails only
+            // costs its share.
+            let picks = await withTaskGroup(of: [MediaItem].self) { group in
+                for (_, library) in heroLibraries {
+                    group.addTask { (try? await service.randomItems(in: library, limit: Self.heroCount * 2)) ?? [] }
+                }
+                var all: [MediaItem] = []
+                for await items in group { all += items }
+                return all
+            }
+            newest = picks.filter(hasArtwork).shuffled()
+        }
         let hero = await Self.heroes(from: newest, limit: Self.heroCount, service: service)
 
         // The first posters of each shelf are loaded before the shelves show, so they don't pop in. Every other
         // poster starts downloading now, so it's cached by the time you scroll to it.
-        let shelfItems = [resumeItems, nextUpItems] + rows.flatMap { [$0.released, $0.items] } + [onThisDay]
+        let shelfItems = homeShelves.map(\.items)
         let firstScreen = shelfItems.flatMap { $0.prefix(Self.preloadedPostersPerShelf) }
         let rest = shelfItems.flatMap { $0.dropFirst(Self.preloadedPostersPerShelf) }
         ImageCache.shared.prefetch(rest.compactMap(\.posterURL))
@@ -273,7 +349,7 @@ struct HomeView: View {
         ImageCache.shared.prefetch(Array(heroURLs.dropFirst(2)))
         await ImageCache.shared.preload(Array(heroURLs.prefix(2)))
 
-        return HomeData(hero: hero, heroPlayTargets: heroPlayTargets, resume: resumeItems, onThisDay: onThisDay, nextUp: nextUpItems, rows: rows)
+        return HomeData(hero: hero, heroPlayTargets: heroPlayTargets, shelves: homeShelves)
     }
 }
 
