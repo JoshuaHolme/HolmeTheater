@@ -82,6 +82,15 @@ enum DownloadPrompt: Identifiable {
         case .experimental(let item): "experimental-\(item.id)"
         }
     }
+
+    /// Starts downloading `item`, unless there's a question to ask first, which it returns: the Apple TV notice, or
+    /// whether to download a whole show or season, which can be a lot of space.
+    static func start(_ item: MediaItem, downloads: DownloadManager) -> DownloadPrompt? {
+        if ExperimentalDownloads.needsNotice { return .experimental(item) }
+        if item.kind == .season || item.kind == .series { return .download(item) }
+        Task { await downloads.download(item) }
+        return nil
+    }
 }
 
 /// Downloads on Apple TV are experimental: the system can delete them, and little of this has been proven on real
@@ -143,7 +152,8 @@ struct DownloadToolbarButton: View {
         case .downloading(let progress):
             Menu {
                 Button("Pause", systemImage: "pause.circle") { downloads.pause(item) }
-                Button("Cancel Download", systemImage: "xmark.circle", role: .destructive) { downloads.remove(item) }
+                // Only what's unfinished: a show's or season's finished episodes stay.
+                Button("Cancel Download", systemImage: "xmark.circle", role: .destructive) { downloads.cancel(item) }
             } label: {
                 DownloadProgressRing(progress: progress)
             }
@@ -153,7 +163,7 @@ struct DownloadToolbarButton: View {
         case .paused:
             Menu {
                 Button("Resume Download", systemImage: "play.circle") { downloads.resume(item) }
-                Button("Remove Download", systemImage: "trash", role: .destructive) { downloads.remove(item) }
+                Button("Cancel Download", systemImage: "xmark.circle", role: .destructive) { downloads.cancel(item) }
             } label: {
                 Image(systemName: "pause.circle")
             }
@@ -182,14 +192,7 @@ struct DownloadToolbarButton: View {
     }
 
     private func start() {
-        if ExperimentalDownloads.needsNotice {
-            prompt = .experimental(item)
-        } else if isContainer {
-            prompt = .download(item)
-        } else {
-            let (downloads, item) = (downloads, item)
-            Task { await downloads.download(item) }
-        }
+        prompt = DownloadPrompt.start(item, downloads: downloads)
     }
 }
 
@@ -212,7 +215,8 @@ private struct DownloadProgressRing: View {
 }
 
 extension View {
-    /// The alerts behind ``DownloadToolbarButton``'s questions, and one for a download that couldn't be started.
+    /// The alerts behind ``DownloadToolbarButton``'s questions. A download that couldn't be started is reported by
+    /// ``downloadErrorAlert(_:)`` instead, once for the whole app.
     func downloadPrompts(_ prompt: Binding<DownloadPrompt?>) -> some View {
         modifier(DownloadPromptsModifier(prompt: prompt))
     }
@@ -262,14 +266,6 @@ private struct DownloadPromptsModifier: ViewModifier {
                 case .remove(let item):
                     Text("The saved video and details of \(item.kind == .episode || item.kind == .movie ? item.title : "these episodes") will be deleted from this device. They stay on your server.")
                 }
-            }
-            .alert(
-                "Couldn't Download",
-                isPresented: Binding(get: { downloads.errorMessage != nil }, set: { if !$0 { downloads.errorMessage = nil } })
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(downloads.errorMessage ?? "")
             }
     }
 
@@ -414,10 +410,15 @@ struct DownloadsView: View {
             Text("Everything saved on this device is deleted. It all stays on your server.")
         }
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0) }
-        .alert(
-            "Couldn't Download",
-            isPresented: Binding(get: { downloads.errorMessage != nil }, set: { if !$0 { downloads.errorMessage = nil } })
-        ) {
+    }
+}
+
+extension View {
+    /// The alert for a download that couldn't be started. Attach once, at the root: every screen can start a download,
+    /// and the tabs keep their screens alive, so an alert on each would all try to show the one error at once.
+    func downloadErrorAlert(_ downloads: DownloadManager) -> some View {
+        @Bindable var downloads = downloads
+        return alert("Couldn't Download", isPresented: $downloads.errorMessage.isPresent()) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(downloads.errorMessage ?? "")

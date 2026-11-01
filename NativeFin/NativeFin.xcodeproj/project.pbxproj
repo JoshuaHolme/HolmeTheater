@@ -50,6 +50,13 @@
 			);
 			target = 000000000000000100000000 /* NativeFin */;
 		};
+		037A856A3096B2B100FE1884 /* Exceptions for "NativeFin" folder in "DownloadActivityExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Services/DownloadActivityAttributes.swift,
+			);
+			target = 03E4D7823095BC6500A761F0 /* DownloadActivityExtension */;
+		};
 		03E4D7973095BC6500A761F0 /* Exceptions for "DownloadActivity" folder in "DownloadActivityExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -64,6 +71,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				03059A9D308D5710006E4D03 /* Exceptions for "NativeFin" folder in "NativeFin" target */,
+				037A856A3096B2B100FE1884 /* Exceptions for "NativeFin" folder in "DownloadActivityExtension" target */,
 			);
 			path = NativeFin;
 			sourceTree = "<group>";

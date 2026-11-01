@@ -163,8 +163,8 @@ final class AppModel {
         keychain.delete(account: Self.sessionAccount)
         // So the next person on a shared device doesn't see the previous user's artwork or profile picture.
         ImageCache.shared.removeAll()
-        // Likewise the downloaded videos, details and artwork.
-        if removingDownloads { downloads.removeAll() }
+        // Likewise their downloaded videos and details. Other accounts' downloads on the device stay.
+        if removingDownloads { downloads.removeAllForAccount() }
         transition(to: .signedOut)
     }
 

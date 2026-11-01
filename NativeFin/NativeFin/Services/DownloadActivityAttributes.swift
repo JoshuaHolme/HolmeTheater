@@ -6,8 +6,8 @@
 import ActivityKit
 import Foundation
 
-/// What the downloads Live Activity shows. Shared by the app, which updates it, and the widget extension, which draws it,
-/// so both targets must contain this file.
+/// What the downloads Live Activity shows. Shared by the app, which updates it, and the widget extension, which draws it:
+/// this one file is a member of both targets.
 nonisolated struct DownloadActivityAttributes: ActivityAttributes {
     nonisolated struct ContentState: Codable, Hashable {
         /// The one download's name, or e.g. "3 Downloads".

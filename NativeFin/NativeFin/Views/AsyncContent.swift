@@ -69,7 +69,7 @@ struct AsyncContent<Value, Content: View>: View {
                     }
 
                     if offersDownloads, !NetworkMonitor.shared.isOnline, let openDownloads {
-                        Button("Go to Downloads", action: openDownloads)
+                        Button("Go to Downloads") { openDownloads() }
                     }
                 }
             }
@@ -101,9 +101,20 @@ struct AsyncContent<Value, Content: View>: View {
     }
 }
 
+/// Switches to the Downloads tab. Call it like a function.
+struct OpenDownloadsAction: Equatable {
+    let action: () -> Void
+
+    func callAsFunction() { action() }
+
+    /// Any two are equal: there's only ever one tab bar, and every action switches it to the same tab. Without this, the
+    /// environment couldn't tell a new action from the old one, and would update every view reading it each time.
+    static func == (lhs: Self, rhs: Self) -> Bool { true }
+}
+
 extension EnvironmentValues {
     /// Switches to the Downloads tab, or nil where there's no tab bar to switch.
-    @Entry var openDownloads: (() -> Void)?
+    @Entry var openDownloads: OpenDownloadsAction?
 }
 
 /// A handle for reloading an ``AsyncContent`` from outside it, and waiting until the new value is showing.

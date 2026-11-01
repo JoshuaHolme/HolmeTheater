@@ -60,7 +60,6 @@ struct ShowDetailView: View {
     /// A favorite change the server hasn't confirmed yet, shown meanwhile.
     @State private var favoriteOverride: Bool?
 
-
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 

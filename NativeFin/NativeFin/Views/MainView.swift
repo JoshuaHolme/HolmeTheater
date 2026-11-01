@@ -58,7 +58,8 @@ struct MainView: View {
                 }
             }
         }
-        .environment(\.openDownloads) { selection = .downloads }
+        .environment(\.openDownloads, OpenDownloadsAction { selection = .downloads })
+        .downloadErrorAlert(appModel.downloads)
         // "Go to Show" in the player: once it has closed, open the show in the tab that's showing.
         .onChange(of: appModel.pendingShow) { _, show in
             guard let show else { return }

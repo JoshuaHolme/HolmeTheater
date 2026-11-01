@@ -5,6 +5,7 @@
 import Foundation
 import Observation
 import OSLog
+import Synchronization
 #if os(iOS)
 import ActivityKit
 #endif
@@ -50,6 +51,18 @@ final class DownloadManager {
     /// The IDs of movies and episodes that are fully downloaded. Only changes when that does.
     private(set) var completedIDs: Set<String> = []
 
+    /// How many downloads are downloading or waiting to. Paused and failed ones aren't counted, since nothing is moving.
+    /// Only changes when that does, so the tab badge that shows it isn't redrawn with every tick of progress.
+    private(set) var activeCount = 0
+
+    /// How many episodes of each show and season are fully downloaded, by the show's or season's ID. Only changes when
+    /// that does, like ``completedIDs``.
+    private(set) var completedEpisodeCounts: [String: Int] = [:]
+
+    /// The shows and seasons with an episode that isn't downloaded yet: waiting, on its way, paused or failed. Only
+    /// changes when that does.
+    private(set) var unfinishedContainerIDs: Set<String> = []
+
     /// Set when something couldn't be started, to show in an alert. The owner clears it.
     var errorMessage: String?
 
@@ -60,7 +73,8 @@ final class DownloadManager {
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private var scope = ""
 
-    /// Items being prepared (details, artwork, the file's URL), by ID, so they can be cancelled.
+    /// Items being prepared (details, artwork, the file's URL), by item ID, so they can be cancelled. Only ever the
+    /// signed-in account's: changing accounts cancels them.
     @ObservationIgnored private var preparations: [String: Task<Void, Never>] = [:]
 
     /// The items downloaded together, which the Live Activity reports on as one. Emptied when they're all done.
@@ -69,8 +83,9 @@ final class DownloadManager {
     @ObservationIgnored private let backgroundEvents = BackgroundEvents()
 
     #if os(iOS)
-    /// Whether a Live Activity is showing downloads in progress.
-    @ObservationIgnored private var hasActivity = false
+    /// Whether a Live Activity may be showing downloads in progress. True at first, since one can be left over from an
+    /// earlier launch that was closed mid-download; the first time there's nothing to show, it's taken down.
+    @ObservationIgnored private var hasActivity = true
     @ObservationIgnored private let activityUpdater = LiveActivityUpdater()
 
     /// What the activity was last told to show, so an update that wouldn't change it isn't sent.
@@ -138,7 +153,12 @@ final class DownloadManager {
     /// were interrupted.
     func accountChanged(scope newScope: String) {
         guard newScope != scope else { return }
+        // What the last account was preparing stops; its records stay `.preparing`, which `resumeInterrupted` queues
+        // again when that account is back.
+        for task in preparations.values { task.cancel() }
+        preparations = [:]
         scope = newScope
+        store.scope = newScope
         batch = []
         refresh()
         guard !newScope.isEmpty else { return }
@@ -170,10 +190,12 @@ final class DownloadManager {
     private func resumeInterrupted() async {
         let running = Set(await session.allTasks.compactMap(\.taskDescription))
         for record in records {
+            // A transfer started before keys had the account in them is described by the bare item ID.
+            let isRunning = running.contains(taskKey(record.id)) || running.contains(record.id)
             switch record.state {
             case .preparing:
                 store.update(record.id) { $0.state = .queued }
-            case .downloading where !running.contains(record.id):
+            case .downloading where !isRunning:
                 store.update(record.id) { $0.state = .queued }
             default:
                 break
@@ -184,15 +206,14 @@ final class DownloadManager {
         pump()
     }
 
-    /// Deletes every download, e.g. on sign-out, so the next person on the device doesn't see them.
-    func removeAll() {
-        for task in preparations.values { task.cancel() }
-        preparations = [:]
-        session.getAllTasks { $0.forEach { $0.cancel() } }
-        store.removeAll()
-        batch = []
-        refresh()
-        endActivity()
+    /// The signed-in account's key for an item, which its transfer is described by.
+    private func taskKey(_ id: String) -> String { DownloadStore.key(scope: scope, id: id) }
+
+    /// Deletes the signed-in account's downloads, e.g. on sign-out, so the next person on the device doesn't get them.
+    /// Other accounts' downloads stay, for when they sign back in.
+    func removeAllForAccount() {
+        // Which also takes down the Live Activity, now there's nothing left in the batch.
+        remove(ids: store.records.map(\.id))
     }
 
     /// Lets the system's background-session wake-up finish once this app has been told about every finished download.
@@ -209,12 +230,17 @@ final class DownloadManager {
     func record(for id: String) -> DownloadRecord? { records.first { $0.id == id } }
 
     /// Whether a movie or episode is fully downloaded. For a show or season, whether every episode is.
+    ///
+    /// Reads only what changes when something finishes or starts, not with progress, so the badges on every card that
+    /// call this aren't redrawn while a download runs.
     func isDownloaded(_ item: MediaItem) -> Bool {
         switch item.kind {
         case .movie, .episode:
             return completedIDs.contains(item.id)
         case .season, .series:
-            return status(of: item) == .downloaded
+            // The same rule as `status(of:)`'s `.downloaded`.
+            guard !unfinishedContainerIDs.contains(item.id), let count = completedEpisodeCounts[item.id] else { return false }
+            return count >= (item.episodeCount ?? .max)
         case .extra, .other:
             return false
         }
@@ -251,9 +277,6 @@ final class DownloadManager {
 
     /// The item with its saved artwork, for showing a download without the server.
     func localized(_ item: MediaItem) -> MediaItem { store.localized(item) }
-
-    /// How many downloads are downloading or waiting to. Paused and failed ones aren't counted, since nothing is moving.
-    var activeCount: Int { records.filter { Self.isInProgress($0.state) }.count }
 
     /// Space the finished downloads take, in bytes.
     var totalBytes: Int64 { records.reduce(0) { $0 + $1.fileSize } }
@@ -334,9 +357,15 @@ final class DownloadManager {
         pump()
     }
 
-    /// Deletes downloads under an item, whatever state they're in.
+    /// Deletes downloads under an item, whatever state they're in, finished ones included.
     func remove(_ item: MediaItem) {
         remove(ids: ids(under: item))
+    }
+
+    /// Stops and deletes what under an item isn't downloaded yet, and keeps what is. For a movie or episode, the same as
+    /// ``remove(_:)``; for a show or season, its finished episodes stay.
+    func cancel(_ item: MediaItem) {
+        remove(ids: records(under: item).filter { !$0.isComplete }.map(\.id))
     }
 
     func remove(ids: [String]) {
@@ -345,7 +374,8 @@ final class DownloadManager {
             preparations[id] = nil
             batch.remove(id)
         }
-        let idSet = Set(ids)
+        // Bare IDs too, for transfers started before keys had the account in them.
+        let idSet = Set(ids.map(taskKey)).union(ids)
         session.getAllTasks { tasks in
             for task in tasks where task.taskDescription.map(idSet.contains) == true { task.cancel() }
         }
@@ -367,8 +397,9 @@ final class DownloadManager {
         preparations[id] = nil
 
         let directory = store.itemDirectory(for: id)
+        let descriptions: Set<String> = [taskKey(id), id]
         session.getAllTasks { tasks in
-            for case let task as URLSessionDownloadTask in tasks where task.taskDescription == id {
+            for case let task as URLSessionDownloadTask in tasks where task.taskDescription.map(descriptions.contains) == true {
                 // What's arrived so far is kept, so resuming carries on instead of starting again.
                 task.cancel { data in
                     guard let data else { return }
@@ -381,11 +412,30 @@ final class DownloadManager {
 
     // MARK: - Running
 
+    /// Reloads the account's records. Everything derived from them is only assigned when it changes, so views reading
+    /// it aren't invalidated by a tick of progress.
     private func refresh() {
-        let current = store.records.filter { $0.scope == scope }.sorted { $0.dateAdded < $1.dateAdded }
+        let current = store.records.sorted { $0.dateAdded < $1.dateAdded }
         records = current
-        let done = Set(current.filter(\.isComplete).map(\.id))
+
+        var done = Set<String>()
+        var active = 0
+        var episodeCounts: [String: Int] = [:]
+        var unfinishedContainers = Set<String>()
+        for record in current {
+            let containerIDs = [record.item.seriesID, record.item.seasonID].compactMap { $0 }
+            if record.isComplete {
+                done.insert(record.id)
+                for id in containerIDs { episodeCounts[id, default: 0] += 1 }
+            } else {
+                if Self.isInProgress(record.state) { active += 1 }
+                unfinishedContainers.formUnion(containerIDs)
+            }
+        }
         if done != completedIDs { completedIDs = done }
+        if active != activeCount { activeCount = active }
+        if episodeCounts != completedEpisodeCounts { completedEpisodeCounts = episodeCounts }
+        if unfinishedContainers != unfinishedContainerIDs { unfinishedContainerIDs = unfinishedContainers }
     }
 
     /// Starts waiting downloads, up to the limit.
@@ -403,28 +453,49 @@ final class DownloadManager {
     private func start(_ id: String) {
         store.update(id) { $0.state = .preparing }
         refresh()
+        let key = taskKey(id)
         preparations[id] = Task { [weak self] in
-            await self?.prepare(id)
-            self?.preparations[id] = nil
+            await self?.prepare(key: key)
+            // Unless the account changed meanwhile, and the entry is another account's.
+            if self?.taskKey(id) == key { self?.preparations[id] = nil }
         }
     }
 
-    /// Saves everything about an item, then starts its file coming.
-    private func prepare(_ id: String) async {
-        guard store.record(id: id) != nil else { return }
-        do {
-            let directory = try store.makeItemDirectory(for: id)
+    /// Whether a download is still waiting for its transfer to start: not paused or removed while it was being prepared.
+    private func isStillPreparing(_ key: String) -> Bool {
+        !Task.isCancelled && store.record(key: key)?.state == .preparing
+    }
 
-            // A download that was paused or interrupted carries on from where it got to.
+    /// Saves everything about an item, then starts its file coming.
+    ///
+    /// Works by key rather than item ID throughout, so nothing it does lands on another account's record if the account
+    /// changes while it waits on the server.
+    private func prepare(key: String) async {
+        guard let id = store.record(key: key)?.id else { return }
+        do {
+            let directory = try store.makeItemDirectory(key: key)
+
+            // A download that was paused or interrupted carries on from where it got to. Checked before the saved
+            // progress is used up, so a pause that came first keeps it for later.
             let resumeFile = directory.appending(path: DownloadSessionDelegate.resumeFileName)
-            if let data = try? Data(contentsOf: resumeFile), store.record(id: id)?.info != nil {
+            if store.record(key: key)?.info != nil, let data = try? Data(contentsOf: resumeFile) {
+                guard isStillPreparing(key) else { return }
                 try? FileManager.default.removeItem(at: resumeFile)
-                begin(session.downloadTask(withResumeData: data), id: id)
+                begin(session.downloadTask(withResumeData: data), key: key)
                 return
             }
 
             let full = try await service.item(id: id)
             try Task.checkCancellation()
+
+            // The full item goes in first, before its cast and artwork are saved. Until then the record holds the
+            // listing's item, with no cast or chapters, and removing another download would prune them as unused.
+            store.update(key: key) { record in
+                // Progress made offline since this was queued is the newer.
+                var item = full
+                item.playedFraction = record.item.playedFraction ?? full.playedFraction
+                record.item = item
+            }
 
             // The show and season, so the episode sits under them like it does in the library.
             var containers: [MediaItem] = []
@@ -446,14 +517,17 @@ final class DownloadManager {
             let subtitleFiles = await saveSubtitles(of: info, in: directory)
             try Task.checkCancellation()
 
-            // The URL holds the access token, which has no business on disk.
+            // The URLs hold the access token, which has no business on disk. The video's and subtitles' saved files
+            // stand in for them when it plays (see `DownloadStore.localPlayback`).
             var stored = info
             stored.url = URL(filePath: "/")
-            store.update(id) { record in
-                // Progress made offline since this was queued is the newer.
-                var item = full
-                item.playedFraction = record.item.playedFraction ?? full.playedFraction
-                record.item = item
+            stored.subtitleTracks = info.subtitleTracks.map { track in
+                var track = track
+                track.url = nil
+                return track
+            }
+            guard isStillPreparing(key) else { return }
+            store.update(key: key) { record in
                 record.info = stored
                 // Until the transfer says how big it is, the size the server gave for the file stands in.
                 if record.bytesExpected == 0 || record.isSizeEstimated {
@@ -464,24 +538,26 @@ final class DownloadManager {
                 record.subtitleFiles = subtitleFiles
                 record.errorMessage = nil
             }
-            begin(session.downloadTask(with: info.url), id: id)
-        } catch is CancellationError {
-            // Paused or removed; whoever did it has already set the state.
+            begin(session.downloadTask(with: info.url), key: key)
         } catch {
-            fail(id, error.localizedDescription)
+            // Paused, removed or the account changed, and whoever did it has already set the state. A cancelled request
+            // doesn't always say so (the service reports it as the server being unreachable), so the error isn't trusted.
+            guard isStillPreparing(key) else { return }
+            fail(key: key, error.localizedDescription)
         }
     }
 
-    private func begin(_ task: URLSessionDownloadTask, id: String) {
-        task.taskDescription = id
-        store.update(id) { $0.state = .downloading }
+    /// Starts a prepared download's transfer. Call only straight after `isStillPreparing`, with nothing awaited between.
+    private func begin(_ task: URLSessionDownloadTask, key: String) {
+        task.taskDescription = key
+        store.update(key: key) { $0.state = .downloading }
         task.resume()
         refresh()
     }
 
-    private func fail(_ id: String, _ message: String) {
-        Self.logger.error("Download of \(id, privacy: .public) failed: \(message, privacy: .public)")
-        store.update(id) {
+    private func fail(key: String, _ message: String) {
+        Self.logger.error("Download \(key, privacy: .private) failed: \(message, privacy: .public)")
+        store.update(key: key) {
             $0.state = .failed
             $0.errorMessage = message
         }
@@ -495,17 +571,10 @@ final class DownloadManager {
     private func savePeople(of item: MediaItem) async {
         let store = store
         let service = service
-        let missing = Dictionary(grouping: item.people, by: \.personID).keys.filter { store.personDetails(id: $0) == nil }
-        for start in stride(from: 0, to: missing.count, by: 6) {
-            let chunk = Array(missing[start..<min(start + 6, missing.count)])
-            await withTaskGroup(of: Void.self) { group in
-                for personID in chunk {
-                    group.addTask {
-                        if let details = try? await service.details(ofPerson: personID) {
-                            store.savePersonDetails(details, id: personID)
-                        }
-                    }
-                }
+        let missing = Set(item.people.map(\.personID)).filter { store.personDetails(id: $0) == nil }
+        await Self.forEach(Array(missing)) { personID in
+            if let details = try? await service.details(ofPerson: personID) {
+                store.savePersonDetails(details, id: personID)
             }
         }
     }
@@ -513,17 +582,25 @@ final class DownloadManager {
     /// Saves every image the items show: posters, backdrops, logos, cast portraits and chapter stills.
     private func saveArtwork(of items: [MediaItem]) async {
         let store = store
-        let missing = Array(Set(items.flatMap(DownloadStore.artworkURLs(of:)))).filter { !store.hasArtwork(for: $0) }
-        for start in stride(from: 0, to: missing.count, by: 6) {
-            let chunk = Array(missing[start..<min(start + 6, missing.count)])
-            await withTaskGroup(of: Void.self) { group in
-                for url in chunk {
-                    group.addTask {
-                        guard let (data, response) = try? await URLSession.shared.data(from: url),
-                              (response as? HTTPURLResponse)?.statusCode == 200 else { return }
-                        store.saveArtwork(data, for: url)
-                    }
-                }
+        let missing = Set(items.flatMap(DownloadStore.artworkURLs(of:))).filter { !store.hasArtwork(for: $0) }
+        await Self.forEach(Array(missing)) { url in
+            guard let (data, response) = try? await URLSession.shared.data(from: url),
+                  (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+            store.saveArtwork(data, for: url)
+        }
+    }
+
+    /// Runs `work` on each element, a few at a time, so a big cast doesn't open dozens of requests to the server at once.
+    private nonisolated static func forEach<Element: Sendable>(
+        _ elements: [Element],
+        atMost width: Int = 6,
+        _ work: @escaping @Sendable (Element) async -> Void
+    ) async {
+        await withTaskGroup(of: Void.self) { group in
+            for (index, element) in elements.enumerated() {
+                // Once `width` are running, each new one waits for one to finish.
+                if index >= width { await group.next() }
+                group.addTask { await work(element) }
             }
         }
     }
@@ -547,8 +624,8 @@ final class DownloadManager {
 
     fileprivate func handle(_ event: DownloadSessionDelegate.Event) {
         switch event {
-        case let .progress(id, written, expected):
-            store.update(id, persist: false) {
+        case let .progress(key, written, expected):
+            store.update(key: key, persist: false) {
                 $0.bytesWritten = written
                 // The transfer's own figure, when it has one, beats the estimate.
                 if expected > 0 {
@@ -561,8 +638,13 @@ final class DownloadManager {
         case .finished, .cancelled:
             refresh()
             pump()
-        case let .failed(id, message):
-            fail(id, message)
+        case let .interrupted(key):
+            // The system cancelled it, not the user, so it goes back in line; what had arrived was kept as resume data.
+            store.update(key: key) { if $0.state == .downloading { $0.state = .queued } }
+            refresh()
+            pump()
+        case let .failed(key, message):
+            fail(key: key, message)
         }
     }
 
@@ -631,7 +713,7 @@ final class DownloadManager {
     /// Takes the Live Activity down, if there's one to take down.
     private func endActivity() {
         #if os(iOS)
-        // One that's already finishing is left to do so.
+        // Already taken down, or finishing (which the updater leaves to finish).
         guard hasActivity else { return }
         hasActivity = false
         lastActivityState = nil
@@ -646,10 +728,10 @@ final class DownloadManager {
 /// Each change used to go in a task of its own, and those finish in any order. An old percentage could arrive after a
 /// newer one, so the display stepped back and forward, and two first updates could each start an activity, leaving two
 /// on screen. Here a change replaces any that hasn't been sent yet, and one is sent only after the one before it is done.
-nonisolated final class LiveActivityUpdater: @unchecked Sendable {
+nonisolated final class LiveActivityUpdater: Sendable {
     typealias Content = ActivityContent<DownloadActivityAttributes.ContentState>
 
-    enum Update {
+    enum Update: Sendable {
         /// Update the activity, or start it if there isn't one.
         case show(Content)
         /// End it, leaving `content` (if any) on screen as the policy says.
@@ -658,16 +740,15 @@ nonisolated final class LiveActivityUpdater: @unchecked Sendable {
 
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NativeFin", category: "LiveActivity")
 
-    private let lock = NSLock()
-    private var pending: Update?
-    private var isSending = false
+    /// The change waiting to be sent, and whether a task is sending them.
+    private let queue = Mutex<(pending: Update?, isSending: Bool)>((nil, false))
 
     /// Queues `update`, replacing one still waiting. Returns at once; the order calls are made in is the order they count in.
     func submit(_ update: Update) {
-        let shouldStart = lock.withLock { () -> Bool in
-            pending = update
-            if isSending { return false }
-            isSending = true
+        let shouldStart = queue.withLock { queue -> Bool in
+            queue.pending = update
+            if queue.isSending { return false }
+            queue.isSending = true
             return true
         }
         if shouldStart { Task.detached { await self.sendPending() } }
@@ -675,10 +756,10 @@ nonisolated final class LiveActivityUpdater: @unchecked Sendable {
 
     private func sendPending() async {
         while true {
-            let next = lock.withLock { () -> Update? in
-                let next = pending
-                pending = nil
-                if next == nil { isSending = false }
+            let next = queue.withLock { queue -> Update? in
+                let next = queue.pending
+                queue.pending = nil
+                if next == nil { queue.isSending = false }
                 return next
             }
             guard let next else { return }
@@ -690,8 +771,9 @@ nonisolated final class LiveActivityUpdater: @unchecked Sendable {
     private func send(_ update: Update) async {
         switch update {
         case .show(let content):
-            // There's at most one, which may be left from an earlier launch.
-            if let existing = Activity<DownloadActivityAttributes>.activities.first {
+            // There's at most one live one, which may be left from an earlier launch. One that has ended is only
+            // waiting to be dismissed, and updating it would show nothing, so a new batch starts a new one.
+            if let existing = Self.liveActivities.first {
                 await existing.update(content)
                 return
             }
@@ -701,43 +783,98 @@ nonisolated final class LiveActivityUpdater: @unchecked Sendable {
                 Self.logger.error("Couldn't start the Live Activity: \(error.localizedDescription, privacy: .public)")
             }
         case .end(let content, let policy):
-            for activity in Activity<DownloadActivityAttributes>.activities {
+            // One that has already ended is left to finish as it was told, e.g. saying "Done" for a few seconds.
+            for activity in Self.liveActivities {
                 await activity.end(content, dismissalPolicy: policy)
             }
         }
+    }
+
+    /// The activities that haven't ended.
+    private static var liveActivities: [Activity<DownloadActivityAttributes>] {
+        Activity<DownloadActivityAttributes>.activities.filter { $0.activityState == .active || $0.activityState == .stale }
     }
 }
 #endif
 
 /// Waits for the system to say a background session has told the app everything that happened while it was away.
-nonisolated final class BackgroundEvents: @unchecked Sendable {
-    private let lock = NSLock()
-    private var finished = false
+nonisolated final class BackgroundEvents: Sendable {
+    private struct State {
+        /// Set when the system said so with nobody waiting, for the next wait to find.
+        var finished = false
+        var waiter: CheckedContinuation<Void, Never>?
+    }
 
-    func markFinished() { lock.withLock { finished = true } }
+    private let state = Mutex(State())
+
+    func markFinished() {
+        let waiter = state.withLock { state -> CheckedContinuation<Void, Never>? in
+            guard let waiter = state.waiter else {
+                state.finished = true
+                return nil
+            }
+            state.waiter = nil
+            return waiter
+        }
+        waiter?.resume()
+    }
 
     /// Returns once events have been delivered, or after 30 seconds, which is as long as the system would allow.
     func wait() async {
-        for _ in 0..<60 {
-            if lock.withLock({ () -> Bool in
-                defer { finished = false }
-                return finished
-            }) { return }
-            try? await Task.sleep(for: .milliseconds(500))
+        let timeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled else { return }
+            self?.resumeWaiter()
         }
+        await withCheckedContinuation { continuation in
+            let outcome = state.withLock { state -> WaitOutcome in
+                if state.finished {
+                    state.finished = false
+                    return .alreadyFinished
+                }
+                let older = state.waiter
+                state.waiter = continuation
+                return .waiting(replacing: older)
+            }
+            switch outcome {
+            case .alreadyFinished:
+                continuation.resume()
+            case .waiting(let older):
+                // A wait already going is let go, so there's only ever one, and none is left hanging.
+                older?.resume()
+            }
+        }
+        timeout.cancel()
+    }
+
+    private enum WaitOutcome {
+        case alreadyFinished
+        case waiting(replacing: CheckedContinuation<Void, Never>?)
+    }
+
+    /// Lets the wait go without events having arrived.
+    private func resumeWaiter() {
+        let waiter = state.withLock { state -> CheckedContinuation<Void, Never>? in
+            defer { state.waiter = nil }
+            return state.waiter
+        }
+        waiter?.resume()
     }
 }
 
 /// Receives a background session's callbacks, which come on a queue of its own, and saves each finished file at once:
 /// the system deletes it as soon as the callback returns.
-nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    /// What a transfer did.
+nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, Sendable {
+    /// What a transfer did. Each names its download by ``DownloadStore/key(scope:id:)``, since the account may have
+    /// changed since it started.
     enum Event: Sendable {
-        case progress(id: String, written: Int64, expected: Int64)
-        case finished(id: String)
-        case failed(id: String, message: String)
-        /// Cancelled: paused or removed, which whoever did it has dealt with.
-        case cancelled(id: String)
+        case progress(key: String, written: Int64, expected: Int64)
+        case finished(key: String)
+        case failed(key: String, message: String)
+        /// Cancelled by the user: paused or removed, which whoever did it has dealt with.
+        case cancelled(key: String)
+        /// Cancelled by the system while it was meant to be downloading, e.g. when the app was force quit.
+        case interrupted(key: String)
     }
 
     /// Where a paused or interrupted transfer's progress is kept, in the item's folder.
@@ -745,11 +882,15 @@ nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDel
 
     private let store: DownloadStore
     private let backgroundEvents: BackgroundEvents
-    private let lock = NSLock()
-    private var lastProgress: [String: Date] = [:]
+    /// When each transfer last reported progress, by key.
+    private let lastProgress = Mutex<[String: Date]>([:])
+    private let eventHandler = Mutex<(@Sendable (Event) -> Void)?>(nil)
 
     /// Set once, right after creating the session.
-    var onEvent: (@Sendable (Event) -> Void)?
+    var onEvent: (@Sendable (Event) -> Void)? {
+        get { eventHandler.withLock { $0 } }
+        set { eventHandler.withLock { $0 = newValue } }
+    }
 
     init(store: DownloadStore, backgroundEvents: BackgroundEvents) {
         self.store = store
@@ -757,33 +898,40 @@ nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDel
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard let id = downloadTask.taskDescription else { return }
+        guard let key = key(of: downloadTask) else { return }
         // Many times a second otherwise, and each one redraws the screen.
-        let isDue = lock.withLock { () -> Bool in
+        let isDue = lastProgress.withLock { lastProgress -> Bool in
             let now = Date.now
-            if let last = lastProgress[id], now.timeIntervalSince(last) < 0.25 { return false }
-            lastProgress[id] = now
+            if let last = lastProgress[key], now.timeIntervalSince(last) < 0.25 { return false }
+            lastProgress[key] = now
             return true
         }
         guard isDue else { return }
-        onEvent?(.progress(id: id, written: totalBytesWritten, expected: totalBytesExpectedToWrite))
+        onEvent?(.progress(key: key, written: totalBytesWritten, expected: totalBytesExpectedToWrite))
+    }
+
+    /// The download a transfer is for, by ``DownloadStore/key(scope:id:)``.
+    private func key(of task: URLSessionTask) -> String? {
+        guard let description = task.taskDescription else { return nil }
+        let (scope, id) = store.parse(key: description)
+        return DownloadStore.key(scope: scope, id: id)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let id = downloadTask.taskDescription, store.record(id: id) != nil else { return }
+        guard let key = key(of: downloadTask), store.record(key: key) != nil else { return }
 
         if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            onEvent?(.failed(id: id, message: String(localized: "The server returned an error (\(http.statusCode)).")))
+            onEvent?(.failed(key: key, message: String(localized: "The server returned an error (\(http.statusCode)).")))
             return
         }
         do {
-            let directory = try store.makeItemDirectory(for: id)
+            let directory = try store.makeItemDirectory(key: key)
             let name = "video." + Self.fileExtension(of: downloadTask)
             let destination = directory.appending(path: name, directoryHint: .notDirectory)
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.moveItem(at: location, to: destination)
             let size = (try? FileManager.default.attributesOfItem(atPath: destination.path(percentEncoded: false))[.size] as? Int64) ?? 0
-            store.update(id) {
+            store.update(key: key) {
                 $0.videoFileName = name
                 $0.fileSize = size
                 $0.bytesWritten = size
@@ -791,30 +939,33 @@ nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDel
                 $0.state = .completed
                 $0.errorMessage = nil
             }
-            lock.withLock { lastProgress[id] = nil }
-            onEvent?(.finished(id: id))
+            lastProgress.withLock { $0[key] = nil }
+            onEvent?(.finished(key: key))
         } catch {
-            onEvent?(.failed(id: id, message: error.localizedDescription))
+            onEvent?(.failed(key: key, message: error.localizedDescription))
         }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let error, let id = task.taskDescription else { return }
+        guard let error, let key = key(of: task) else { return }
         let nsError = error as NSError
-        lock.withLock { lastProgress[id] = nil }
+        lastProgress.withLock { $0[key] = nil }
 
         // Wherever the transfer got to is kept, so trying again carries on from there.
-        if let data = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data, store.record(id: id) != nil,
-           let directory = try? store.makeItemDirectory(for: id) {
+        if let data = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data, store.record(key: key) != nil,
+           let directory = try? store.makeItemDirectory(key: key) {
             try? data.write(to: directory.appending(path: Self.resumeFileName))
         }
 
-        // Paused or removed.
-        let state = store.record(id: id)?.state
-        if nsError.code == NSURLErrorCancelled || state == nil || state == .paused {
-            onEvent?(.cancelled(id: id))
+        // Pausing marks the record first, and removing deletes it first, so a cancellation of a download that's still
+        // meant to be downloading came from the system.
+        let state = store.record(key: key)?.state
+        if state == nil || state == .paused {
+            onEvent?(.cancelled(key: key))
+        } else if nsError.code == NSURLErrorCancelled {
+            onEvent?(state == .downloading ? .interrupted(key: key) : .cancelled(key: key))
         } else {
-            onEvent?(.failed(id: id, message: error.localizedDescription))
+            onEvent?(.failed(key: key, message: error.localizedDescription))
         }
     }
 

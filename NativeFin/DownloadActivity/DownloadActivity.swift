@@ -74,7 +74,6 @@ private struct PercentText: View {
     }
 }
 
-
 /// The Lock Screen and banner layout.
 private struct DownloadLockScreenView: View {
     let state: DownloadActivityAttributes.ContentState

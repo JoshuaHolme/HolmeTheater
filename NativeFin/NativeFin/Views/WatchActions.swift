@@ -177,16 +177,7 @@ struct WatchActions {
         func entry(_ id: ItemMenuEntry.ID, _ title: String, _ systemImage: String, _ perform: @escaping () -> Void) -> ItemMenuEntry {
             ItemMenuEntry(id: id, title: title, systemImage: systemImage, perform: perform)
         }
-        let start = {
-            if ExperimentalDownloads.needsNotice {
-                state.wrappedValue.downloadPrompt = .experimental(item)
-            } else if isContainer {
-                // A whole show or season can be a lot of space, so it asks first.
-                state.wrappedValue.downloadPrompt = .download(item)
-            } else {
-                Task { await downloads.download(item) }
-            }
-        }
+        let start = { state.wrappedValue.downloadPrompt = DownloadPrompt.start(item, downloads: downloads) }
         let confirmRemoval = { state.wrappedValue.downloadPrompt = .remove(item) }
 
         switch downloads.status(of: item) {
@@ -200,12 +191,13 @@ struct WatchActions {
         case .downloading:
             return [
                 entry(.pauseDownload, String(localized: "Pause Download"), "pause.circle") { downloads.pause(item) },
-                entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.remove(item) }
+                // Only what's unfinished: a show's or season's finished episodes stay.
+                entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }
             ]
         case .paused:
             return [
                 entry(.resumeDownload, String(localized: "Resume Download"), "play.circle") { downloads.resume(item) },
-                entry(.removeDownload, String(localized: "Remove Download"), "trash", confirmRemoval)
+                entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }
             ]
         case .downloaded:
             return [entry(.removeDownload, isContainer ? String(localized: "Remove Downloads") : String(localized: "Remove Download"), "trash", confirmRemoval)]
@@ -451,7 +443,7 @@ extension View {
     }
 }
 
-private extension Binding {
+extension Binding {
     /// Whether an optional is set, for an `isPresented:` parameter. Setting it to false clears the optional.
     func isPresent<Wrapped>() -> Binding<Bool> where Value == Wrapped? {
         Binding<Bool>(
