@@ -58,6 +58,8 @@ struct MainView: View {
                 }
             }
         }
+        .overlay(alignment: .top) { toast }
+        .animation(.easeInOut, value: appModel.toastMessage)
         .environment(\.openDownloads, OpenDownloadsAction { selection = .downloads })
         .downloadErrorAlert(appModel.downloads)
         // "Go to Show" in the player: once it has closed, open the show in the tab that's showing.
@@ -70,6 +72,27 @@ struct MainView: View {
             case .downloads: downloadsPath.append(show)
             case .search: searchPath.append(show)
             }
+        }
+    }
+}
+
+extension MainView {
+    /// The message in `appModel.toastMessage`, which goes by itself after a moment.
+    @ViewBuilder
+    fileprivate var toast: some View {
+        if let message = appModel.toastMessage {
+            Label(message, systemImage: "checkmark.circle.fill")
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(.regularMaterial, in: .capsule)
+                .shadow(radius: 8, y: 2)
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .task(id: message) {
+                    try? await Task.sleep(for: .seconds(3))
+                    if !Task.isCancelled { appModel.toastMessage = nil }
+                }
         }
     }
 }

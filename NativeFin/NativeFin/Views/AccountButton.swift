@@ -4,6 +4,11 @@
 
 import SwiftUI
 
+extension EnvironmentValues {
+    /// Closes the account sheet, from any screen pushed inside it.
+    @Entry var dismissAccount: () -> Void = {}
+}
+
 /// The account screen wrapped for presentation in a sheet, with a Done button.
 private struct AccountSheet: View {
     @Binding var isPresented: Bool
@@ -17,6 +22,8 @@ private struct AccountSheet: View {
                     }
                 }
         }
+        // On the stack itself, so the screens it pushes get it too; set on the root view, they may not.
+        .environment(\.dismissAccount, { isPresented = false })
     }
 }
 

@@ -106,6 +106,10 @@ nonisolated struct MockMediaService: MediaService {
         return Self.server
     }
 
+    func serverBranding() async -> ServerBranding? {
+        ServerBranding(loginDisclaimer: "Authorized users only. Ask the admin for an account.", splashscreenURL: nil)
+    }
+
     func signIn(username: String, password: String) async throws -> UserSession {
         try await simulateLatency()
         return Self.session
@@ -129,6 +133,12 @@ nonisolated struct MockMediaService: MediaService {
         }
     }
 
+    /// Accepts any code but `000000`, which is treated as wrong.
+    func authorizeQuickConnect(code: String) async throws {
+        try await simulateLatency()
+        if code == "000000" { throw MediaServiceError.underlying(String(localized: "That code isn't right, or it has expired.")) }
+    }
+
     func restore(_ session: UserSession) async {}
 
     func signOut() async {}
@@ -150,12 +160,12 @@ nonisolated struct MockMediaService: MediaService {
         return library.kind == .tvShows ? Self.shows : Self.movies
     }
 
-    func resumeItems(offset: Int, limit: Int) async throws -> [MediaItem] {
+    func resumeItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
         try await simulateLatency()
         return Array(Self.movies.filter { $0.playedFraction != nil }.dropFirst(offset).prefix(limit))
     }
 
-    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem] {
+    func nextUpItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
         try await simulateLatency()
         // The first unwatched episode of each sample show.
         let next = Self.shows.compactMap { show in
@@ -177,13 +187,19 @@ nonisolated struct MockMediaService: MediaService {
         return Array(all.dropFirst(offset).prefix(limit))
     }
 
+    func randomItems(in library: Library, limit: Int) async throws -> [MediaItem] {
+        try await simulateLatency()
+        let all = library.kind == .tvShows ? Self.shows : Self.movies
+        return Array(all.shuffled().prefix(limit))
+    }
+
     func recentlyReleasedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
         try await simulateLatency()
         let all = library.kind == .tvShows ? Self.shows.flatMap { Self.episodes(of: $0) } : Self.movies
         return Array(all.reversed().dropFirst(offset).prefix(limit))
     }
 
-    func itemsOnThisDay() async throws -> [MediaItem] {
+    func itemsOnThisDay(libraryIDs: [String]?) async throws -> [MediaItem] {
         try await simulateLatency()
         return Array(Self.movies.prefix(4))
     }

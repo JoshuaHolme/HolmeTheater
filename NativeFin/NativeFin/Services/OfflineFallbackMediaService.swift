@@ -63,11 +63,15 @@ nonisolated struct OfflineFallbackMediaService: MediaService {
 
     func connect(to address: String) async throws -> ServerInfo { try await base.connect(to: address) }
 
+    func serverBranding() async -> ServerBranding? { await base.serverBranding() }
+
     func signIn(username: String, password: String) async throws -> UserSession {
         try await base.signIn(username: username, password: password)
     }
 
     func quickConnect() -> AsyncThrowingStream<QuickConnectEvent, Error> { base.quickConnect() }
+
+    func authorizeQuickConnect(code: String) async throws { try await base.authorizeQuickConnect(code: code) }
 
     func restore(_ session: UserSession) async { await base.restore(session) }
 
@@ -81,12 +85,12 @@ nonisolated struct OfflineFallbackMediaService: MediaService {
 
     func items(in library: Library) async throws -> [MediaItem] { try await base.items(in: library) }
 
-    func resumeItems(offset: Int, limit: Int) async throws -> [MediaItem] {
-        try await base.resumeItems(offset: offset, limit: limit)
+    func resumeItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
+        try await base.resumeItems(offset: offset, limit: limit, libraryIDs: libraryIDs)
     }
 
-    func nextUpItems(offset: Int, limit: Int) async throws -> [MediaItem] {
-        try await base.nextUpItems(offset: offset, limit: limit)
+    func nextUpItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
+        try await base.nextUpItems(offset: offset, limit: limit, libraryIDs: libraryIDs)
     }
 
     func recentlyAddedItems(in library: Library) async throws -> [MediaItem] {
@@ -97,11 +101,15 @@ nonisolated struct OfflineFallbackMediaService: MediaService {
         try await base.recentlyAddedPage(in: library, offset: offset, limit: limit)
     }
 
+    func randomItems(in library: Library, limit: Int) async throws -> [MediaItem] {
+        try await base.randomItems(in: library, limit: limit)
+    }
+
     func recentlyReleasedPage(in library: Library, offset: Int, limit: Int) async throws -> [MediaItem] {
         try await base.recentlyReleasedPage(in: library, offset: offset, limit: limit)
     }
 
-    func itemsOnThisDay() async throws -> [MediaItem] { try await base.itemsOnThisDay() }
+    func itemsOnThisDay(libraryIDs: [String]?) async throws -> [MediaItem] { try await base.itemsOnThisDay(libraryIDs: libraryIDs) }
 
     func items(withIDs ids: [String]) async throws -> [MediaItem] {
         try await serving {

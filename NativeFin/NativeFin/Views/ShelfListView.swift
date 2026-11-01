@@ -7,6 +7,8 @@ import SwiftUI
 /// Where a home-screen shelf's heading leads: the full list behind that shelf.
 enum ShelfDestination: Hashable {
     case continueWatching
+    /// Continue Watching followed by Up Next, as one list.
+    case continueWatchingAndUpNext
     /// The next episode of each show being watched.
     case nextUp
     /// Everything recently added to a library (episodes for TV, movies for film).
@@ -26,6 +28,7 @@ enum ShelfDestination: Hashable {
     var title: String {
         switch self {
         case .continueWatching: String(localized: "Continue Watching")
+        case .continueWatchingAndUpNext: String(localized: "Continue Watching")
         case .nextUp: String(localized: "Up Next")
         case .recentlyAdded(let library): String(localized: "Recently Added \(library.name)")
         case .recentlyReleased(let library): String(localized: "Recently Released \(library.name)")
@@ -251,20 +254,28 @@ struct ShelfListView: View {
         errorMessage = nil
     }
 
+    /// The libraries the user chose for a home section, or nil for all of them.
+    private func libraryIDs(for section: HomeSettings.Section) async throws -> [String]? {
+        let libraries = try await appModel.service.libraries().filter { $0.kind == .movies || $0.kind == .tvShows }
+        return appModel.homeSettings.libraryIDs(for: section, among: libraries)
+    }
+
     private func fetchPage(offset: Int, limit: Int) async throws -> [MediaItem] {
         let service = appModel.service
         switch destination {
         case .continueWatching:
-            return try await service.resumeItems(offset: offset, limit: limit)
+            return try await service.resumeItems(offset: offset, limit: limit, libraryIDs: try await libraryIDs(for: .continueWatching))
+        case .continueWatchingAndUpNext:
+            return try await service.continueWatchingAndUpNext(offset: offset, limit: limit, libraryIDs: try await libraryIDs(for: .continueWatching))
         case .nextUp:
-            return try await service.nextUpItems(offset: offset, limit: limit)
+            return try await service.nextUpItems(offset: offset, limit: limit, libraryIDs: try await libraryIDs(for: .nextUp))
         case .recentlyAdded(let library):
             return try await service.recentlyAddedPage(in: library, offset: offset, limit: limit)
         case .recentlyReleased(let library):
             return try await service.recentlyReleasedPage(in: library, offset: offset, limit: limit)
         case .onThisDay:
             // The server can't page these (they're filtered here by date), so it's asked for them all and cut here.
-            return Array(try await service.itemsOnThisDay().dropFirst(offset).prefix(limit))
+            return Array(try await service.itemsOnThisDay(libraryIDs: try await libraryIDs(for: .onThisDay)).dropFirst(offset).prefix(limit))
         case .episodes(let season, _):
             // The server pages these, but a season is short and in order, so it's asked for them all and cut here.
             return Array(try await service.children(of: season).dropFirst(offset).prefix(limit))

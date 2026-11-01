@@ -8,6 +8,9 @@ import SwiftUI
 struct AccountView: View {
     @Environment(AppModel.self) private var appModel
 
+    /// Whether the warning that sign out deletes the downloads is showing.
+    @State private var confirmsSignOut = false
+
     var body: some View {
         List {
             if let session = appModel.session {
@@ -25,12 +28,35 @@ struct AccountView: View {
             }
 
             Section {
+                NavigationLink("Quick Connect") { QuickConnectAuthorizeView() }
+            } footer: {
+                Text("Sign in on another device without typing a password, using the code it shows.")
+            }
+
+            Section {
+                NavigationLink("Home Screen") { HomeSettingsView() }
+            }
+
+            Section {
                 Button("Sign Out", role: .destructive) {
-                    Task { await appModel.signOut() }
+                    // Downloads are deleted on sign out, so with any, make sure that's what the user wants.
+                    if appModel.downloads.records.isEmpty {
+                        Task { await appModel.signOut() }
+                    } else {
+                        confirmsSignOut = true
+                    }
                 }
             }
         }
         .navigationTitle("Account")
+        .confirmationDialog("Sign Out?", isPresented: $confirmsSignOut, titleVisibility: .visible) {
+            Button("Sign Out and Delete Downloads", role: .destructive) {
+                Task { await appModel.signOut() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Signing out will delete all of your downloads from this device. You'll have to download them again.")
+        }
     }
 }
 

@@ -219,8 +219,8 @@ struct WatchActions {
         let id = item.id
         // Either change clears the resume position, so on Continue Watching the item leaves the list. On Up Next
         // a watched episode is replaced by the one after it, so it leaves too.
-        let isContinueWatching = destination == .continueWatching
-        let leavesOnWatched = isContinueWatching || destination == .nextUp
+        let isContinueWatching = isOnContinueWatching(item)
+        let leavesOnWatched = isContinueWatching || isOnUpNext(item)
 
         return ItemRowActions(
             goTo: goTo,
@@ -320,9 +320,27 @@ struct WatchActions {
         }
     }
 
+    /// Whether `item` is on Continue Watching here. On the combined shelf that's the partly watched ones.
+    private func isOnContinueWatching(_ item: MediaItem) -> Bool {
+        switch destination {
+        case .continueWatching: true
+        case .continueWatchingAndUpNext: item.playedFraction != nil
+        default: false
+        }
+    }
+
+    /// Whether `item` is on Up Next here. On the combined shelf that's the ones not yet started.
+    private func isOnUpNext(_ item: MediaItem) -> Bool {
+        switch destination {
+        case .nextUp: true
+        case .continueWatchingAndUpNext: item.playedFraction == nil
+        default: false
+        }
+    }
+
     /// Asks to remove an episode's show from Up Next, or nil off Up Next or if the show is unknown.
     private func upNextRemoval(for item: MediaItem, markWatched: Bool) -> (() -> Void)? {
-        guard destination == .nextUp, let seriesID = item.seriesID else { return nil }
+        guard isOnUpNext(item), let seriesID = item.seriesID else { return nil }
         return { state.wrappedValue.pendingRemoval = ShowRemoval(item: item, seriesID: seriesID, markWatched: markWatched) }
     }
 

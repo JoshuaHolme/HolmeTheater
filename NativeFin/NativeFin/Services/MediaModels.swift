@@ -22,6 +22,15 @@ nonisolated struct ServerInfo: Codable, Hashable, Sendable {
     let url: URL
 }
 
+/// How a server's administrator has branded its sign-in page.
+nonisolated struct ServerBranding: Hashable, Sendable {
+    /// A notice to show people signing in, or nil if there isn't one.
+    let loginDisclaimer: String?
+
+    /// The server's splash screen picture, or nil if it doesn't have one turned on.
+    let splashscreenURL: URL?
+}
+
 /// A signed-in user on a particular server.
 ///
 /// This is what's saved in the keychain, so the app is still signed in at the next launch.
