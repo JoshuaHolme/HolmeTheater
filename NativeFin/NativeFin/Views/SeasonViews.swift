@@ -34,7 +34,7 @@ struct SeasonsSection: View {
             // The seasons' posters load before the row shows, so they don't pop in.
             await ImageCache.shared.preload(children.prefix(6).compactMap(\.posterURL))
             return children
-        }, reloadID: reloadID) { children in
+        }, reloadID: reloadID, pullsToRefresh: false) { children in
             VStack(alignment: .leading, spacing: 12) {
                 if children.count == 1, let season = children.first {
                     // A show with a single season is a mini series: its episodes stand in for the one season.
@@ -146,7 +146,7 @@ struct EpisodeShelf: View {
             // The first episodes' stills load before the row shows, so they don't pop in.
             await ImageCache.shared.preload(episodes.prefix(4).compactMap(\.gridArtworkURL))
             return episodes
-        }, reloadID: reloadID + reloadCount) { episodes in
+        }, reloadID: reloadID + reloadCount, pullsToRefresh: false) { episodes in
             if !episodes.isEmpty {
                 MediaShelf(
                     title: episodes.count == 1 ? String(localized: "1 Episode") : String(localized: "\(episodes.count) Episodes"),
@@ -179,7 +179,7 @@ struct SeasonListView: View {
     @State private var openedSeason: MediaItem?
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, destination: nil, state: $watchState) { _ in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: nil, state: $watchState) { _ in
             reloadCount += 1
         }
     }
@@ -246,6 +246,7 @@ private struct SeasonCard: View {
                         WatchedBadge()
                     }
                 }
+                .overlay(alignment: .topLeading) { DownloadedBadge(item: season) }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(season.seasonTitle)

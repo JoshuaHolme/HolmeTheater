@@ -626,8 +626,44 @@ actor JellyfinMediaService: MediaService {
             subtitlesBurnedIn: subtitleStream?.deliveryMethod == .encode,
             sourceBitrate: source.bitrate,
             sourceHeight: streams.first { $0.type == .video }?.height,
-            maxBitrate: options.maxBitrate
+            maxBitrate: options.maxBitrate,
+            expectedBytes: source.size.map { Int64($0) }
         )
+    }
+
+    func downloadInfo(for item: MediaItem) async throws -> PlaybackInfo {
+        let info = try await playbackInfo(for: item, options: PlaybackOptions())
+        // The original file, as it is on the server.
+        if info.method == .directPlay { return info }
+
+        // A file this device can't play as it is (an MKV, say) has no plain URL, only an HLS playlist, which
+        // URLSession can't save as one file. Ask for the same thing as a progressive MP4 instead.
+        let (client, _) = try signedIn()
+        guard let sourceID = info.mediaSourceID else { throw MediaServiceError.itemNotPlayable }
+        var components = URLComponents()
+        components.path = "/Videos/\(item.id)/stream.mp4"
+        components.queryItems = [
+            URLQueryItem(name: "mediaSourceId", value: sourceID),
+            URLQueryItem(name: "deviceId", value: identity.deviceID),
+            URLQueryItem(name: "videoCodec", value: "h264"),
+            URLQueryItem(name: "audioCodec", value: "aac"),
+            URLQueryItem(name: "maxAudioChannels", value: "6"),
+            URLQueryItem(name: "audioStreamIndex", value: info.audioIndex.map(String.init))
+        ].filter { $0.value != nil }
+        guard let path = components.string, let url = client.url(path: path) else { throw MediaServiceError.itemNotPlayable }
+
+        var result = info
+        result.url = Self.addingAccessToken(client.accessToken, to: url)
+        // The converted file's size isn't known until it's done. Its length at the original's bitrate is a ceiling it
+        // usually stays under, which is enough to show roughly how far along it is.
+        if let runtime = item.runtime, let bitrate = info.sourceBitrate {
+            result.expectedBytes = Int64(runtime * Double(bitrate) / 8)
+        } else {
+            result.expectedBytes = nil
+        }
+        // Subtitles come as separate files, so none are drawn into the picture.
+        result.subtitlesBurnedIn = false
+        return result
     }
 
     func segments(for item: MediaItem) async -> [MediaSegment] {
@@ -699,6 +735,22 @@ actor JellyfinMediaService: MediaService {
             UpdateUserItemDataDto(playbackPositionTicks: 0)
         )
         _ = try await send(request, with: client)
+    }
+
+    func syncProgress(itemID: String, position: TimeInterval, isPlayed: Bool, date: Date) async throws {
+        let (client, session) = try signedIn()
+
+        // Another device may have watched it since; the later watch wins.
+        let current = try await send(Paths.getItem(itemID: itemID, userID: session.userID), with: client)
+        if let serverDate = current.userData?.lastPlayedDate, serverDate > date { return }
+
+        let data = UpdateUserItemDataDto(
+            isPlayed: isPlayed,
+            lastPlayedDate: date,
+            playCount: isPlayed ? max(1, current.userData?.playCount ?? 0) : nil,
+            playbackPositionTicks: isPlayed ? 0 : Int(position * Self.ticksPerSecond)
+        )
+        _ = try await send(Paths.updateItemUserData(itemID: itemID, userID: session.userID, data), with: client)
     }
 
     // MARK: - Helpers

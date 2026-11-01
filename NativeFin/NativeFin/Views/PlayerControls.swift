@@ -1600,12 +1600,17 @@ private struct ScrubBar: View {
         GeometryReader { proxy in
             let value = min(max(scrubFraction ?? fraction, 0), 1)
 
+            let barHeight: CGFloat = scrubFraction == nil ? 6 : 12
+
             ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(contrast == .increased ? 0.5 : 0.3))
-                Capsule().fill(.white.opacity(contrast == .increased ? 0.7 : 0.35)).frame(width: proxy.size.width * min(max(buffered, 0), 1))
-                Capsule().fill(.white).frame(width: proxy.size.width * value)
+                Color.white.opacity(contrast == .increased ? 0.5 : 0.3)
+                Color.white.opacity(contrast == .increased ? 0.7 : 0.35).frame(width: proxy.size.width * min(max(buffered, 0), 1))
+                // Square-ended and clipped to the track, like the home carousel's page pill, so it sweeps across the
+                // rounded ends instead of squashing into a shape of its own.
+                Color.white.frame(width: proxy.size.width * value)
             }
-            .frame(height: scrubFraction == nil ? 6 : 12)
+            .clipShape(.capsule)
+            .frame(height: barHeight)
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
             .gesture(
@@ -1797,30 +1802,22 @@ private struct FullInfoSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                // The title goes under the thumbnail at accessibility sizes, where beside it there'd be a few letters.
-                (dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14)) : AnyLayout(HStackLayout(alignment: .top, spacing: 14))) {
-                    CachedAsyncImage(url: item.thumbnailURL ?? item.backdropURL ?? item.posterURL) { phase in
-                        if let image = phase.image {
-                            image.resizable().scaledToFill()
-                        } else {
-                            Color.white.opacity(0.1)
+                // The title goes under the thumbnail when beside it there'd be too little room: at accessibility sizes,
+                // or on a narrow sheet.
+                if dynamicTypeSize.isAccessibilitySize {
+                    stackedHeader
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 14) {
+                            thumbnail
+                            titleBlock
+                                // The column's ideal width, which has to fit for the header to sit side by side.
+                                .frame(maxWidth: 200, alignment: .leading)
                         }
-                    }
-                    .frame(width: 160, height: 90)
-                    .clipShape(.rect(cornerRadius: 10))
+                        // Leaves room for the close button, which sits over the top corner.
+                        .padding(.trailing, 48)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.kind == .episode ? item.seriesTitle ?? item.title : item.title)
-                            .font(.title3.weight(.bold))
-                        if item.kind == .episode, item.seriesTitle != nil {
-                            Text(item.title)
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        if !details.isEmpty {
-                            Text(details.joined(separator: " · "))
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
+                        stackedHeader
                     }
                 }
                 if let tagline = item.tagline {
@@ -1847,6 +1844,41 @@ private struct FullInfoSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+
+    private var stackedHeader: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            thumbnail
+            titleBlock
+        }
+    }
+
+    private var thumbnail: some View {
+        CachedAsyncImage(url: item.thumbnailURL ?? item.backdropURL ?? item.posterURL) { phase in
+            if let image = phase.image {
+                image.resizable().scaledToFill()
+            } else {
+                Color.white.opacity(0.1)
+            }
+        }
+        .frame(width: 160, height: 90)
+        .clipShape(.rect(cornerRadius: 10))
+    }
+
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(item.kind == .episode ? item.seriesTitle ?? item.title : item.title)
+                .font(.title3.weight(.bold))
+            if item.kind == .episode, item.seriesTitle != nil {
+                Text(item.title)
+                    .font(.subheadline.weight(.semibold))
+            }
+            if !details.isEmpty {
+                Text(details.joined(separator: " · "))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var details: [String] {

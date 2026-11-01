@@ -102,9 +102,9 @@ nonisolated struct Genre: Identifiable, Hashable, Sendable {
 }
 
 /// Something browsable or playable: a movie, series, season, or episode.
-nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
+nonisolated struct MediaItem: Identifiable, Hashable, Sendable, Codable {
     /// The kind of item.
-    nonisolated enum Kind: Hashable, Sendable {
+    nonisolated enum Kind: Hashable, Sendable, Codable {
         /// A movie, which can be played.
         case movie
         /// A TV series, which contains seasons.
@@ -142,10 +142,10 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
     ///
     /// For an episode this is its show's poster, so it sits comfortably in a poster slot.
     /// An episode's own widescreen still is ``thumbnailURL``.
-    let posterURL: URL?
+    var posterURL: URL?
 
     /// Widescreen background artwork, ready to load. Falls back to the parent's (e.g. the series') backdrop.
-    let backdropURL: URL?
+    var backdropURL: URL?
 
     /// Widescreen artwork for list rows: an episode's own still, or a movie's thumb image (falling back to its
     /// backdrop). `nil` for anything else, or a movie with neither.
@@ -244,7 +244,7 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable {
 }
 
 /// A chapter of a movie or episode, as the server lists it.
-nonisolated struct MediaChapter: Hashable, Sendable {
+nonisolated struct MediaChapter: Hashable, Sendable, Codable {
     /// The chapter's name.
     let name: String
 
@@ -252,12 +252,12 @@ nonisolated struct MediaChapter: Hashable, Sendable {
     let start: TimeInterval
 
     /// A still from the chapter, ready to load, or `nil` if the server has none.
-    let imageURL: URL?
+    var imageURL: URL?
 }
 
 /// What the server knows about a person beyond their name and photo. Any of it can be missing, depending on what
 /// the server's metadata provider found.
-nonisolated struct PersonDetails: Hashable, Sendable {
+nonisolated struct PersonDetails: Hashable, Sendable, Codable {
     /// A biography.
     var biography: String?
 
@@ -291,9 +291,9 @@ nonisolated struct PersonCredit: Identifiable, Hashable, Sendable {
 }
 
 /// A member of an item's cast or crew.
-nonisolated struct MediaPerson: Identifiable, Hashable, Sendable {
+nonisolated struct MediaPerson: Identifiable, Hashable, Sendable, Codable {
     /// What the person did on the item.
-    nonisolated enum Role: Hashable, Sendable {
+    nonisolated enum Role: Hashable, Sendable, Codable {
         case actor, director, writer, producer, creator, composer
     }
 
@@ -310,17 +310,17 @@ nonisolated struct MediaPerson: Identifiable, Hashable, Sendable {
     let character: String?
 
     /// A portrait, ready to load, or `nil` if the server has none.
-    let imageURL: URL?
+    var imageURL: URL?
 
     /// A larger copy of the portrait, for showing full screen. `nil` if the server has no portrait.
-    let largeImageURL: URL?
+    var largeImageURL: URL?
 
     /// A person can appear once per role, e.g. as both director and writer.
     var id: String { "\(personID)-\(role)" }
 }
 
 /// How the server is delivering a video stream.
-nonisolated enum PlaybackMethod: Sendable {
+nonisolated enum PlaybackMethod: Sendable, Codable {
     /// The original file, untouched.
     case directPlay
 
@@ -335,21 +335,21 @@ nonisolated enum PlaybackMethod: Sendable {
 /// progress for it.
 ///
 /// Printing playback info redacts its URL, which contains the access token.
-nonisolated struct PlaybackInfo: Hashable, Sendable {
+nonisolated struct PlaybackInfo: Hashable, Sendable, Codable {
     /// A URL AVPlayer can load directly. The access token is embedded in its query.
-    let url: URL
+    var url: URL
 
     /// Where to start playing, in seconds.
-    let resumePosition: TimeInterval
+    var resumePosition: TimeInterval
 
     /// The server's ID for this playback, echoed back in progress reports.
-    let playSessionID: String?
+    var playSessionID: String?
 
     /// The ID of the version of the item being played (an item can have several, e.g. 4K and HD).
     let mediaSourceID: String?
 
     /// How the server is delivering the stream.
-    let method: PlaybackMethod
+    var method: PlaybackMethod
 
     /// The audio tracks in the file, whichever one this stream carries.
     var audioTracks: [MediaTrack] = []
@@ -374,11 +374,15 @@ nonisolated struct PlaybackInfo: Hashable, Sendable {
 
     /// The bitrate cap this stream was requested with, or nil for none.
     var maxBitrate: Int?
+
+    /// How many bytes the file is expected to be, for showing a download's progress when the server doesn't say how big
+    /// the transfer is. The original file's size, or a guess for one the server converts as it sends. Nil if unknown.
+    var expectedBytes: Int64?
 }
 
 /// A stretch of a movie or episode the server knows the purpose of, which the player offers to skip.
-nonisolated struct MediaSegment: Hashable, Sendable {
-    nonisolated enum Kind: Hashable, Sendable {
+nonisolated struct MediaSegment: Hashable, Sendable, Codable {
+    nonisolated enum Kind: Hashable, Sendable, Codable {
         case intro, outro, recap, preview, commercial
         /// Something the server found but couldn't name.
         case unknown
@@ -392,7 +396,7 @@ nonisolated struct MediaSegment: Hashable, Sendable {
 }
 
 /// One audio or subtitle track in a video file.
-nonisolated struct MediaTrack: Identifiable, Hashable, Sendable {
+nonisolated struct MediaTrack: Identifiable, Hashable, Sendable, Codable {
     /// The server's number for the track within its file, which playback requests refer to.
     let index: Int
 

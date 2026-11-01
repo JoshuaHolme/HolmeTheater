@@ -13,10 +13,16 @@ import SwiftUI
         WindowGroup {
             ContentView()
                 .environment(appModel)
+                .environment(appModel.downloads)
                 .task {
                     await appModel.restoreSession()
                     await appModel.refreshProfile()
                 }
+        }
+        // The system wakes the app when downloads finish while it's away. The session is already attached to the
+        // download manager, so all that's left is to wait until it has been told what happened.
+        .backgroundTask(.urlSession(DownloadManager.sessionIdentifier)) {
+            await appModel.downloads.waitForBackgroundEvents()
         }
         // Pick up profile changes made elsewhere each time the app comes back to the foreground.
         .onChange(of: scenePhase) {

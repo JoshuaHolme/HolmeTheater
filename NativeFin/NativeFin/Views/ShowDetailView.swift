@@ -412,6 +412,10 @@ struct ShowDetailView: View {
             // the toolbar (see `toolbarButtons`).
             favoriteButton
             watchedButton
+            DownloadToolbarButton(item: current, prompt: $watchState.downloadPrompt)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .controlSize(.large)
             #endif
         }
     }
@@ -454,6 +458,9 @@ struct ShowDetailView: View {
             }
             .tint(isFavorite ? .red : nil)
             .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+
+            // The whole show or season, or the episode or movie itself.
+            DownloadToolbarButton(item: current, prompt: $watchState.downloadPrompt)
 
             if let change = watchedChange {
                 Button(action: change.perform) {
@@ -678,7 +685,7 @@ struct ShowDetailView: View {
 
     /// Reloads the screen after a season is marked watched or unwatched, which changes the next episode too.
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, destination: nil, state: $watchState) { _ in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: nil, state: $watchState) { _ in
             reloadCount += 1
         }
     }

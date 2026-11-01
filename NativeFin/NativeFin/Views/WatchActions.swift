@@ -97,6 +97,9 @@ struct WatchActionState {
 
     /// Set when a change fails; shown in an alert.
     var errorMessage: String?
+
+    /// A question about a download, waiting for an answer: whether to download a whole show or season, or to remove one.
+    var downloadPrompt: DownloadPrompt?
 }
 
 /// How many seasons each show has, learned as screens load. A show with a single season is treated as a mini
@@ -142,6 +145,9 @@ final class SeasonCountCache {
 struct WatchActions {
     let service: any MediaService
 
+    /// Where downloads are managed. With it, items' menus offer to download them.
+    var downloads: DownloadManager? = nil
+
     /// The shelf the items are on, which decides which changes take an item off it. Nil anywhere else.
     let destination: ShelfDestination?
 
@@ -153,6 +159,53 @@ struct WatchActions {
     /// The menu actions for an item: "Go to …" if `goTo` is given, then the watch-state actions. Nil if there
     /// are none (an item that can't be watched, with no `goTo`).
     func actions(for item: MediaItem, goTo: (() -> Void)? = nil) -> ItemRowActions? {
+        var actions = watchStateActions(for: item, goTo: goTo)
+        let downloadEntries = downloadEntries(for: item)
+        if !downloadEntries.isEmpty {
+            actions = actions ?? ItemRowActions()
+            actions?.downloadEntries = downloadEntries
+        }
+        return actions
+    }
+
+    /// The download entries for an item's menu, for where its download is now: download, pause, resume, or remove.
+    private func downloadEntries(for item: MediaItem) -> [ItemMenuEntry] {
+        guard let downloads, [.movie, .episode, .season, .series].contains(item.kind) else { return [] }
+        let isContainer = item.kind == .season || item.kind == .series
+        let state = state
+
+        func entry(_ id: ItemMenuEntry.ID, _ title: String, _ systemImage: String, _ perform: @escaping () -> Void) -> ItemMenuEntry {
+            ItemMenuEntry(id: id, title: title, systemImage: systemImage, perform: perform)
+        }
+        let start = { state.wrappedValue.downloadPrompt = DownloadPrompt.start(item, downloads: downloads) }
+        let confirmRemoval = { state.wrappedValue.downloadPrompt = .remove(item) }
+
+        switch downloads.status(of: item) {
+        case .none:
+            return [entry(.download, isContainer ? String(localized: "Download All Episodes") : String(localized: "Download"), "arrow.down.circle", start)]
+        case .partial:
+            return [
+                entry(.download, String(localized: "Download Remaining Episodes"), "arrow.down.circle", start),
+                entry(.removeDownload, String(localized: "Remove Downloads"), "trash", confirmRemoval)
+            ]
+        case .downloading:
+            return [
+                entry(.pauseDownload, String(localized: "Pause Download"), "pause.circle") { downloads.pause(item) },
+                // Only what's unfinished: a show's or season's finished episodes stay.
+                entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }
+            ]
+        case .paused:
+            return [
+                entry(.resumeDownload, String(localized: "Resume Download"), "play.circle") { downloads.resume(item) },
+                entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }
+            ]
+        case .downloaded:
+            return [entry(.removeDownload, isContainer ? String(localized: "Remove Downloads") : String(localized: "Remove Download"), "trash", confirmRemoval)]
+        }
+    }
+
+    /// The menu actions that change an item's watch state, with "Go to …" if `goTo` is given.
+    private func watchStateActions(for item: MediaItem, goTo: (() -> Void)?) -> ItemRowActions? {
         if item.kind == .series || item.kind == .season {
             // A show or season marks all its episodes, after a confirmation.
             return ItemRowActions(
@@ -337,6 +390,7 @@ extension View {
         }
         .confirmShowRemoval(state.pendingRemoval) { actions.perform($0) }
         .confirmBulkWatchChange(state.pendingBulkChange) { actions.perform($0) }
+        .downloadPrompts(state.downloadPrompt)
     }
 
     /// Asks the user to confirm a pending show or season change, warning what it does to the watch history.
@@ -389,7 +443,7 @@ extension View {
     }
 }
 
-private extension Binding {
+extension Binding {
     /// Whether an optional is set, for an `isPresented:` parameter. Setting it to false clears the optional.
     func isPresent<Wrapped>() -> Binding<Bool> where Value == Wrapped? {
         Binding<Bool>(

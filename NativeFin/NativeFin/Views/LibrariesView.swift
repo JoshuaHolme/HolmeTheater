@@ -20,7 +20,7 @@ struct LibrariesView: View {
     }
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.libraries() }) { libraries in
+        AsyncContent(load: { try await appModel.service.libraries() }, offersDownloads: true) { libraries in
             ScrollView {
                 // As many columns as fit, so a wide screen shows several cards across instead of stretching one.
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: 16)], spacing: 16) {

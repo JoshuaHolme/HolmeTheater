@@ -96,7 +96,7 @@ struct ShelfListView: View {
     }
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, destination: destination, state: $watchState) { effect in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: destination, state: $watchState) { effect in
             let before = items.count
             items = items.applying(effect)
             // Any rows that went are gone on the server too, so its next page starts that much earlier.

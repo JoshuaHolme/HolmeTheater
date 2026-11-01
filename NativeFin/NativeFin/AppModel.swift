@@ -37,6 +37,9 @@ final class AppModel {
     /// The backend the UI talks to. Swap in `MockMediaService` for previews and demos.
     let service: any MediaService
 
+    /// Movies and episodes saved for offline viewing. ``service`` answers from them when the server can't.
+    let downloads: DownloadManager
+
     /// The playback the player is showing, or the last one. Kept here rather than in the player, because SwiftUI
     /// can rebuild the player when the window changes shape (rotating, folding), and playback must carry on
     /// through that instead of starting again.
@@ -50,7 +53,9 @@ final class AppModel {
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NativeFin", category: "Session")
 
     init(service: any MediaService) {
-        self.service = service
+        let store = DownloadStore()
+        self.service = OfflineFallbackMediaService(base: service, store: store)
+        self.downloads = DownloadManager(service: service, store: store)
         // Mock runs (`-UseMockService`) get their own Keychain namespace; otherwise the canned session they save
         // would be restored against the real server on the next normal launch, which can never sign it in.
         let namespace = Bundle.main.bundleIdentifier ?? "JellyfinClient"
@@ -62,7 +67,10 @@ final class AppModel {
     /// It uses a separate Keychain namespace, so signing in inside a preview can never overwrite
     /// the session the real app restores at launch.
     init(service: any MediaService, state: SessionState) {
-        self.service = service
+        // Downloads go in a throwaway folder, with no background session, so a preview never touches real ones.
+        let store = DownloadStore(root: FileManager.default.temporaryDirectory.appending(path: "PreviewDownloads", directoryHint: .isDirectory))
+        self.service = OfflineFallbackMediaService(base: service, store: store)
+        self.downloads = DownloadManager(service: service, store: store, background: false)
         self.state = state
         self.keychain = KeychainStore(service: (Bundle.main.bundleIdentifier ?? "JellyfinClient") + ".previews")
     }
@@ -82,11 +90,11 @@ final class AppModel {
         }
 
         guard let saved else {
-            state = .signedOut
+            transition(to: .signedOut)
             return
         }
         await service.restore(saved)
-        state = .signedIn(saved)
+        transition(to: .signedIn(saved))
     }
 
     /// Re-reads the signed-in user's name and profile picture from the server, so changes made
@@ -106,7 +114,8 @@ final class AppModel {
             // Only act if the same user is still signed in; they may have signed out while this was in flight.
             guard session?.userID == current.userID else { return }
             Self.logger.notice("The server rejected the saved session; signing out.")
-            await signOut()
+            // The downloads stay, for when the same account signs back in.
+            await signOut(removingDownloads: false)
             return
         } catch {
             return
@@ -115,7 +124,7 @@ final class AppModel {
         // The user may have signed out, or switched accounts, while the request was in flight.
         guard updated != current, session?.userID == updated.userID else { return }
         persist(updated)
-        state = .signedIn(updated)
+        transition(to: .signedIn(updated))
     }
 
     /// Checks that `address` is a reachable Jellyfin server. Call before signing in.
@@ -144,19 +153,30 @@ final class AppModel {
     }
 
     /// Signs out on the server, deletes the saved session and cached artwork, and returns to the sign-in screen.
-    func signOut() async {
+    ///
+    /// - Parameter removingDownloads: Whether to delete downloads too. They're another person's data on a shared device,
+    ///   but not worth losing because a session simply expired.
+    func signOut(removingDownloads: Bool = true) async {
         playback?.stop()
         playback = nil
         await service.signOut()
         keychain.delete(account: Self.sessionAccount)
         // So the next person on a shared device doesn't see the previous user's artwork or profile picture.
         ImageCache.shared.removeAll()
-        state = .signedOut
+        // Likewise their downloaded videos and details. Other accounts' downloads on the device stay.
+        if removingDownloads { downloads.removeAllForAccount() }
+        transition(to: .signedOut)
     }
 
     private func finishSignIn(_ session: UserSession) {
         persist(session)
-        state = .signedIn(session)
+        transition(to: .signedIn(session))
+    }
+
+    /// Moves to a new state, and shows the downloads of whoever that leaves signed in.
+    private func transition(to newState: SessionState) {
+        state = newState
+        downloads.accountChanged(scope: cacheScope)
     }
 
     /// Saves the session so the next launch is already signed in. A failure only costs that convenience,

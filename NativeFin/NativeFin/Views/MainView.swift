@@ -6,16 +6,18 @@ import SwiftUI
 
 /// The signed-in app: one tab per top-level area, each with its own navigation stack.
 ///
-/// The account screen isn't a tab. Home puts a profile button in its own scrolling header;
-/// Libraries and Search have one in the navigation bar. Both open the account screen in a sheet.
+/// The account screen isn't a tab. Every tab has a profile button in its navigation bar, which opens the account screen
+/// in a sheet.
 struct MainView: View {
     @Environment(AppModel.self) private var appModel
 
-    private enum Section: Hashable { case home, libraries, search }
+    private enum Section: Hashable { case home, libraries, downloads, search }
 
-    @State private var selection = Section.home
+    /// With no network, the app opens on what can still be watched.
+    @State private var selection = NetworkMonitor.shared.isOnline ? Section.home : Section.downloads
     @State private var homePath = NavigationPath()
     @State private var librariesPath = NavigationPath()
+    @State private var downloadsPath = NavigationPath()
     @State private var searchPath = NavigationPath()
 
     var body: some View {
@@ -24,6 +26,7 @@ struct MainView: View {
                 NavigationStack(path: $homePath) {
                     HomeView()
                         .mediaNavigationDestinations()
+                        .accountButton()
                 }
             }
 
@@ -35,6 +38,18 @@ struct MainView: View {
                 }
             }
 
+            Tab("Downloads", systemImage: "arrow.down.circle", value: Section.downloads) {
+                NavigationStack(path: $downloadsPath) {
+                    DownloadsView()
+                        .mediaNavigationDestinations()
+                        .accountButton()
+                }
+            }
+            #if !os(tvOS)
+            // How many downloads are on their way; nothing shows when there are none. (Apple TV's tab bar has no badges.)
+            .badge(appModel.downloads.activeCount)
+            #endif
+
             Tab("Search", systemImage: "magnifyingglass", value: Section.search, role: .search) {
                 NavigationStack(path: $searchPath) {
                     SearchView()
@@ -43,6 +58,8 @@ struct MainView: View {
                 }
             }
         }
+        .environment(\.openDownloads, OpenDownloadsAction { selection = .downloads })
+        .downloadErrorAlert(appModel.downloads)
         // "Go to Show" in the player: once it has closed, open the show in the tab that's showing.
         .onChange(of: appModel.pendingShow) { _, show in
             guard let show else { return }
@@ -50,6 +67,7 @@ struct MainView: View {
             switch selection {
             case .home: homePath.append(show)
             case .libraries: librariesPath.append(show)
+            case .downloads: downloadsPath.append(show)
             case .search: searchPath.append(show)
             }
         }

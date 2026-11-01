@@ -35,8 +35,13 @@ struct AsyncContent<Value, Content: View>: View {
     /// owns the pull to refresh, so it isn't also attached to the scroll views inside.
     var pullsToRefresh = true
 
+    /// Whether the error page, when the device is offline, links to the Downloads tab.
+    var offersDownloads = false
+
     /// Builds the loaded UI from the fetched value.
     @ViewBuilder let content: (Value) -> Content
+
+    @Environment(\.openDownloads) private var openDownloads
 
     @State private var phase: Phase = .loading
 
@@ -61,6 +66,10 @@ struct AsyncContent<Value, Content: View>: View {
                     Button("Retry") {
                         phase = .loading
                         Task { await run() }
+                    }
+
+                    if offersDownloads, !NetworkMonitor.shared.isOnline, let openDownloads {
+                        Button("Go to Downloads") { openDownloads() }
                     }
                 }
             }
@@ -90,6 +99,22 @@ struct AsyncContent<Value, Content: View>: View {
             phase = .failed(error.localizedDescription)
         }
     }
+}
+
+/// Switches to the Downloads tab. Call it like a function.
+struct OpenDownloadsAction: Equatable {
+    let action: () -> Void
+
+    func callAsFunction() { action() }
+
+    /// Any two are equal: there's only ever one tab bar, and every action switches it to the same tab. Without this, the
+    /// environment couldn't tell a new action from the old one, and would update every view reading it each time.
+    static func == (lhs: Self, rhs: Self) -> Bool { true }
+}
+
+extension EnvironmentValues {
+    /// Switches to the Downloads tab, or nil where there's no tab bar to switch.
+    @Entry var openDownloads: OpenDownloadsAction?
 }
 
 /// A handle for reloading an ``AsyncContent`` from outside it, and waiting until the new value is showing.

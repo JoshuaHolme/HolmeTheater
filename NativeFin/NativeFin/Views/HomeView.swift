@@ -6,8 +6,8 @@ import SwiftUI
 
 /// Continue Watching, Up Next, plus a "Recently Added" shelf for each movie / TV library.
 ///
-/// Instead of a system navigation title, it draws its own large "Home" heading with the profile
-/// button beside it, as part of the scrolling content, so the two scroll away together.
+/// Instead of a system navigation title, it draws its own large "Home" heading as part of the scrolling content. The
+/// profile button is in the navigation bar, as on the other tabs.
 struct HomeView: View {
     @Environment(AppModel.self) private var appModel
 
@@ -74,9 +74,9 @@ struct HomeView: View {
                             .padding(.top)
                     }
 
-                    // Loads inside the scroll view, below the header, so the profile button stays
+                    // Loads inside the scroll view, below the header, so the profile button in the bar stays
                     // reachable (e.g. to sign out) even if loading fails.
-                    AsyncContent(load: loadHome, reloadID: reloadCount, refresher: refresher, pullsToRefresh: false) { data in
+                    AsyncContent(load: loadHome, reloadID: reloadCount, refresher: refresher, pullsToRefresh: false, offersDownloads: true) { data in
                         LazyVStack(alignment: .leading, spacing: 24) {
                             if !data.hero.isEmpty {
                                 HomeHeroCarousel(
@@ -126,10 +126,13 @@ struct HomeView: View {
             .ignoresSafeArea(edges: .top)
             .pullToRefresh { await refresher.refresh() }
         }
-        // The title is still set so pushed screens can show "Home" on their back button;
-        // the bar itself is hidden because the header replaces it.
+        // The title is set so pushed screens can show "Home" on their back button. The bar itself only holds the profile
+        // button (added where the tab is made): the heading below already names the screen.
         .navigationTitle("Home")
-        .toolbarVisibility(.hidden, for: .navigationBar)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(removing: .title)
+        #endif
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: reload) }
     }
@@ -146,7 +149,7 @@ struct HomeView: View {
         )
     }
 
-    /// Large heading with the profile button on the same line.
+    /// Large heading. The profile button is in the navigation bar, above it.
     private var header: some View {
         HStack {
             Text("Home")
@@ -154,8 +157,6 @@ struct HomeView: View {
                 .accessibilityAddTraits(.isHeader)
 
             Spacer()
-
-            AccountButton()
         }
         .padding(.horizontal)
     }

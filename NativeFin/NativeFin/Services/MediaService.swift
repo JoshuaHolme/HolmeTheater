@@ -225,6 +225,15 @@ nonisolated protocol MediaService: Sendable {
     /// - Throws: ``MediaServiceError/itemNotPlayable`` if the server offers no usable stream.
     func playbackInfo(for item: MediaItem, options: PlaybackOptions) async throws -> PlaybackInfo
 
+    /// Asks the server for a single file that can be saved and played later without the server.
+    ///
+    /// Like ``playbackInfo(for:options:)``, but the URL is always one plain file URLSession can fetch: the original
+    /// file if this device can play it, otherwise a progressive MP4 the server converts it to.
+    ///
+    /// - Parameter item: A movie or episode.
+    /// - Returns: The file's URL, and the tracks it carries.
+    func downloadInfo(for item: MediaItem) async throws -> PlaybackInfo
+
     /// The intro, credits and other stretches the server has marked in an item, so the player can offer to skip
     /// them. Empty if the server has none, or can't say: this is only a convenience, so it never throws.
     func segments(for item: MediaItem) async -> [MediaSegment]
@@ -266,4 +275,25 @@ nonisolated protocol MediaService: Sendable {
     ///
     /// - Parameter item: A movie or episode.
     func removeFromContinueWatching(_ item: MediaItem) async throws
+
+    /// Sends watch progress made while the server couldn't be reached, e.g. from a downloaded copy.
+    ///
+    /// If the server has a more recent watch of the item than `date`, it's left alone.
+    ///
+    /// - Parameters:
+    ///   - itemID: The movie's or episode's ID.
+    ///   - position: Where playback stopped, in seconds. Ignored if `isPlayed`.
+    ///   - isPlayed: Whether the item was watched to the end.
+    ///   - date: When it was watched.
+    func syncProgress(itemID: String, position: TimeInterval, isPlayed: Bool, date: Date) async throws
+}
+
+extension MediaService {
+    /// Services with no server of their own have nothing to send it to.
+    func syncProgress(itemID: String, position: TimeInterval, isPlayed: Bool, date: Date) async throws {}
+
+    /// Services with nothing better to offer download what they'd stream.
+    func downloadInfo(for item: MediaItem) async throws -> PlaybackInfo {
+        try await playbackInfo(for: item, options: PlaybackOptions())
+    }
 }
