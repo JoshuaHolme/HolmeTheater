@@ -250,6 +250,9 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable, Codable {
 
     /// The name the server sorts the item by, e.g. "Godfather, The" or a name set by hand. `nil` if it doesn't say.
     var sortName: String? = nil
+
+    /// When the user last played the item, or nil if they never have.
+    var lastPlayedDate: Date? = nil
 }
 
 /// A chapter of a movie or episode, as the server lists it.

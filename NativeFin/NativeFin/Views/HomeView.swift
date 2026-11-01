@@ -187,10 +187,12 @@ struct HomeView: View {
         let settings = appModel.homeSettings
         let sections = settings.visibleSections
         let combined = settings.combinesUpNext
-        let libraries = try await service.libraries().filter { $0.kind == .movies || $0.kind == .tvShows }
+        let allLibraries = try await service.libraries()
+        let libraries = allLibraries.filter { $0.kind == .movies || $0.kind == .tvShows }
 
-        // A section's libraries, or nil for all of them.
-        func ids(_ section: HomeSettings.Section) -> [String]? { settings.libraryIDs(for: section, among: libraries) }
+        // A section's libraries, or nil for all of them. Out of every library, since one of a kind the settings don't
+        // list (a mixed library, say) can't have been turned off and still belongs in Continue Watching.
+        func ids(_ section: HomeSettings.Section) -> [String]? { settings.libraryIDs(for: section, among: allLibraries) }
 
         let continueIDs = ids(.continueWatching)
         let nextUpIDs = ids(.nextUp)

@@ -124,8 +124,14 @@ final class HomeSettings {
     func moveSections(from source: IndexSet, to destination: Int) {
         var shown = sections
         shown.move(fromOffsets: source, toOffset: destination)
-        // Combined away, Up Next isn't in the list being moved; it keeps its place behind the sections after it.
-        if stored.combinesUpNext { shown.append(.nextUp) }
+        // Combined away, Up Next isn't in the list being moved. It goes back in right after the section it followed,
+        // so it's where it was if combining is turned off again.
+        if stored.combinesUpNext {
+            let order = stored.order
+            let before = order.firstIndex(of: .nextUp).flatMap { $0 > 0 ? order[$0 - 1] : nil }
+            let index = before.flatMap { shown.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+            shown.insert(.nextUp, at: index)
+        }
         stored.order = shown
     }
 
@@ -172,8 +178,15 @@ final class HomeSettings {
         stored.libraryOrder = order
     }
 
+    /// Whether the user has turned off any library for `section`. If not, it takes from every library, so there's no need
+    /// to look them up.
+    func excludesLibraries(in section: Section) -> Bool {
+        !(stored.excludedLibraries[section.rawValue] ?? []).isEmpty
+    }
+
     /// The IDs of the libraries, out of `libraries`, that `section` takes items from. Nil means all of them, which lets
-    /// the server skip filtering.
+    /// the server skip filtering. Pass every library, not only the ones the settings list: one that isn't listed
+    /// can't have been turned off, so it's always included.
     func libraryIDs(for section: Section, among libraries: [Library]) -> [String]? {
         let excluded = stored.excludedLibraries[section.rawValue] ?? []
         guard libraries.contains(where: { excluded.contains($0.id) }) else { return nil }
