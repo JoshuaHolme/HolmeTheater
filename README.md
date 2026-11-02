@@ -1,11 +1,11 @@
-# NativeFin
+# Holme Theater
 
 A native [Jellyfin](https://jellyfin.org) client for iOS and tvOS, written in SwiftUI.
 
 > **Status: early development.** The core flow works (sign in, browse, search, play), but the UI is deliberately
 > bare-bones and many features are missing. See [Roadmap](#roadmap).
 
-NativeFin is an independent project and is not affiliated with or endorsed by the Jellyfin project.
+Holme Theater is an independent project and is not affiliated with or endorsed by the Jellyfin project.
 
 ## Features
 
@@ -37,7 +37,7 @@ Not implemented yet:
 
 ## Building
 
-1. Open `NativeFin/NativeFin.xcodeproj` in Xcode. Swift Package Manager fetches the dependencies automatically.
+1. Open `HolmeTheater/HolmeTheater.xcodeproj` in Xcode. Swift Package Manager fetches the dependencies automatically.
 2. In the target's **Signing & Capabilities** tab, choose your own development team and set a bundle identifier you own.
 3. Pick an iPhone, iPad, or Apple TV destination and run.
 
@@ -76,5 +76,5 @@ types and methods with `///` comments.
 
 ## License
 
-NativeFin is licensed under the [Mozilla Public License 2.0](LICENSE). It depends on
+Holme Theater is licensed under the [Mozilla Public License 2.0](LICENSE). It depends on
 [jellyfin-sdk-swift](https://github.com/jellyfin/jellyfin-sdk-swift), which is also MPL-2.0.

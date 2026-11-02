@@ -5,8 +5,8 @@
 import SwiftUI
 
 /// App entry point. Creates the shared `AppModel` and restores any saved session at launch.
-@main struct NativeFinApp: App {
-    @State private var appModel = AppModel(service: NativeFinApp.makeService())
+@main struct HolmeTheaterApp: App {
+    @State private var appModel = AppModel(service: HolmeTheaterApp.makeService())
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -37,6 +37,9 @@ import SwiftUI
             if scenePhase == .active {
                 appModel.themeSettings.refreshDate()
                 Task { await appModel.refreshProfile() }
+            } else if scenePhase == .background {
+                // Downloads' changes are written in the background, and the app may be suspended any moment now.
+                appModel.downloads.store.flush()
             }
         }
     }

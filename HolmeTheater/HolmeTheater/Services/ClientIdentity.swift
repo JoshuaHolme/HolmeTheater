@@ -40,7 +40,10 @@ nonisolated struct ClientIdentity: Sendable {
         #endif
 
         return ClientIdentity(
-            name: Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Jellyfin Client",
+            // The name people see ("Holme Theater"), which the server shows in its list of devices, rather than the
+            // bundle name, which has no space.
+            name: (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName")
+                ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName")) as? String ?? "Jellyfin Client",
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
             deviceName: deviceName,
             deviceID: deviceID

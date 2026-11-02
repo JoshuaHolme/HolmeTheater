@@ -119,7 +119,7 @@ enum ExperimentalDownloads {
         }
         lines += [
             String(localized: "Before a trip, open Downloads and check that everything you want is still listed. If something says it was removed, download it again while you still have internet."),
-            String(localized: "Leave NativeFin open on this screen until a download finishes. Downloads can stop if the Apple TV goes to sleep or you leave the app."),
+            String(localized: "Leave Holme Theater open on this screen until a download finishes. Downloads can stop if the Apple TV goes to sleep or you leave the app."),
             String(localized: "Some videos have to be converted by your server first, which can take a long time."),
             String(localized: "Without internet you can watch your downloads, but you can't browse or search the rest of your library."),
             String(localized: "What you watch offline is added to your Jellyfin account the next time you're online.")
