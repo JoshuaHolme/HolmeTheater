@@ -36,10 +36,9 @@ final class PlayerControlsModel {
     var videoHeight: CGFloat { videoSize.height }
     private(set) var chapters: [PlayerChapter] = []
 
-    #if DEBUG
-    /// Moves the position for a preview, which has no video to play.
+    /// Moves the position for a preview, which has no video to play. Not wrapped in `#if DEBUG`
+    /// because `#Preview` bodies are compiled in Release builds too.
     func setPreviewPosition(_ seconds: TimeInterval) { currentTime = seconds }
-    #endif
 
     /// Whether the panel for adjusting the subtitles' timing is open over the picture. Everything else is cleared
     /// away while it is, so the player's views both read it.

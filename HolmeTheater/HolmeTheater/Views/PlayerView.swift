@@ -316,13 +316,12 @@ final class PlaybackSession {
         return episodes[(index + 1)...].first { $0.kind == .episode }
     }
 
-    #if DEBUG
-    /// Sets what a preview shows, which has no server to ask.
+    /// Sets what a preview shows, which has no server to ask. Not wrapped in `#if DEBUG` because
+    /// `#Preview` bodies are compiled in Release builds too.
     func setPreview(nextEpisode: MediaItem?, segments: [MediaSegment]) {
         self.nextEpisode = nextEpisode
         self.segments = segments
     }
-    #endif
 
     /// The marked stretch `time` is in, if any.
     func segment(at time: TimeInterval) -> MediaSegment? {
