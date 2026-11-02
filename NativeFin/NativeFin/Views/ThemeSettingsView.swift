@@ -153,7 +153,8 @@ private struct ThemeScheduleDetailView: View {
             set: { month in set(MonthDay(month: month, day: min(value.day, Self.days(in: month)))) }
         )) {
             ForEach(1...12, id: \.self) { month in
-                Text(Calendar.current.monthSymbols[month - 1]).tag(month)
+                // Gregorian month names, in the user's language: the schedule's months are Gregorian ones.
+                Text(Calendar.themes.monthSymbols[month - 1]).tag(month)
             }
         }
         Picker("Day", selection: Binding(
@@ -226,7 +227,8 @@ private struct ThemeScheduleDetailView: View {
 private enum ThemeDates {
     static func text(for theme: AppTheme, settings: ThemeSettings) -> String {
         guard let dates = settings.schedule.upcomingDates(for: theme, from: settings.today) else { return "" }
-        let style = Date.FormatStyle().month(.abbreviated).day()
+        // Gregorian, to match the month and day pickers whatever calendar the user has chosen.
+        let style = Date.FormatStyle(calendar: .themes).month(.abbreviated).day()
         return "\(dates.start.formatted(style)) – \(dates.end.formatted(style))"
     }
 }

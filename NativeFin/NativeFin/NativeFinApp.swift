@@ -14,9 +14,17 @@ import SwiftUI
             ContentView()
                 .environment(appModel)
                 .environment(appModel.downloads)
+                // The seasonal theme's color, or the usual one.
+                .tint(appModel.themeSettings.activeTheme?.accent)
                 .task {
                     await appModel.restoreSession()
                     await appModel.refreshProfile()
+                }
+                // Midnight, a new time zone, or the clock being set: the theme may be due to change.
+                .task {
+                    for await _ in NotificationCenter.default.notifications(named: UIApplication.significantTimeChangeNotification) {
+                        appModel.themeSettings.refreshDate()
+                    }
                 }
         }
         // The system wakes the app when downloads finish while it's away. The session is already attached to the

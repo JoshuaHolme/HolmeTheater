@@ -307,9 +307,14 @@ struct ThemeParticles: View {
                     simulation.step(to: timeline.date, size: size, effect: effect)
                     simulation.draw(in: context, topInset: topInset)
                 } symbols: {
-                    // Each piece is drawn once here and reused for every particle that shows it.
+                    // Each piece is drawn once here and reused for every particle that shows it: sharp, and softened
+                    // for the ones passing in front, so nothing is blurred frame by frame. Padded so the blur isn't cut off.
                     ForEach(effect.pieces.indices, id: \.self) { index in
                         PieceView(piece: effect.pieces[index]).tag(index)
+                        PieceView(piece: effect.pieces[index])
+                            .padding(6)
+                            .blur(radius: 2)
+                            .tag(effect.pieces.count + index)
                     }
                 }
             }
@@ -440,6 +445,8 @@ final class ParticleSimulation {
         var phase: Double
         /// Which of the effect's pieces it shows.
         var piece: Int
+        /// When it appeared, in the simulation's time, so it can fade in.
+        var born: Double
     }
 
     private var particles: [Particle] = []
@@ -501,7 +508,10 @@ final class ParticleSimulation {
             )
             velocity = CGVector(dx: direction * .random(in: 30...55) * depth.speed, dy: .random(in: motion.fallRange))
         } else {
-            position = CGPoint(x: .random(in: 0...size.width), y: anywhere ? .random(in: 0...size.height) : -30)
+            // Drifting things barely move up or down, so starting at the top edge they'd never get on screen (or drift
+            // straight back off it). They appear anywhere instead, fading in where they are.
+            let onScreen = anywhere || motion == .drift
+            position = CGPoint(x: .random(in: 0...size.width), y: onScreen ? .random(in: 0...size.height) : -30)
             velocity = CGVector(dx: .random(in: -6...6), dy: Double.random(in: motion.fallRange) * depth.speed)
         }
         let piece = Self.randomPiece(of: effect)
@@ -513,7 +523,8 @@ final class ParticleSimulation {
             rotation: motion == .fly ? 0 : .random(in: 0..<(.pi * 2)),
             spin: motion.spin == 0 ? 0 : .random(in: -motion.spin...motion.spin),
             phase: .random(in: 0..<(.pi * 2)),
-            piece: piece
+            piece: piece,
+            born: time
         )
     }
 
@@ -532,14 +543,16 @@ final class ParticleSimulation {
     func draw(in context: GraphicsContext, topInset: CGFloat) {
         guard let effect else { return }
         let motion = effect.motion
-        // Resolved once a frame, not once a particle.
-        let symbols = effect.pieces.indices.map { context.resolveSymbol(id: $0) }
+        // Resolved once a frame, not once a particle: the sharp pieces, then the softened ones.
+        let symbols = (0..<(effect.pieces.count * 2)).map { context.resolveSymbol(id: $0) }
 
         for p in particles {
-            guard let symbol = symbols[p.piece] else { continue }
+            guard let symbol = symbols[p.depth == .near ? effect.pieces.count + p.piece : p.piece] else { continue }
             var opacity = motion.opacity * p.depth.opacity
-            // Faded in at the top and out at the bottom, so nothing pops in or crowds the tab bar.
+            // Faded in at the top and out at the bottom, so nothing pops in or crowds the tab bar, and faded in as it
+            // appears, for the ones that appear on screen.
             opacity *= min(max((p.position.y + 30) / 70, 0), 1) * min(max((size.height - p.position.y) / 90, 0), 1)
+            opacity *= min((time - p.born) / 1.5, 1)
             if motion == .drift {
                 opacity *= 0.3 + 0.7 * (0.5 + 0.5 * sin(time * (1.2 + p.phase * 0.3) + p.phase))
             }
@@ -548,7 +561,6 @@ final class ParticleSimulation {
             var ctx = context
             ctx.opacity = opacity
             ctx.translateBy(x: p.position.x, y: p.position.y)
-            if p.depth == .near { ctx.addFilter(.blur(radius: 1.2)) }
             ctx.rotate(by: .radians(p.rotation))
 
             var scale = (x: p.size / ThemeParticles.pieceSize, y: p.size / ThemeParticles.pieceSize)

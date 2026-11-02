@@ -43,8 +43,6 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    var isHoliday: Bool { Self.holidays.contains(self) }
-
     var symbolName: String {
         switch self {
         case .spring: "camera.macro"
@@ -80,7 +78,7 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
 
     /// What the Home heading says instead of "Home" while the theme is showing, or nil to leave it. Only holidays have
     /// one; Halloween saves "Trick or Treat!" for the day itself.
-    func greeting(on date: Date, calendar: Calendar = .current) -> String? {
+    func greeting(on date: Date, calendar: Calendar = .themes) -> String? {
         switch self {
         case .newYears: String(localized: "Happy New Year")
         case .stPatricksDay: String(localized: "Happy St. Patrick's Day")
@@ -250,9 +248,23 @@ struct MonthDay: Codable, Hashable, Comparable {
         (lhs.month, lhs.day) < (rhs.month, rhs.day)
     }
 
-    /// The day in a leap year, so February 29 exists, for showing it.
-    var referenceDate: Date {
-        Calendar(identifier: .gregorian).date(from: DateComponents(year: 2000, month: month, day: day)) ?? .now
+    /// The day in `year`. February 29 becomes the 28th in a year without one, rather than rolling over into March.
+    func date(in year: Int, calendar: Calendar) -> Date? {
+        guard let firstOfMonth = calendar.date(from: DateComponents(year: year, month: month, day: 1)),
+              let days = calendar.range(of: .day, in: .month, for: firstOfMonth)?.count
+        else { return nil }
+        return calendar.date(from: DateComponents(year: year, month: month, day: min(day, days)))
+    }
+}
+
+extension Calendar {
+    /// The calendar themes are worked out in: Gregorian, whichever calendar the user has chosen, since that's the one
+    /// the holidays and seasons follow. In the user's time zone and locale.
+    static var themes: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        calendar.locale = .current
+        return calendar
     }
 }
 
@@ -276,7 +288,7 @@ enum ThemeWindow: Codable, Hashable {
 struct ThemeSchedule {
     /// Every theme's window, including ones left out of the schedule, since one holiday can start after another ends.
     let windows: [AppTheme: ThemeWindow]
-    var calendar: Calendar = .current
+    var calendar: Calendar = .themes
 
     func window(for theme: AppTheme) -> ThemeWindow {
         windows[theme] ?? theme.defaultWindow
@@ -297,10 +309,12 @@ struct ThemeSchedule {
         case .daysBefore(let days):
             first = calendar.date(byAdding: .day, value: -days, to: holiday)
         case .dayAfterEnd(let other):
-            // One level only, so two holidays can never wait on each other.
-            first = depth == 0
+            // One level only, so two holidays can never wait on each other. However long the other runs, this one
+            // still starts by its own day, so it can't be pushed out of the year altogether.
+            let afterOther = depth == 0
                 ? interval(for: other, year: year, depth: depth + 1).flatMap { calendar.date(byAdding: .day, value: 1, to: $0.end) }
                 : nil
+            first = afterOther.map { min($0, holiday) }
         }
         guard let first, first <= end else { return nil }
         return (first, end, holiday)
@@ -346,8 +360,8 @@ struct ThemeSchedule {
             let today = MonthDay(day, calendar: calendar)
             let startYear = (start > end && today <= end) ? year - 1 : (end < today && start <= end ? year + 1 : year)
             let endYear = start <= end ? startYear : startYear + 1
-            guard let first = calendar.date(from: DateComponents(year: startYear, month: start.month, day: start.day)),
-                  let last = calendar.date(from: DateComponents(year: endYear, month: end.month, day: end.day))
+            guard let first = start.date(in: startYear, calendar: calendar),
+                  let last = end.date(in: endYear, calendar: calendar)
             else { return nil }
             return (first, last)
         case .around:
