@@ -38,6 +38,11 @@ actor JellyfinMediaService: MediaService {
     private var client: JellyfinClient?
     private var server: ServerInfo?
 
+    /// Counts calls to `connect(to:)`, so only the latest one sets `client`. An earlier one can finish last (its HTTPS
+    /// attempt timed out first, say), and letting it win would send the user's password to a server they've since
+    /// typed over, maybe without encryption.
+    private var connectGeneration = 0
+
     /// Set once signed in; nil while only connected.
     private var session: UserSession? {
         didSet {
@@ -58,26 +63,35 @@ actor JellyfinMediaService: MediaService {
         let candidates = Self.candidateURLs(from: address)
         guard !candidates.isEmpty else { throw MediaServiceError.invalidServerURL }
 
+        connectGeneration += 1
+        let generation = connectGeneration
+
         // Keep every attempt's failure so the user sees why each URL didn't work.
         var failures: [String] = []
 
         for url in candidates {
             let candidate = makeClient(url: url, accessToken: nil)
+            let info: PublicSystemInfo
             do {
                 // The public info endpoint needs no authentication, so it doubles as a "is this Jellyfin?" check.
-                let info = try await candidate.send(Paths.getPublicSystemInfo).value
-                let server = ServerInfo(
-                    id: info.id ?? "",
-                    name: info.serverName ?? url.host() ?? "Jellyfin",
-                    url: url
-                )
-                client = candidate
-                self.server = server
-                session = nil
-                return server
+                info = try await candidate.send(Paths.getPublicSystemInfo).value
             } catch {
+                // Nor is the next address worth trying for a connect that has been superseded.
+                guard generation == connectGeneration else { throw CancellationError() }
                 failures.append("\(url.absoluteString): \(error.localizedDescription)")
+                continue
             }
+            // A newer connect started while this one waited, and the server it finds is the one to use.
+            guard generation == connectGeneration else { throw CancellationError() }
+            let server = ServerInfo(
+                id: info.id ?? "",
+                name: info.serverName ?? url.host() ?? "Jellyfin",
+                url: url
+            )
+            client = candidate
+            self.server = server
+            session = nil
+            return server
         }
 
         throw MediaServiceError.underlying("Couldn't connect to a Jellyfin server.\n" + failures.joined(separator: "\n"))
@@ -155,6 +169,8 @@ actor JellyfinMediaService: MediaService {
     }
 
     func restore(_ session: UserSession) async {
+        // A connect still going would replace this client when it finished.
+        connectGeneration += 1
         client = makeClient(url: session.server.url, accessToken: session.accessToken)
         server = session.server
         self.session = session
@@ -163,6 +179,7 @@ actor JellyfinMediaService: MediaService {
     func signOut() async {
         // Revoke the token server-side, but clear local state even if that fails (e.g. offline).
         try? await client?.signOut()
+        connectGeneration += 1
         client = nil
         server = nil
         session = nil
@@ -233,15 +250,12 @@ actor JellyfinMediaService: MediaService {
         offset: Int,
         limit: Int,
         byLastPlayed: Bool = false,
-        _ fetch: (_ parentID: String?, _ offset: Int, _ limit: Int) async throws -> [MediaItem]
+        _ fetch: @escaping @Sendable (_ parentID: String?, _ offset: Int, _ limit: Int) async throws -> [MediaItem]
     ) async throws -> [MediaItem] {
         guard let libraryIDs else { return try await fetch(nil, offset, limit) }
         if libraryIDs.count == 1 { return try await fetch(libraryIDs[0], offset, limit) }
 
-        var lists: [[MediaItem]] = []
-        for id in libraryIDs {
-            lists.append(try await fetch(id, 0, offset + limit))
-        }
+        let lists = try await Self.fetchEach(libraryIDs) { id in try await fetch(id, 0, offset + limit) }
 
         var seen = Set<MediaItem.ID>()
         var merged: [MediaItem] = []
@@ -266,6 +280,22 @@ actor JellyfinMediaService: MediaService {
         return Array(merged.dropFirst(offset).prefix(limit))
     }
 
+    /// Runs `fetch` for every library at once, rather than one after another, and returns the results in the libraries'
+    /// order.
+    private static func fetchEach<ID: Sendable, Result: Sendable>(
+        _ ids: [ID],
+        _ fetch: @escaping @Sendable (ID) async throws -> Result
+    ) async throws -> [Result] {
+        try await withThrowingTaskGroup(of: (Int, Result).self) { group in
+            for (index, id) in ids.enumerated() {
+                group.addTask { (index, try await fetch(id)) }
+            }
+            var results = [Result?](repeating: nil, count: ids.count)
+            for try await (index, result) in group { results[index] = result }
+            return results.compactMap { $0 }
+        }
+    }
+
     func resumeItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
         return try await page(from: libraryIDs, offset: offset, limit: limit, byLastPlayed: true) { parentID, offset, limit in
@@ -278,7 +308,7 @@ actor JellyfinMediaService: MediaService {
                 mediaTypes: [.video],
                 enableUserData: true
             ))
-            return try await mapItems(send(request, with: client), client: client)
+            return try await self.mapItems(self.send(request, with: client), client: client)
         }
     }
 
@@ -297,7 +327,7 @@ actor JellyfinMediaService: MediaService {
                 enableResumable: false,
                 enableRewatching: false
             ))
-            return try await mapItems(send(request, with: client), client: client)
+            return try await self.mapItems(self.send(request, with: client), client: client)
         }
     }
 
@@ -397,8 +427,7 @@ actor JellyfinMediaService: MediaService {
         // The server can't filter by month and day, only by date range, so it's asked for every movie and show and
         // they're filtered here. Only the little that cards need is requested, since there can be thousands.
         let parentIDs: [String?] = libraryIDs ?? [nil]
-        var items: [MediaItem] = []
-        for parentID in parentIDs {
+        let items = try await Self.fetchEach(parentIDs) { parentID in
             let request = Paths.getItems(parameters: .init(
                 userID: session.userID,
                 isRecursive: true,
@@ -407,8 +436,8 @@ actor JellyfinMediaService: MediaService {
                 includeItemTypes: [.movie, .series],
                 enableUserData: true
             ))
-            items += try await mapItems(send(request, with: client), client: client)
-        }
+            return try await self.mapItems(self.send(request, with: client), client: client)
+        }.flatMap { $0 }
 
         // Premiere dates are calendar dates stored at midnight UTC, so they're read as UTC, not in the user's zone.
         let matches = items

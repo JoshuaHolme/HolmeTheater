@@ -336,6 +336,9 @@ final class PlaybackSession {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
+    /// Fetches subtitle files. Their URLs carry the access token, which the shared session's cache would write to disk.
+    private static let subtitleSession = URLSession(configuration: .ephemeral)
+
     /// Fetches the lines of the selected subtitle track, or clears them if there's nothing for the app to draw.
     private func loadSubtitleCues() {
         cueTask?.cancel()
@@ -343,7 +346,7 @@ final class PlaybackSession {
         guard !info.subtitlesBurnedIn, let subtitleIndex,
               let url = info.subtitleTracks.first(where: { $0.index == subtitleIndex })?.url else { return }
         cueTask = Task {
-            guard let (data, _) = try? await URLSession.shared.data(from: url), !Task.isCancelled else { return }
+            guard let (data, _) = try? await Self.subtitleSession.data(from: url), !Task.isCancelled else { return }
             subtitleCues = WebVTT.parse(String(decoding: data, as: UTF8.self))
         }
     }
@@ -372,6 +375,9 @@ final class PlaybackSession {
         guard !isStopped else { return }
         player.play()
         await applyTrackSelection()
+        // Closed while the tracks were being chosen: `stop()` has already run and found nothing to cancel, so
+        // starting the reports now would leave them running with no one to stop them.
+        guard !isStopped else { return }
         loadSubtitleCues()
 
         Task { segments = await service.segments(for: item) }
@@ -562,7 +568,7 @@ final class PlaybackSession {
 }
 
 #if os(iOS)
-/// The video with NativeFin's own controls on top.
+/// The video with the app's own controls on top.
 private struct CustomPlayer: View {
     let item: MediaItem
     let session: PlaybackSession

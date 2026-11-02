@@ -33,16 +33,16 @@ enum DownloadStatus: Equatable {
 /// file, the item's details, cast and bios, artwork, subtitles and skip markers are saved too, so it can be shown and
 /// played with no server (see ``OfflineFallbackMediaService``).
 ///
-/// Only the signed-in account's downloads are visible (see ``accountChanged(scope:)``).
+/// Only the signed-in account's downloads are visible (see ``accountChanged(scope:accessToken:)``).
 @Observable
 final class DownloadManager {
     /// The background session's identifier, which the system uses to wake the app when downloads finish.
-    static let sessionIdentifier = (Bundle.main.bundleIdentifier ?? "NativeFin") + ".downloads"
+    static let sessionIdentifier = (Bundle.main.bundleIdentifier ?? "HolmeTheater") + ".downloads"
 
     /// How many downloads run at once. Each is a whole movie or episode, so more would only slow each down.
     private static let maxConcurrent = 2
 
-    private nonisolated static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NativeFin", category: "Downloads")
+    private nonisolated static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "Downloads")
 
     /// The account's downloads in every state, oldest first. Changes with every tick of progress, so views that only
     /// care whether something is downloaded read ``completedIDs`` instead.
@@ -72,6 +72,14 @@ final class DownloadManager {
     @ObservationIgnored private let service: any MediaService
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private var scope = ""
+
+    /// ``DownloadStore/tokenFingerprint(_:)`` of the signed-in session's access token, so resume data made with an
+    /// older one isn't used.
+    @ObservationIgnored private var tokenFingerprint: String?
+
+    /// For the subtitle and artwork requests made while preparing a download. Subtitle URLs carry the access token, and
+    /// the shared session's cache would write them to disk.
+    @ObservationIgnored private let detailsSession = URLSession(configuration: .ephemeral)
 
     /// Items being prepared (details, artwork, the file's URL), by item ID, so they can be cancelled. Only ever the
     /// signed-in account's: changing accounts cancels them.
@@ -151,7 +159,10 @@ final class DownloadManager {
 
     /// Shows the downloads of the account that's signed in (or none, when `scope` is empty), and picks up any that
     /// were interrupted.
-    func accountChanged(scope newScope: String) {
+    ///
+    /// - Parameter accessToken: The signed-in session's token, which paused downloads' resume data has to match.
+    func accountChanged(scope newScope: String, accessToken: String?) {
+        tokenFingerprint = accessToken.map(DownloadStore.tokenFingerprint)
         guard newScope != scope else { return }
         // What the last account was preparing stops; its records stay `.preparing`, which `resumeInterrupted` queues
         // again when that account is back.
@@ -214,6 +225,12 @@ final class DownloadManager {
     func removeAllForAccount() {
         // Which also takes down the Live Activity, now there's nothing left in the batch.
         remove(ids: store.records.map(\.id))
+    }
+
+    /// Deletes what paused downloads kept to carry on from, for when the session ends but the downloads stay. It holds the
+    /// session's access token, which shouldn't outlive it on disk. Those downloads start again when resumed.
+    func discardResumeData() {
+        store.removeResumeData()
     }
 
     /// Lets the system's background-session wake-up finish once this app has been told about every finished download.
@@ -396,15 +413,17 @@ final class DownloadManager {
         preparations[id]?.cancel()
         preparations[id] = nil
 
-        let directory = store.itemDirectory(for: id)
-        let descriptions: Set<String> = [taskKey(id), id]
+        let store = store
+        let key = taskKey(id)
+        let descriptions: Set<String> = [key, id]
         session.getAllTasks { tasks in
             for case let task as URLSessionDownloadTask in tasks where task.taskDescription.map(descriptions.contains) == true {
-                // What's arrived so far is kept, so resuming carries on instead of starting again.
+                // What's arrived so far is kept, so resuming carries on instead of starting again. Not if the download
+                // was removed before this arrived, which the store checks.
+                let requestURL = task.originalRequest?.url
                 task.cancel { data in
                     guard let data else { return }
-                    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                    try? data.write(to: directory.appending(path: DownloadSessionDelegate.resumeFileName))
+                    store.saveResumeData(data, key: key, requestURL: requestURL)
                 }
             }
         }
@@ -475,14 +494,15 @@ final class DownloadManager {
         do {
             let directory = try store.makeItemDirectory(key: key)
 
-            // A download that was paused or interrupted carries on from where it got to. Checked before the saved
-            // progress is used up, so a pause that came first keeps it for later.
-            let resumeFile = directory.appending(path: DownloadSessionDelegate.resumeFileName)
-            if store.record(key: key)?.info != nil, let data = try? Data(contentsOf: resumeFile) {
+            // A download that was paused or interrupted carries on from where it got to, if it was this session that
+            // started it: the saved request has the token in it. Checked before the saved progress is used up, so a pause
+            // that came first keeps it for later.
+            if store.record(key: key)?.info != nil {
                 guard isStillPreparing(key) else { return }
-                try? FileManager.default.removeItem(at: resumeFile)
-                begin(session.downloadTask(withResumeData: data), key: key)
-                return
+                if let data = store.takeResumeData(key: key, tokenFingerprint: tokenFingerprint) {
+                    begin(session.downloadTask(withResumeData: data), key: key)
+                    return
+                }
             }
 
             let full = try await service.item(id: id)
@@ -582,9 +602,10 @@ final class DownloadManager {
     /// Saves every image the items show: posters, backdrops, logos, cast portraits and chapter stills.
     private func saveArtwork(of items: [MediaItem]) async {
         let store = store
+        let session = detailsSession
         let missing = Set(items.flatMap(DownloadStore.artworkURLs(of:))).filter { !store.hasArtwork(for: $0) }
         await Self.forEach(Array(missing)) { url in
-            guard let (data, response) = try? await URLSession.shared.data(from: url),
+            guard let (data, response) = try? await session.data(from: url),
                   (response as? HTTPURLResponse)?.statusCode == 200 else { return }
             store.saveArtwork(data, for: url)
         }
@@ -610,7 +631,7 @@ final class DownloadManager {
         var files: [Int: String] = [:]
         for track in info.subtitleTracks {
             guard let url = track.url,
-                  let (data, response) = try? await URLSession.shared.data(from: url),
+                  let (data, response) = try? await detailsSession.data(from: url),
                   (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
             let name = "subtitles-\(track.index).vtt"
             if (try? data.write(to: directory.appending(path: name), options: .atomic)) != nil {
@@ -738,7 +759,7 @@ nonisolated final class LiveActivityUpdater: Sendable {
         case end(Content?, ActivityUIDismissalPolicy)
     }
 
-    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NativeFin", category: "LiveActivity")
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "LiveActivity")
 
     /// The change waiting to be sent, and whether a task is sending them.
     private let queue = Mutex<(pending: Update?, isSending: Bool)>((nil, false))
@@ -877,9 +898,6 @@ nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDel
         case interrupted(key: String)
     }
 
-    /// Where a paused or interrupted transfer's progress is kept, in the item's folder.
-    static let resumeFileName = "resume.data"
-
     private let store: DownloadStore
     private let backgroundEvents: BackgroundEvents
     /// When each transfer last reported progress, by key.
@@ -939,6 +957,9 @@ nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDel
                 $0.state = .completed
                 $0.errorMessage = nil
             }
+            // On disk before returning: the app may be suspended straight after, and a download still marked as
+            // downloading would be fetched all over again.
+            store.flush()
             lastProgress.withLock { $0[key] = nil }
             onEvent?(.finished(key: key))
         } catch {
@@ -952,9 +973,8 @@ nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDel
         lastProgress.withLock { $0[key] = nil }
 
         // Wherever the transfer got to is kept, so trying again carries on from there.
-        if let data = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data, store.record(key: key) != nil,
-           let directory = try? store.makeItemDirectory(key: key) {
-            try? data.write(to: directory.appending(path: Self.resumeFileName))
+        if let data = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+            store.saveResumeData(data, key: key, requestURL: task.originalRequest?.url)
         }
 
         // Pausing marks the record first, and removing deletes it first, so a cancellation of a download that's still
@@ -970,6 +990,8 @@ nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDel
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        // The system suspends the app again once it hears this has finished.
+        store.flush()
         backgroundEvents.markFinished()
     }
 

@@ -29,7 +29,7 @@ typealias PlatformImage = NSImage
 nonisolated final class ImageCache: @unchecked Sendable {
     static let shared = ImageCache()
 
-    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NativeFin", category: "ImageCache")
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "ImageCache")
 
     /// Decoded images are kept up to roughly this many bytes. NSCache treats it as a hint, and the system
     /// also evicts under memory pressure.
@@ -47,7 +47,7 @@ nonisolated final class ImageCache: @unchecked Sendable {
     private let session = URLSession(configuration: .ephemeral)
     private let directory: URL
 
-    /// Guards the three properties below.
+    /// Guards the four properties below, and anything that puts an image in the cache.
     private let lock = NSLock()
 
     /// Decodes in progress, so several views asking for the same URL share one.
@@ -57,6 +57,10 @@ nonisolated final class ImageCache: @unchecked Sendable {
     private var downloads: [URL: Task<Data?, Never>] = [:]
 
     private var bytesWrittenSinceTrim = 0
+
+    /// Goes up with every ``removeAll()``. Work started before then mustn't put what it loaded in the cache, or the
+    /// previous user's artwork would be back as soon as it finished.
+    private var generation = 0
 
     private init() {
         memory.totalCostLimit = Self.maxMemoryBytes
@@ -73,11 +77,24 @@ nonisolated final class ImageCache: @unchecked Sendable {
     /// Called on sign-out, so a shared device (an Apple TV in a living room, say) doesn't keep the previous
     /// user's artwork and profile picture.
     func removeAll() {
-        memory.removeAllObjects()
-        let directory = directory
+        let fileManager = FileManager.default
+        let trash = directory.deletingLastPathComponent()
+            .appending(path: "ImageCache-removed-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let inFlight = lock.withLock { () -> [() -> Void] in
+            generation += 1
+            let inFlight = decodes.values.map { $0.cancel } + downloads.values.map { $0.cancel }
+            decodes = [:]
+            downloads = [:]
+            memory.removeAllObjects()
+            // Moved aside at once, under the lock, so nothing in flight can write into the folder after it's been
+            // emptied; deleting what's in it, which can take a while, happens afterwards.
+            try? fileManager.moveItem(at: directory, to: trash)
+            try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            return inFlight
+        }
+        for cancel in inFlight { cancel() }
         Task.detached(priority: .utility) {
-            try? FileManager.default.removeItem(at: directory)
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: trash)
         }
     }
 
@@ -97,13 +114,15 @@ nonisolated final class ImageCache: @unchecked Sendable {
 
         let task = lock.withLock { () -> Task<PlatformImage?, Never> in
             if let existing = decodes[url] { return existing }
-            let new = Task { await self.decode(url) }
+            let generation = generation
+            let new = Task { await self.decode(url, generation: generation) }
             decodes[url] = new
             return new
         }
 
         let image = await task.value
-        lock.withLock { decodes[url] = nil }
+        // Unless `removeAll()` has run since, and the entry is a newer decode's.
+        lock.withLock { if decodes[url] == task { decodes[url] = nil } }
         return image
     }
 
@@ -117,18 +136,20 @@ nonisolated final class ImageCache: @unchecked Sendable {
     func prefetch(_ urls: [URL]) {
         let pending = urls.filter { cachedImage(for: $0) == nil && !isOnDisk($0) }
         guard !pending.isEmpty else { return }
+        // Those not started by the time the cache is emptied are skipped.
+        let generation = lock.withLock { self.generation }
 
         Task.detached(priority: .utility) {
             await withTaskGroup(of: Void.self) { group in
                 var remaining = pending.makeIterator()
                 for _ in 0..<4 {
                     guard let url = remaining.next() else { break }
-                    group.addTask { _ = await self.data(for: url) }
+                    group.addTask { _ = await self.data(for: url, generation: generation) }
                 }
                 // As each finishes, start the next, so four are always in flight.
                 while await group.next() != nil {
                     guard let url = remaining.next() else { continue }
-                    group.addTask { _ = await self.data(for: url) }
+                    group.addTask { _ = await self.data(for: url, generation: generation) }
                 }
             }
         }
@@ -166,8 +187,8 @@ nonisolated final class ImageCache: @unchecked Sendable {
     // MARK: - Loading
 
     /// Reads the image from disk (downloading it first if needed) and decodes it into the memory cache.
-    private func decode(_ url: URL) async -> PlatformImage? {
-        guard let data = await data(for: url) else { return nil }
+    private func decode(_ url: URL, generation: Int) async -> PlatformImage? {
+        guard let data = await data(for: url, generation: generation) else { return nil }
 
         guard var image = PlatformImage(data: data) else {
             // Unreadable bytes (e.g. a truncated write); drop the file so the next request refetches.
@@ -180,37 +201,47 @@ nonisolated final class ImageCache: @unchecked Sendable {
         image = await image.byPreparingForDisplay() ?? image
         #endif
 
-        memory.setObject(image, forKey: url as NSURL, cost: Self.cost(of: image))
+        // Checked and stored under one lock, so `removeAll()` can't empty the cache between the two.
+        lock.withLock {
+            guard generation == self.generation else { return }
+            memory.setObject(image, forKey: url as NSURL, cost: Self.cost(of: image))
+        }
         return image
     }
 
     /// The image's bytes: from disk if cached there, otherwise downloaded and saved.
-    private func data(for url: URL) async -> Data? {
+    ///
+    /// - Parameter generation: The ``generation`` the caller started in.
+    private func data(for url: URL, generation: Int) async -> Data? {
         // Artwork saved with a download is already a file, so there's nothing to fetch or cache.
         if url.isFileURL { return try? Data(contentsOf: url) }
         if let data = try? Data(contentsOf: diskURL(for: url)) { return data }
 
-        let task = lock.withLock { () -> Task<Data?, Never> in
+        let task = lock.withLock { () -> Task<Data?, Never>? in
+            // Started before the cache was emptied, so there's nothing it should fetch.
+            guard generation == self.generation else { return nil }
             if let existing = downloads[url] { return existing }
-            let new = Task { await self.download(url) }
+            let new = Task { await self.download(url, generation: generation) }
             downloads[url] = new
             return new
         }
+        guard let task else { return nil }
 
         let data = await task.value
-        lock.withLock { downloads[url] = nil }
+        lock.withLock { if downloads[url] == task { downloads[url] = nil } }
         return data
     }
 
-    private func download(_ url: URL) async -> Data? {
+    private func download(_ url: URL, generation: Int) async -> Data? {
         guard let (data, response) = try? await session.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200
         else { return nil }
 
-        try? data.write(to: diskURL(for: url), options: .atomic)
-
         // Keep the disk cache from growing without bound during a long session.
         let shouldTrim = lock.withLock { () -> Bool in
+            // Written under the lock, so it can't land in the folder after `removeAll()` has emptied it.
+            guard generation == self.generation else { return false }
+            try? data.write(to: diskURL(for: url), options: .atomic)
             bytesWrittenSinceTrim += data.count
             guard bytesWrittenSinceTrim >= Self.trimInterval else { return false }
             bytesWrittenSinceTrim = 0

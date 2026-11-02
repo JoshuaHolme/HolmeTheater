@@ -49,6 +49,9 @@ struct HomeView: View {
     /// that are showing, so it always matches what's on screen, not from a load that may yet be thrown away.
     @State private var showsHero = false
 
+    /// The seasonal theme showing, if any.
+    private var theme: AppTheme? { appModel.themeSettings.activeTheme }
+
     /// One shelf on the home screen.
     private struct Shelf: Identifiable {
         let id: String
@@ -112,6 +115,14 @@ struct HomeView: View {
             }
             // The carousel runs under the status bar, up to the top edge of the screen.
             .ignoresSafeArea(edges: .top)
+            .background {
+                if let theme { ThemeWash(color: theme.accent) }
+            }
+            .overlay {
+                if let theme, appModel.themeSettings.showsEffects {
+                    ThemeParticles(effect: theme.effect, topInset: safeArea.top)
+                }
+            }
             .pullToRefresh { await refresher.refresh() }
         }
         // The title is set so pushed screens can show "Home" on their back button. The bar itself only holds the profile
@@ -137,12 +148,17 @@ struct HomeView: View {
         )
     }
 
-    /// Large heading. The profile button is in the navigation bar, above it.
+    /// Large heading, or a holiday theme's greeting. The profile button is in the navigation bar, above it.
     private var header: some View {
         HStack {
-            Text("Home")
+            Text(theme?.greeting(on: appModel.themeSettings.today) ?? String(localized: "Home"))
                 .font(.largeTitle.bold())
+                // A long greeting shrinks to stay on one line beside the symbol.
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
                 .accessibilityAddTraits(.isHeader)
+
+            if let theme { ThemeGlyph(theme: theme) }
 
             Spacer()
         }

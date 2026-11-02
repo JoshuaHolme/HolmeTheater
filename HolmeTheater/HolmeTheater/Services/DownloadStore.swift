@@ -117,7 +117,7 @@ nonisolated struct DownloadIndex: Codable, Sendable {
 ///
 /// Safe to use from any thread.
 nonisolated final class DownloadStore: Sendable {
-    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NativeFin", category: "DownloadStore")
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "DownloadStore")
 
     /// Everything that changes, behind one lock.
     private struct State {
@@ -140,6 +140,8 @@ nonisolated final class DownloadStore: Sendable {
     let isPermanent: Bool
 
     private let state: Mutex<State>
+
+    private let writer: IndexWriter
 
     /// Where downloads go: Application Support, which the system never purges. Apple TV may not let apps write there; if it
     /// doesn't, they go in Caches instead, and ``isPermanent`` is false.
@@ -183,6 +185,11 @@ nonisolated final class DownloadStore: Sendable {
             Self.write(initial.index, to: Self.indexURL(in: directory))
         }
         state = Mutex(initial)
+        writer = IndexWriter(url: Self.indexURL(in: directory))
+
+        // Whatever a removal didn't get to delete before the app last closed.
+        let trash = Self.trashDirectory(in: directory)
+        Task.detached(priority: .utility) { try? FileManager.default.removeItem(at: trash) }
     }
 
     // MARK: - Keys
@@ -202,15 +209,18 @@ nonisolated final class DownloadStore: Sendable {
     /// The account and item ID in a key. A bare item ID, from a transfer started before keys had the account in them,
     /// is taken to be the signed-in account's.
     func parse(key: String) -> (scope: String, id: String) {
-        guard let separator = key.lastIndex(of: Self.keySeparator) else { return (scope, key) }
+        Self.parse(key: key, fallbackScope: scope)
+    }
+
+    /// Like ``parse(key:)``, for use with the lock held, where reading ``scope`` would wait on it forever.
+    private static func parse(key: String, fallbackScope: String) -> (scope: String, id: String) {
+        guard let separator = key.lastIndex(of: keySeparator) else { return (fallbackScope, key) }
         return (String(key[..<separator]), String(key[key.index(after: separator)...]))
     }
 
     // MARK: - Index
 
     private static func indexURL(in root: URL) -> URL { root.appending(path: "index.json", directoryHint: .notDirectory) }
-
-    private var indexURL: URL { Self.indexURL(in: root) }
 
     private static func loadIndex(from url: URL) -> DownloadIndex {
         guard let data = try? Data(contentsOf: url) else { return DownloadIndex() }
@@ -255,13 +265,67 @@ nonisolated final class DownloadStore: Sendable {
         return !unscoped.isEmpty
     }
 
-    /// Writes the index. Called with the lock held, so writes happen in the order the changes were made.
+    /// Encodes and writes the index, on whatever thread calls it.
     private static func write(_ index: DownloadIndex, to url: URL) {
         do {
             try JSONEncoder().encode(index).write(to: url, options: .atomic)
         } catch {
             logger.error("Couldn't save the downloads index: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// Writes the index off the thread that changed it, keeping only the latest version waiting.
+    ///
+    /// The index holds every download's item, cast and chapters, so encoding it takes a while, and changes come in bursts
+    /// (a whole season queued, each download moving from state to state). Writing each one where it was made held up the
+    /// main thread and every other user of the lock; now a burst ends in one write, in the background.
+    private final class IndexWriter: Sendable {
+        private let url: URL
+
+        /// The version waiting to be written, and whether a background write has been asked for.
+        private let pending = Mutex<(index: DownloadIndex?, isScheduled: Bool)>((nil, false))
+
+        /// Held while writing, so writes go out one at a time and an older version never lands after a newer one.
+        private let writing = Mutex(())
+
+        init(url: URL) {
+            self.url = url
+        }
+
+        /// Queues `index` to be written, replacing any version still waiting. Returns at once.
+        func submit(_ index: DownloadIndex) {
+            let shouldSchedule = pending.withLock { pending -> Bool in
+                pending.index = index
+                guard !pending.isScheduled else { return false }
+                pending.isScheduled = true
+                return true
+            }
+            if shouldSchedule {
+                Task.detached(priority: .utility) { self.flush() }
+            }
+        }
+
+        /// Writes the waiting version, if there is one, before returning.
+        func flush() {
+            writing.withLock { _ in
+                // Taken while holding `writing`, so whichever write runs last has the latest version.
+                let next = pending.withLock { pending -> DownloadIndex? in
+                    defer {
+                        pending.index = nil
+                        pending.isScheduled = false
+                    }
+                    return pending.index
+                }
+                guard let next else { return }
+                DownloadStore.write(next, to: url)
+            }
+        }
+    }
+
+    /// Writes any change still waiting to go to disk, before returning. For when the system may suspend the app as soon
+    /// as the caller returns: a finished transfer's callback, say, which would otherwise be downloaded again.
+    func flush() {
+        writer.flush()
     }
 
     // MARK: - Records
@@ -283,7 +347,7 @@ nonisolated final class DownloadStore: Sendable {
     func save(_ record: DownloadRecord) {
         state.withLock {
             $0.index.records[Self.key(scope: record.scope, id: record.id)] = record
-            Self.write($0.index, to: indexURL)
+            writer.submit($0.index)
         }
     }
 
@@ -306,21 +370,38 @@ nonisolated final class DownloadStore: Sendable {
         guard var record = state.index.records[key] else { return nil }
         change(&record)
         state.index.records[key] = record
-        if persist { Self.write(state.index, to: indexURL) }
+        if persist { writer.submit(state.index) }
         return record
     }
 
     /// Deletes the signed-in account's downloads of these items, their files, and whatever nothing else needs any more.
     func remove(ids: [String]) {
-        state.withLock { state in
+        let trash = Self.trashDirectory(in: root).appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let movedAny = state.withLock { state -> Bool in
+            var movedAny = false
             for id in ids {
                 state.index.records[Self.key(scope: state.scope, id: id)] = nil
-                try? FileManager.default.removeItem(at: itemDirectory(scope: state.scope, id: id))
+                // Moved aside rather than deleted, which for a whole series can take seconds. Still under the lock, so
+                // nothing that checks the record is there first (``saveResumeData(_:key:requestURL:)``) can write into
+                // the folder after it has gone.
+                let directory = itemDirectory(scope: state.scope, id: id)
+                guard FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) else { continue }
+                if !movedAny { try? FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true) }
+                if (try? FileManager.default.moveItem(at: directory, to: trash.appending(path: UUID().uuidString))) == nil {
+                    try? FileManager.default.removeItem(at: directory)
+                }
+                movedAny = true
             }
             pruneUnreferenced(&state)
-            Self.write(state.index, to: indexURL)
+            writer.submit(state.index)
+            return movedAny
         }
+        guard movedAny else { return }
+        Task.detached(priority: .utility) { try? FileManager.default.removeItem(at: trash) }
     }
+
+    /// Where removed downloads' folders wait to be deleted, out of the way.
+    private static func trashDirectory(in root: URL) -> URL { root.appending(path: "Removed", directoryHint: .isDirectory) }
 
     /// Drops shows, seasons, people and artwork that no download uses.
     private func pruneUnreferenced(_ state: inout State) {
@@ -373,7 +454,7 @@ nonisolated final class DownloadStore: Sendable {
     func saveContainer(_ item: MediaItem) {
         state.withLock {
             $0.index.containers[item.id] = item
-            Self.write($0.index, to: indexURL)
+            writer.submit($0.index)
         }
     }
 
@@ -382,7 +463,7 @@ nonisolated final class DownloadStore: Sendable {
     func savePersonDetails(_ details: PersonDetails, id: String) {
         state.withLock {
             $0.index.people[id] = details
-            Self.write($0.index, to: indexURL)
+            writer.submit($0.index)
         }
     }
 
@@ -420,6 +501,86 @@ nonisolated final class DownloadStore: Sendable {
     func itemDirectory(key: String) -> URL {
         let (scope, id) = parse(key: key)
         return itemDirectory(scope: scope, id: id)
+    }
+
+    /// Like ``itemDirectory(key:)``, for use with the lock held.
+    private func itemDirectory(key: String, in state: State) -> URL {
+        let (scope, id) = Self.parse(key: key, fallbackScope: state.scope)
+        return itemDirectory(scope: scope, id: id)
+    }
+
+    // MARK: - Resume data
+
+    /// Where a paused or interrupted transfer's progress is kept, in the item's folder.
+    private static let resumeFileName = "resume.data"
+
+    /// Beside it, the ``tokenFingerprint(_:)`` of the access token its request was made with.
+    private static let resumeTokenFileName = "resume.token"
+
+    /// A short hash of an access token, so resume data can be matched to the session that made it without writing the
+    /// token down again.
+    static func tokenFingerprint(_ token: String) -> String { hashed(token, length: 16) }
+
+    /// The fingerprint of the token in a request URL's `ApiKey`, or nil if it has none.
+    private static func tokenFingerprint(in url: URL?) -> String? {
+        guard let url,
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let token = items.first(where: { $0.name.caseInsensitiveCompare("ApiKey") == .orderedSame })?.value
+        else { return nil }
+        return tokenFingerprint(token)
+    }
+
+    /// Keeps where a transfer got to, so trying again carries on from there, unless its download is gone.
+    ///
+    /// Under the lock, like ``remove(ids:)``: a pause's resume data arrives a moment after the pause, and if the download
+    /// was removed in between, writing it would bring back a folder that nothing points to.
+    ///
+    /// The data repeats the transfer's request, access token and all. It's only usable with that token, so it's tagged
+    /// with its fingerprint, and ``removeResumeData()`` deletes it all when the session ends.
+    func saveResumeData(_ data: Data, key: String, requestURL: URL?) {
+        // Without a token in the URL, no session's fingerprint matches, and the data is only ever thrown away.
+        let fingerprint = Self.tokenFingerprint(in: requestURL) ?? ""
+        state.withLock { state in
+            guard state.index.records[key] != nil else { return }
+            let directory = itemDirectory(key: key, in: state)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try data.write(to: directory.appending(path: Self.resumeFileName), options: .atomic)
+                try Data(fingerprint.utf8).write(to: directory.appending(path: Self.resumeTokenFileName), options: .atomic)
+            } catch {
+                Self.logger.error("Couldn't save resume data: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Takes a download's resume data off the disk. Returns it only if it was made with the token `fingerprint` is for:
+    /// data from another session would replay a request with a token the server no longer accepts.
+    func takeResumeData(key: String, tokenFingerprint fingerprint: String?) -> Data? {
+        state.withLock { state in
+            let directory = itemDirectory(key: key, in: state)
+            let dataFile = directory.appending(path: Self.resumeFileName)
+            let tokenFile = directory.appending(path: Self.resumeTokenFileName)
+            defer {
+                try? FileManager.default.removeItem(at: dataFile)
+                try? FileManager.default.removeItem(at: tokenFile)
+            }
+            guard let fingerprint, let saved = try? Data(contentsOf: tokenFile),
+                  String(decoding: saved, as: UTF8.self) == fingerprint
+            else { return nil }
+            return try? Data(contentsOf: dataFile)
+        }
+    }
+
+    /// Deletes the signed-in account's resume data, which holds the access token, for when the session ends. Paused
+    /// downloads start again from the beginning.
+    func removeResumeData() {
+        state.withLock { state in
+            for record in state.index.records.values where record.scope == state.scope {
+                let directory = itemDirectory(scope: state.scope, id: record.id)
+                try? FileManager.default.removeItem(at: directory.appending(path: Self.resumeFileName))
+                try? FileManager.default.removeItem(at: directory.appending(path: Self.resumeTokenFileName))
+            }
+        }
     }
 
     /// The download's folder, by ``key(scope:id:)``, created if it isn't there yet.

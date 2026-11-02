@@ -43,6 +43,9 @@ final class AppModel {
     /// How the user has set up the home screen.
     let homeSettings: HomeSettings
 
+    /// Which seasonal or holiday theme the app wears, if any.
+    let themeSettings: ThemeSettings
+
     /// A short message to show over the tabs for a moment, e.g. that something worked. The main view clears it.
     var toastMessage: String?
 
@@ -56,11 +59,12 @@ final class AppModel {
 
     @ObservationIgnored private let keychain: KeychainStore
     private static let sessionAccount = "session"
-    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NativeFin", category: "Session")
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "Session")
 
     init(service: any MediaService) {
         let store = DownloadStore()
         self.homeSettings = HomeSettings()
+        self.themeSettings = ThemeSettings()
         self.service = OfflineFallbackMediaService(base: service, store: store)
         self.downloads = DownloadManager(service: service, store: store)
         // Mock runs (`-UseMockService`) get their own Keychain namespace; otherwise the canned session they save
@@ -81,6 +85,7 @@ final class AppModel {
         self.state = state
         // A preview's changes stay out of the real settings.
         self.homeSettings = HomeSettings(defaults: UserDefaults(suiteName: "HomeSettingsPreviews") ?? .standard)
+        self.themeSettings = ThemeSettings(defaults: UserDefaults(suiteName: "ThemeSettingsPreviews") ?? .standard)
         self.keychain = KeychainStore(service: (Bundle.main.bundleIdentifier ?? "JellyfinClient") + ".previews")
     }
 
@@ -172,8 +177,16 @@ final class AppModel {
         keychain.delete(account: Self.sessionAccount)
         // So the next person on a shared device doesn't see the previous user's artwork or profile picture.
         ImageCache.shared.removeAll()
+        // Responses kept by the shared session, which earlier versions fetched subtitles with: their URLs carry the
+        // access token.
+        URLCache.shared.removeAllCachedResponses()
         // Likewise their downloaded videos and details. Other accounts' downloads on the device stay.
-        if removingDownloads { downloads.removeAllForAccount() }
+        if removingDownloads {
+            downloads.removeAllForAccount()
+        } else {
+            // The downloads stay, but not the access token that paused ones keep to carry on with.
+            downloads.discardResumeData()
+        }
         transition(to: .signedOut)
     }
 
@@ -185,7 +198,7 @@ final class AppModel {
     /// Moves to a new state, and shows the downloads of whoever that leaves signed in.
     private func transition(to newState: SessionState) {
         state = newState
-        downloads.accountChanged(scope: cacheScope)
+        downloads.accountChanged(scope: cacheScope, accessToken: session?.accessToken)
     }
 
     /// Saves the session so the next launch is already signed in. A failure only costs that convenience,

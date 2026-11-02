@@ -36,21 +36,21 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		000000000000000000000120 /* NativeFin.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NativeFin.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000120 /* HolmeTheater.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HolmeTheater.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		03E4D7833095BC6500A761F0 /* DownloadActivityExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DownloadActivityExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		03E4D7853095BC6500A761F0 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = /System/Library/Frameworks/WidgetKit.framework; sourceTree = "<absolute>"; };
 		03E4D7873095BC6500A761F0 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = /System/Library/Frameworks/SwiftUI.framework; sourceTree = "<absolute>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		03059A9D308D5710006E4D03 /* Exceptions for "NativeFin" folder in "NativeFin" target */ = {
+		03059A9D308D5710006E4D03 /* Exceptions for "HolmeTheater" folder in "HolmeTheater" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = 000000000000000100000000 /* NativeFin */;
+			target = 000000000000000100000000 /* HolmeTheater */;
 		};
-		037A856A3096B2B100FE1884 /* Exceptions for "NativeFin" folder in "DownloadActivityExtension" target */ = {
+		037A856A3096B2B100FE1884 /* Exceptions for "HolmeTheater" folder in "DownloadActivityExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Services/DownloadActivityAttributes.swift,
@@ -67,13 +67,13 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		000000000000000000000010 /* NativeFin */ = {
+		000000000000000000000010 /* HolmeTheater */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				03059A9D308D5710006E4D03 /* Exceptions for "NativeFin" folder in "NativeFin" target */,
-				037A856A3096B2B100FE1884 /* Exceptions for "NativeFin" folder in "DownloadActivityExtension" target */,
+				03059A9D308D5710006E4D03 /* Exceptions for "HolmeTheater" folder in "HolmeTheater" target */,
+				037A856A3096B2B100FE1884 /* Exceptions for "HolmeTheater" folder in "DownloadActivityExtension" target */,
 			);
-			path = NativeFin;
+			path = HolmeTheater;
 			sourceTree = "<group>";
 		};
 		03E4D7893095BC6500A761F0 /* DownloadActivity */ = {
@@ -106,7 +106,7 @@
 		000000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000010 /* NativeFin */,
+				000000000000000000000010 /* HolmeTheater */,
 				03E4D7893095BC6500A761F0 /* DownloadActivity */,
 				03E4D7843095BC6500A761F0 /* Frameworks */,
 				000000000000000000000020 /* Products */,
@@ -116,7 +116,7 @@
 		000000000000000000000020 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000120 /* NativeFin.app */,
+				000000000000000000000120 /* HolmeTheater.app */,
 				03E4D7833095BC6500A761F0 /* DownloadActivityExtension.appex */,
 			);
 			name = Products;
@@ -134,9 +134,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		000000000000000100000000 /* NativeFin */ = {
+		000000000000000100000000 /* HolmeTheater */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "NativeFin" */;
+			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "HolmeTheater" */;
 			buildPhases = (
 				000000000000000120000000 /* Sources */,
 				000000000000000130000000 /* Frameworks */,
@@ -149,14 +149,14 @@
 				03E4D7923095BC6500A761F0 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				000000000000000000000010 /* NativeFin */,
+				000000000000000000000010 /* HolmeTheater */,
 			);
-			name = NativeFin;
+			name = HolmeTheater;
 			packageProductDependencies = (
 				03059A57308D53BD006E4D03 /* JellyfinAPI */,
 			);
 			productName = MyApp;
-			productReference = 000000000000000000000120 /* NativeFin.app */;
+			productReference = 000000000000000000000120 /* HolmeTheater.app */;
 			productType = "com.apple.product-type.application";
 		};
 		03E4D7823095BC6500A761F0 /* DownloadActivityExtension */ = {
@@ -185,7 +185,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2710;
-				LastUpgradeCheck = 2700;
+				LastUpgradeCheck = 2710;
 				TargetAttributes = {
 					000000000000000100000000 = {
 						CreatedOnToolsVersion = 26.3;
@@ -195,7 +195,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "NativeFin" */;
+			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "HolmeTheater" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -212,7 +212,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				000000000000000100000000 /* NativeFin */,
+				000000000000000100000000 /* HolmeTheater */,
 				03E4D7823095BC6500A761F0 /* DownloadActivityExtension */,
 			);
 		};
@@ -254,7 +254,7 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		000000000000000011000000 /* Debug configuration for PBXProject "NativeFin" */ = {
+		000000000000000011000000 /* Debug configuration for PBXProject "HolmeTheater" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -290,6 +290,7 @@
 				COPY_PHASE_STRIP = NO;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = TGLE8RZWF5;
 				DRIVERKIT_DEPLOYMENT_TARGET = 27.0;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -324,7 +325,7 @@
 			};
 			name = Debug;
 		};
-		000000000000000012000000 /* Release configuration for PBXProject "NativeFin" */ = {
+		000000000000000012000000 /* Release configuration for PBXProject "HolmeTheater" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -360,6 +361,7 @@
 				COPY_PHASE_STRIP = NO;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = TGLE8RZWF5;
 				DRIVERKIT_DEPLOYMENT_TARGET = 27.0;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -386,7 +388,7 @@
 			};
 			name = Release;
 		};
-		000000000000000111000000 /* Debug configuration for PBXNativeTarget "NativeFin" */ = {
+		000000000000000111000000 /* Debug configuration for PBXNativeTarget "HolmeTheater" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
@@ -396,8 +398,11 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = NativeFin/Info.plist;
+				INFOPLIST_FILE = HolmeTheater/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Holme Theater";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to Jellyfin servers on your local network.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -411,7 +416,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.$(PROJECT_UNIQUE_VALUE:identifier).$(PRODUCT_NAME:rfc1034identifier)";
+				PRODUCT_BUNDLE_IDENTIFIER = tech.Holme.HolmeTheater;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -426,7 +431,7 @@
 			};
 			name = Debug;
 		};
-		000000000000000112000000 /* Release configuration for PBXNativeTarget "NativeFin" */ = {
+		000000000000000112000000 /* Release configuration for PBXNativeTarget "HolmeTheater" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
@@ -436,8 +441,11 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = NativeFin/Info.plist;
+				INFOPLIST_FILE = HolmeTheater/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Holme Theater";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to Jellyfin servers on your local network.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -451,7 +459,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.$(PROJECT_UNIQUE_VALUE:identifier).$(PRODUCT_NAME:rfc1034identifier)";
+				PRODUCT_BUNDLE_IDENTIFIER = tech.Holme.HolmeTheater;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -473,7 +481,6 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = TGLE8RZWF5;
 				ENABLE_APP_SANDBOX = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DownloadActivity/Info.plist;
@@ -492,7 +499,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.JXW9EP6B.NativeFin.DownloadActivity;
+				PRODUCT_BUNDLE_IDENTIFIER = tech.Holme.HolmeTheater.DownloadActivity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SKIP_INSTALL = YES;
@@ -514,7 +521,6 @@
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = TGLE8RZWF5;
 				ENABLE_APP_SANDBOX = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DownloadActivity/Info.plist;
@@ -533,7 +539,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.JXW9EP6B.NativeFin.DownloadActivity;
+				PRODUCT_BUNDLE_IDENTIFIER = tech.Holme.HolmeTheater.DownloadActivity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SKIP_INSTALL = YES;
@@ -551,19 +557,19 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		000000000000000010000000 /* Build configuration list for PBXProject "NativeFin" */ = {
+		000000000000000010000000 /* Build configuration list for PBXProject "HolmeTheater" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000011000000 /* Debug configuration for PBXProject "NativeFin" */,
-				000000000000000012000000 /* Release configuration for PBXProject "NativeFin" */,
+				000000000000000011000000 /* Debug configuration for PBXProject "HolmeTheater" */,
+				000000000000000012000000 /* Release configuration for PBXProject "HolmeTheater" */,
 			);
 			defaultConfigurationName = Release;
 		};
-		000000000000000110000000 /* Build configuration list for PBXNativeTarget "NativeFin" */ = {
+		000000000000000110000000 /* Build configuration list for PBXNativeTarget "HolmeTheater" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000111000000 /* Debug configuration for PBXNativeTarget "NativeFin" */,
-				000000000000000112000000 /* Release configuration for PBXNativeTarget "NativeFin" */,
+				000000000000000111000000 /* Debug configuration for PBXNativeTarget "HolmeTheater" */,
+				000000000000000112000000 /* Release configuration for PBXNativeTarget "HolmeTheater" */,
 			);
 			defaultConfigurationName = Release;
 		};

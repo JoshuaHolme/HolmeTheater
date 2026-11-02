@@ -1,0 +1,241 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import SwiftUI
+
+/// Lets the user turn seasonal themes and their animated effects on and off, choose between the calendar picking the
+/// theme and picking one themselves, and set which themes the calendar uses and when.
+struct ThemeSettingsView: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        @Bindable var settings = appModel.themeSettings
+
+        List {
+            Section {
+                Toggle("Seasonal Themes", isOn: $settings.isEnabled)
+            } footer: {
+                Text("Gives the app a touch of the season or holiday: its color, a symbol on the Home screen, and more.")
+            }
+
+            if settings.isEnabled {
+                Section {
+                    Toggle("Animated Effects", isOn: $settings.showsEffects)
+                        .disabled(reduceMotion)
+                } footer: {
+                    VStack(alignment: .leading) {
+                        Text("Snow, falling leaves, confetti and more drifting across the Home screen.")
+                        if reduceMotion { Text("Off while Reduce Motion is on.") }
+                    }
+                }
+
+                Section {
+                    Toggle("Change Automatically", isOn: $settings.isAutomatic)
+                    if settings.isAutomatic {
+                        LabeledContent("Now Showing", value: settings.scheduledTheme?.title ?? String(localized: "None"))
+                    } else {
+                        Picker("Theme", selection: $settings.manualTheme) {
+                            ForEach(AppTheme.holidays + AppTheme.seasons) { theme in
+                                Label(theme.title, systemImage: theme.symbolName).tag(theme)
+                            }
+                        }
+                    }
+                } footer: {
+                    if settings.isAutomatic {
+                        Text("Follows the calendar. Holidays show instead of the season around them.")
+                    }
+                }
+
+                if settings.isAutomatic {
+                    Section("Holidays") {
+                        ForEach(AppTheme.holidays) { ThemeScheduleRow(theme: $0) }
+                    }
+                    Section("Seasons") {
+                        ForEach(AppTheme.seasons) { ThemeScheduleRow(theme: $0) }
+                    }
+                }
+            }
+
+            Section {
+                Button("Reset Themes", role: .destructive) { settings.reset() }
+                    .disabled(settings.isDefault)
+            }
+        }
+        .navigationTitle("Themes")
+    }
+}
+
+/// A theme in the schedule, with its dates (or that it's off), opening its settings.
+private struct ThemeScheduleRow: View {
+    let theme: AppTheme
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        let settings = appModel.themeSettings
+        NavigationLink {
+            ThemeScheduleDetailView(theme: theme)
+        } label: {
+            HStack {
+                Label(theme.title, systemImage: theme.symbolName)
+                Spacer()
+                if settings.isScheduled(theme) {
+                    Text(ThemeDates.text(for: theme, settings: settings)).foregroundStyle(.secondary)
+                } else {
+                    Text("Off").foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+/// One theme's place in the schedule: whether it's in it, and when it shows.
+private struct ThemeScheduleDetailView: View {
+    let theme: AppTheme
+    @Environment(AppModel.self) private var appModel
+
+    /// The most days before or after a holiday its theme can start or end.
+    private static let maxDays = 60
+
+    var body: some View {
+        let settings = appModel.themeSettings
+
+        List {
+            Section {
+                Toggle("Include in Schedule", isOn: Binding(
+                    get: { settings.isScheduled(theme) },
+                    set: { settings.setScheduled($0, for: theme) }
+                ))
+            }
+
+            Group {
+                switch settings.window(for: theme) {
+                case .dates(let start, let end):
+                    seasonDates(start: start, end: end, settings: settings)
+                case .around(let start, let daysAfter):
+                    holidayDates(start: start, daysAfter: daysAfter, settings: settings)
+                }
+
+                if settings.hasCustomWindow(theme) {
+                    Section {
+                        Button("Use Default Dates") { settings.resetWindow(for: theme) }
+                    }
+                }
+            }
+            .disabled(!settings.isScheduled(theme))
+        }
+        .navigationTitle(theme.title)
+    }
+
+    // MARK: Seasons
+
+    @ViewBuilder
+    private func seasonDates(start: MonthDay, end: MonthDay, settings: ThemeSettings) -> some View {
+        Section("Starts") {
+            monthDayPickers(start) { settings.setWindow(.dates(start: $0, end: end), for: theme) }
+        }
+        Section {
+            monthDayPickers(end) { settings.setWindow(.dates(start: start, end: $0), for: theme) }
+        } header: {
+            Text("Ends")
+        } footer: {
+            Text(ThemeDates.text(for: theme, settings: settings))
+        }
+    }
+
+    /// A month picker and a day picker for `value`. The days go as far as the month does, and a day past the end of a
+    /// newly picked month moves back to its last day.
+    @ViewBuilder
+    private func monthDayPickers(_ value: MonthDay, set: @escaping (MonthDay) -> Void) -> some View {
+        Picker("Month", selection: Binding(
+            get: { value.month },
+            set: { month in set(MonthDay(month: month, day: min(value.day, Self.days(in: month)))) }
+        )) {
+            ForEach(1...12, id: \.self) { month in
+                // Gregorian month names, in the user's language: the schedule's months are Gregorian ones.
+                Text(Calendar.themes.monthSymbols[month - 1]).tag(month)
+            }
+        }
+        Picker("Day", selection: Binding(
+            get: { value.day },
+            set: { set(MonthDay(month: value.month, day: $0)) }
+        )) {
+            ForEach(1...Self.days(in: value.month), id: \.self) { day in
+                Text(day, format: .number).tag(day)
+            }
+        }
+    }
+
+    /// The days in `month`, counting February 29.
+    private static func days(in month: Int) -> Int {
+        let calendar = Calendar(identifier: .gregorian)
+        let date = calendar.date(from: DateComponents(year: 2000, month: month)) ?? .now
+        return calendar.range(of: .day, in: .month, for: date)?.count ?? 31
+    }
+
+    // MARK: Holidays
+
+    @ViewBuilder
+    private func holidayDates(start: HolidayStart, daysAfter: Int, settings: ThemeSettings) -> some View {
+        Section {
+            Picker("Starts", selection: Binding(
+                get: { start },
+                set: { settings.setWindow(.around(start: $0, daysAfter: daysAfter), for: theme) }
+            )) {
+                if let preceding = theme.precedingHoliday {
+                    Text("Day After \(preceding.title)").tag(HolidayStart.dayAfterEnd(of: preceding))
+                }
+                ForEach(0...Self.maxDays, id: \.self) { days in
+                    Group {
+                        if days == 0 {
+                            Text("On \(theme.title)")
+                        } else {
+                            Text("^[\(days) day](inflect: true) before")
+                        }
+                    }
+                    .tag(HolidayStart.daysBefore(days))
+                }
+            }
+            Picker("Ends", selection: Binding(
+                get: { daysAfter },
+                set: { settings.setWindow(.around(start: start, daysAfter: $0), for: theme) }
+            )) {
+                ForEach(0...Self.maxDays, id: \.self) { days in
+                    Group {
+                        if days == 0 {
+                            Text("On \(theme.title)")
+                        } else {
+                            Text("^[\(days) day](inflect: true) after")
+                        }
+                    }
+                    .tag(days)
+                }
+            }
+        } footer: {
+            VStack(alignment: .leading) {
+                Text(ThemeDates.text(for: theme, settings: settings))
+                if case .dayAfterEnd(let preceding) = start {
+                    Text("Starts once the \(preceding.title) theme ends, even if \(preceding.title) isn't in the schedule.")
+                }
+            }
+        }
+    }
+}
+
+/// How a theme's dates read, e.g. "Nov 28 – Dec 30".
+private enum ThemeDates {
+    static func text(for theme: AppTheme, settings: ThemeSettings) -> String {
+        guard let dates = settings.schedule.upcomingDates(for: theme, from: settings.today) else { return "" }
+        // Gregorian, to match the month and day pickers whatever calendar the user has chosen.
+        let style = Date.FormatStyle(calendar: .themes).month(.abbreviated).day()
+        return "\(dates.start.formatted(style)) – \(dates.end.formatted(style))"
+    }
+}
+
+#Preview {
+    NavigationStack {
+        ThemeSettingsView()
+    }
+    .environment(AppModel.preview())
+}
