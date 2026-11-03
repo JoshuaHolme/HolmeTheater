@@ -63,6 +63,15 @@ struct ShowDetailView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+    #if os(tvOS)
+    /// The screen's focus scope, so Play can be the first thing focused rather than whatever comes first on the page.
+    @Namespace private var focusNamespace
+    @Environment(\.resetFocus) private var resetFocus
+
+    /// Whether focus has been settled on Play since the screen first appeared.
+    @State private var didSettleFocus = false
+    #endif
+
     /// How many lines a short line of the hero's text gets: two, or all it needs at accessibility sizes, where
     /// two lines would cut off most of it.
     private var shortTextLineLimit: Int? { dynamicTypeSize.isAccessibilitySize ? nil : 2 }
@@ -126,12 +135,31 @@ struct ShowDetailView: View {
         // The hero runs under the status and navigation bars, up to the top edge of the screen.
         .ignoresSafeArea(edges: .top)
         .onGeometryChange(for: CGSize.self) { $0.size } action: { screenSize = $0 }
+        #if os(tvOS)
+        // tvOS draws the title over the content, doubling the logo or title the hero already shows.
+        .navigationTitle("")
+        #else
         .navigationTitle(item.title)
+        #endif
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         // The logo over the hero already names the show.
         .toolbar(removing: .title)
         .toolbar { toolbarButtons }
+        #endif
+        #if os(tvOS)
+        .focusScope(focusNamespace)
+        // Play appears once its episode has loaded, after focus has already settled somewhere else.
+        .onChange(of: nextEpisode?.id) { resetFocus(in: focusNamespace) }
+        // An episode or movie has its Play button from the first frame, and the focus engine settles on whatever
+        // comes first on the page (the description) before the preference is read. Ask again once it has settled,
+        // only the first time so coming back to the page doesn't take focus from where the user was.
+        .task {
+            guard !didSettleFocus else { return }
+            didSettleFocus = true
+            try? await Task.sleep(for: .milliseconds(250))
+            resetFocus(in: focusNamespace)
+        }
         #endif
         .task(id: reloadCount) { await load() }
         .pullToRefresh { await load() }
@@ -404,7 +432,7 @@ struct ShowDetailView: View {
 
     /// Play, then Watch Trailer if the show has one, then the favorite button.
     private func actionButtons(showsTrailerTitle: Bool, compactPlay: Bool) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Self.buttonSpacing) {
             playButton(compact: compactPlay)
             trailerButton(showsTitle: showsTrailerTitle)
             #if os(tvOS)
@@ -413,11 +441,21 @@ struct ShowDetailView: View {
             favoriteButton
             watchedButton
             DownloadToolbarButton(item: current, prompt: $watchState.downloadPrompt)
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .controlSize(.large)
+                .heroCircleButton()
             #endif
         }
+        // Moving focus up from anywhere along the page lands on these buttons.
+        .tvFocusSection()
+    }
+
+    /// Space between the hero's buttons.
+    /// (See also `heroCircleButton()` for how the round ones are styled.)
+    private static var buttonSpacing: CGFloat {
+        #if os(tvOS)
+        return 24
+        #else
+        return 12
+        #endif
     }
 
     /// What the watched button does: whether it marks the item watched (or unwatched), and how. Nil if it can't.
@@ -438,9 +476,7 @@ struct ShowDetailView: View {
                     .font(.headline)
                     .foregroundStyle(change.wantsWatched ? .white : .green)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .controlSize(.large)
+            .heroCircleButton()
             .accessibilityLabel(change.wantsWatched ? "Mark as Watched" : "Mark as Unwatched")
         }
     }
@@ -507,9 +543,7 @@ struct ShowDetailView: View {
                 .font(.headline)
                 .foregroundStyle(isFavorite ? .red : .white)
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .controlSize(.large)
+        .heroCircleButton()
         .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
     }
 
@@ -541,12 +575,20 @@ struct ShowDetailView: View {
             } label: {
                 Label(isPlayableItem || compact ? ownPlayTitle(for: episode) : playTitle(for: episode), systemImage: "play.fill")
                     .font(.headline)
+                    #if !os(tvOS)
                     // Dark on white, like the TV app's Play button; the hero's text is white otherwise.
                     .foregroundStyle(.black)
+                    #endif
             }
+            #if os(tvOS)
+            // The standard prominent button, which tvOS draws white and lifts when focused. It's what's focused first.
+            .buttonStyle(.borderedProminent)
+            .prefersDefaultFocus(true, in: focusNamespace)
+            #else
             .buttonStyle(.glassProminent)
             .tint(.white)
             .controlSize(.large)
+            #endif
         }
     }
 
@@ -722,4 +764,20 @@ struct ShowDetailView: View {
         .mediaNavigationDestinations()
     }
     .environment(AppModel.preview())
+}
+
+private extension View {
+    /// The look of the hero's round icon buttons: Liquid Glass on iOS, and the standard bordered circle on tvOS, where
+    /// a glass button is drawn all the time rather than only when it has focus.
+    @ViewBuilder
+    func heroCircleButton() -> some View {
+        #if os(tvOS)
+        buttonStyle(.bordered)
+            .buttonBorderShape(.circle)
+        #else
+        buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+        #endif
+    }
 }

@@ -157,8 +157,6 @@ extension View {
             .cardLinkStyle()
             .contextMenu {
                 ItemActionButtons(entries: menu)
-            } preview: {
-                PersonPeek(person: person)
             }
         #endif
     }

@@ -53,7 +53,7 @@ struct SeasonsSection: View {
     /// A horizontally scrolling row of season posters. It pads its own ends, so it scrolls edge to edge.
     private func seasonShelf(_ seasons: [MediaItem]) -> some View {
         ScrollView(.horizontal) {
-            LazyHStack(alignment: .top, spacing: 12) {
+            LazyHStack(alignment: .top, spacing: Layout.cardSpacing) {
                 ForEach(seasons) { season in
                     seasonCard(season)
                 }
@@ -61,6 +61,8 @@ struct SeasonsSection: View {
             .padding(.horizontal)
         }
         .scrollIndicators(.hidden)
+        .scrollClipDisabled()
+        .tvFocusSection()
     }
 
     /// A season poster that opens the season when tapped, and peeks and pops when long-pressed.
@@ -81,8 +83,6 @@ struct SeasonsSection: View {
         .cardLinkStyle()
         .contextMenu {
             ItemActionButtons(entries: actions?.menuEntries(for: season) ?? [])
-        } preview: {
-            ItemPeek(item: season)
         }
         #endif
     }
@@ -195,14 +195,16 @@ struct SeasonListView: View {
                 // Built once and shared by the "more" menu and the long-press menu.
                 // Already inside the show, so there's no "Go to Show".
                 let actions = watchActions.actions(for: season, navigation: navigation, omitting: [.show])
-                ItemRow(item: season, captionLines: [season.seasonTitle, season.seasonDetailLine].compactMap { $0 }, actions: actions, peek: WatchActions.peekSpec(for: season, actions: actions, navigation: navigation))
-                    #if !os(iOS)
-                    .background {
-                        Button { openedSeason = season } label: { Color.clear.contentShape(Rectangle()) }
-                            .cardLinkStyle()
-                            .accessibilityLabel(season.accessibilityDescription)
-                    }
-                    #endif
+                let row = ItemRow(item: season, captionLines: [season.seasonTitle, season.seasonDetailLine].compactMap { $0 }, actions: actions, peek: WatchActions.peekSpec(for: season, actions: actions, navigation: navigation))
+                #if os(tvOS)
+                // The row is the button, so it has one focus stop; its actions are in the long-press menu.
+                Button { openedSeason = season } label: { row.padding(12) }
+                    .buttonStyle(.card)
+                    .contextMenu { ItemActionButtons(entries: actions?.menuEntries(for: season) ?? []) }
+                    .accessibilityLabel(season.accessibilityDescription)
+                #else
+                row
+                #endif
             }
             .listStyle(.plain)
         }

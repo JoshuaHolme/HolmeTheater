@@ -79,11 +79,16 @@ struct ItemNavigation {
     /// What tapping an item does: plays it straight away, or opens it if it can't be played (a show or season).
     /// The detail screen is otherwise reached through "Go to …" or a peek.
     func tap(_ item: MediaItem) {
+        #if os(tvOS)
+        // As in the Apple TV app, selecting a card opens it; Play is on the detail screen and in the menu.
+        open(item)
+        #else
         if item.isPlayable {
             play(item)
         } else {
             open(item)
         }
+        #endif
     }
 }
 
@@ -248,6 +253,7 @@ struct WatchActions {
     func actions(for item: MediaItem, navigation: ItemNavigation, omitting: Set<RelatedLink> = []) -> ItemRowActions? {
         // A special feature has no screen of its own to go to; it only plays.
         var actions = actions(for: item, goTo: item.kind == .extra ? nil : { navigation.open(item) })
+        if item.isPlayable { actions?.play = { navigation.play(item) } }
         // A show with a single season has no season page, so its episodes offer only the episode and the show. The
         // count is fetched if it isn't known yet, and the entry waits for it.
         if item.kind == .episode, !omitting.contains(.season), let seasonID = item.seasonID, let seriesID = item.seriesID {

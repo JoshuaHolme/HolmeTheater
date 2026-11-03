@@ -80,6 +80,20 @@ struct TruncatingOverview: View {
     private var isTruncated: Bool { fullHeight > shownHeight + 0.5 }
 
     var body: some View {
+        #if os(tvOS)
+        // The whole description is the button, as in the Apple TV app: selecting it shows all of it. A small MORE
+        // button over the last line would be a fiddly thing to aim at with the remote.
+        Button(action: onMore) {
+            Text(text)
+                .font(.body)
+                .foregroundStyle(foreground.opacity(0.75))
+                .lineLimit(lineLimit)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: 900, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows the full description")
+        #else
         Text(text)
             .font(.callout)
             // Dimmer than the genre line above it, but brighter than the system's secondary gray, whose
@@ -96,6 +110,7 @@ struct TruncatingOverview: View {
             .overlay(alignment: .bottomTrailing) {
                 if isTruncated { moreButton }
             }
+        #endif
     }
 
     /// Invisible copies of the text that measure how tall all of it is, and how tall one line is.

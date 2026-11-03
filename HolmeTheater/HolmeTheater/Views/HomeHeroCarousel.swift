@@ -30,7 +30,7 @@ struct HomeHeroCarousel<Header: View>: View {
     /// Called when an item's hero is tapped.
     let open: (MediaItem) -> Void
 
-    /// Called when an item's Play button is tapped.
+    /// Called when an item's Play button is tapped. (On tvOS, also when More Info is selected.)
     let play: (MediaItem) -> Void
 
     /// The page's heading, over the top of the artwork.
@@ -73,6 +73,18 @@ struct HomeHeroCarousel<Header: View>: View {
     /// How far through its wait the item showing is, from 0 to 1, which fills its page dot.
     @State private var progress: CGFloat = 0
 
+    /// Whether one of the carousel's buttons has focus.
+    @FocusState private var hasFocus: Bool
+
+    /// Whether the focus holds the carousel still. Only tvOS has focus to hold it.
+    private var holdsFocus: Bool {
+        #if os(tvOS)
+        hasFocus
+        #else
+        false
+        #endif
+    }
+
     private var width: CGFloat { screenSize.width }
 
     /// The carousel's height: tall and nearly poster-shaped on a narrow screen, and no more than most of the screen's
@@ -102,7 +114,11 @@ struct HomeHeroCarousel<Header: View>: View {
                         playTarget: playTargets[item.id],
                         safeArea: safeArea,
                         open: { if !isSwiping { open($0) } },
-                        play: { if !isSwiping { play($0) } }
+                        play: { if !isSwiping { play($0) } },
+                        step: { delta in
+                            guard items.count > 1 else { return }
+                            withAnimation(Self.swipeSlide) { index = (index + delta + items.count) % items.count }
+                        }
                     )
                     // The closures are new each time this runs, which would redraw every page for every frame of a
                     // drag. See `HeroPage.==` for why comparing without them is safe.
@@ -136,7 +152,9 @@ struct HomeHeroCarousel<Header: View>: View {
         .ignoresSafeArea(edges: .horizontal)
         // Restarts whenever the item changes, whether it moved by itself or was swiped, and while a finger is down,
         // so the wait is always the full interval from the last touch. Cancelled when the screen goes away.
-        .task(id: Advance(index: index, isDragging: isDragging, isPaused: reduceMotion || voiceOverEnabled)) {
+        // On tvOS, also holds still while a button on it has focus, so the focused button isn't pulled away.
+        .focused($hasFocus)
+        .task(id: Advance(index: index, isDragging: isDragging, isPaused: reduceMotion || voiceOverEnabled || holdsFocus)) {
             await advanceAfterWait()
         }
         // A reload can bring fewer items; start again from the first rather than point past the end.
@@ -192,7 +210,7 @@ struct HomeHeroCarousel<Header: View>: View {
         reset.disablesAnimations = true
         withTransaction(reset) { progress = 0 }
 
-        guard items.count > 1, !isDragging, !reduceMotion, !voiceOverEnabled else { return }
+        guard items.count > 1, !isDragging, !reduceMotion, !voiceOverEnabled, !holdsFocus else { return }
         withAnimation(.linear(duration: Double(Self.advanceInterval.components.seconds))) { progress = 1 }
         try? await Task.sleep(for: Self.advanceInterval)
         guard !Task.isCancelled else { return }
@@ -203,13 +221,27 @@ struct HomeHeroCarousel<Header: View>: View {
         }
     }
 
+    /// A page dot that moves to its item when tapped. On tvOS it's only an indicator: a 15-point button would be a
+    /// fiddly focus stop, and the Siri Remote changes pages from the hero's buttons instead.
+    @ViewBuilder
+    private func dotButton<Label: View>(_ position: Int, @ViewBuilder label: () -> Label) -> some View {
+        #if os(tvOS)
+        label()
+        #else
+        Button {
+            withAnimation(Self.swipeSlide) { index = position }
+        } label: {
+            label()
+        }
+        .buttonStyle(.plain)
+        #endif
+    }
+
     private var pageDots: some View {
         HStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { position, _ in
                 let isSelected = position == index
-                Button {
-                    withAnimation(Self.swipeSlide) { index = position }
-                } label: {
+                dotButton(position) {
                     // The one showing stretches into a pill that fills as its time runs out, like the Apple TV app's.
                     Capsule()
                         .fill(Color.white.opacity(0.3))
@@ -231,7 +263,6 @@ struct HomeHeroCarousel<Header: View>: View {
                         .padding(.vertical, 8)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
             }
         }
         .animation(.easeInOut(duration: 0.25), value: index)
@@ -270,6 +301,9 @@ private struct HeroPage: View, Equatable {
     let open: (MediaItem) -> Void
     let play: (MediaItem) -> Void
 
+    /// Moves the carousel to the next item (1) or the previous (-1), for the Siri Remote.
+    let step: (Int) -> Void
+
     /// e.g. "TV Show · Crime · Thriller": what kind of thing it is, then its first genres.
     private var kindLine: String {
         var parts: [String] = []
@@ -307,13 +341,16 @@ private struct HeroPage: View, Equatable {
                     endPoint: .bottom
                 )
             }
-            // Tapping the artwork opens the item. The buttons over it take their own taps.
+            #if !os(tvOS)
+            // Tapping the artwork opens the item. The buttons over it take their own taps. (On tvOS a screen-sized
+            // button would be a focus stop of its own, so the More Info button does this instead.)
             .overlay {
                 Button { open(item) } label: { Color.clear.contentShape(Rectangle()) }
                     .cardLinkStyle()
                     .accessibilityLabel(item.accessibilityDescription)
                     .accessibilityHint("Opens the details")
             }
+            #endif
             .overlay(alignment: .bottomLeading) { details }
     }
 
@@ -338,6 +375,28 @@ private struct HeroPage: View, Equatable {
                 }
             }
 
+            #if os(tvOS)
+            HStack(spacing: 24) {
+                if let playTarget {
+                    Button { play(playTarget) } label: {
+                        Label(playTarget.playButtonTitle(forShow: item.kind == .series), systemImage: "play.fill")
+                            .font(.headline)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    // At the left edge, moving left goes to the previous item rather than nowhere.
+                    .onMoveCommand { if $0 == .left { step(-1) } }
+                }
+
+                Button { open(item) } label: {
+                    Label("More Info", systemImage: "info.circle")
+                        .font(.headline)
+                }
+                .buttonStyle(.bordered)
+                .onMoveCommand { if $0 == .right { step(1) } }
+            }
+            .padding(.top, 4)
+            .tvFocusSection()
+            #else
             HStack(spacing: 12) {
                 if let playTarget {
                     Button { play(playTarget) } label: {
@@ -355,6 +414,7 @@ private struct HeroPage: View, Equatable {
                 }
             }
             .padding(.top, 4)
+            #endif
         }
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)

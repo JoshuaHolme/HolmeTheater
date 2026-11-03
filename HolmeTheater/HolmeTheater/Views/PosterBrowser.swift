@@ -162,8 +162,8 @@ struct PosterBrowser: View {
                         }
                     } else {
                         LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: min(posterMinimum, Layout.posterWidth * 2)), spacing: 12, alignment: .top)],
-                            spacing: 16
+                            columns: [GridItem(.adaptive(minimum: min(posterMinimum, Layout.posterWidth * 2)), spacing: Layout.cardSpacing, alignment: .top)],
+                            spacing: Layout.cardSpacing
                         ) {
                             ForEach(visible) { item in
                                 NavigationLink(value: item) {

@@ -25,6 +25,43 @@ enum Layout {
         return 130
         #endif
     }
+
+    /// Space between a card's artwork and its caption. On tvOS the focused artwork grows and lifts, and would
+    /// otherwise cover the caption.
+    static var captionGap: CGFloat {
+        #if os(tvOS)
+        return 28
+        #else
+        return 6
+        #endif
+    }
+
+    /// Space between a shelf's heading and its cards, with the same room for the focused card to lift into.
+    static var shelfHeadingGap: CGFloat {
+        #if os(tvOS)
+        return 32
+        #else
+        return 8
+        #endif
+    }
+
+    /// Space between one shelf and the next.
+    static var shelfSpacing: CGFloat {
+        #if os(tvOS)
+        return 48
+        #else
+        return 24
+        #endif
+    }
+
+    /// Space between cards in a shelf or grid; tvOS needs room for the focused card to lift.
+    static var cardSpacing: CGFloat {
+        #if os(tvOS)
+        return 40
+        #else
+        return 12
+        #endif
+    }
 }
 
 /// Gives a card its width, which grows with the text size (up to twice as wide) so the caption under the
@@ -220,6 +257,27 @@ extension View {
         shadow(color: .black.opacity(0.4), radius: 2)
     }
 
+    /// On tvOS, makes this view (a card's artwork and its overlays) the part that lifts and shines when the card is
+    /// focused. Without it the button style picks the first image it finds, which isn't the whole artwork.
+    @ViewBuilder
+    func focusHighlight() -> some View {
+        #if os(tvOS)
+        hoverEffect(.highlight)
+        #else
+        self
+        #endif
+    }
+
+    /// On tvOS, makes this view's frame guide focus to what's inside it. Does nothing elsewhere.
+    @ViewBuilder
+    func tvFocusSection() -> some View {
+        #if os(tvOS)
+        focusSection()
+        #else
+        self
+        #endif
+    }
+
     /// Link style that keeps cards looking like cards (and focusable on tvOS).
     @ViewBuilder
     func cardLinkStyle() -> some View {
@@ -238,6 +296,12 @@ struct ArtworkView: View {
 
     /// Width divided by height, e.g. `2.0 / 3.0` for a poster.
     let aspectRatio: CGFloat
+
+    #if os(tvOS)
+    private static let cornerRadius: CGFloat = 12
+    #else
+    private static let cornerRadius: CGFloat = 8
+    #endif
 
     var body: some View {
         Color.secondary.opacity(0.2)
@@ -260,12 +324,12 @@ struct ArtworkView: View {
                 // it receiving taps, so without this it would steal taps from neighboring cards.
                 .allowsHitTesting(false)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
             // A faint outline gives artwork whose background matches the screen's (white or black) an edge.
             // It's inset, and the primary color flips with light and dark mode, so it stays subtle on artwork
             // that already stands out.
             .overlay {
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: Self.cornerRadius)
                     .strokeBorder(.primary.opacity(0.15), lineWidth: 1)
             }
     }
@@ -328,7 +392,7 @@ struct WideCard: View {
     let item: MediaItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Layout.captionGap) {
             ArtworkView(url: item.gridArtworkURL, aspectRatio: 16.0 / 9.0)
                 .overlay(alignment: .bottom) {
                     if let fraction = item.playedFraction {
@@ -343,6 +407,7 @@ struct WideCard: View {
                     }
                 }
                 .overlay(alignment: .topLeading) { DownloadedBadge(item: item) }
+                .focusHighlight()
 
             // An episode's show is the screen it's on, so it shows only its own title and number. The most lines
             // an extra shows is three (title, kind, length); reserving them keeps the cards the same height.
@@ -361,7 +426,7 @@ struct PosterCard: View {
     let item: MediaItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Layout.captionGap) {
             ArtworkView(url: item.posterURL, aspectRatio: 2.0 / 3.0)
                 .overlay(alignment: .bottom) {
                     if let fraction = item.playedFraction {
@@ -376,6 +441,7 @@ struct PosterCard: View {
                     }
                 }
                 .overlay(alignment: .topLeading) { DownloadedBadge(item: item) }
+                .focusHighlight()
 
             // Three lines is the most any item shows (an episode); reserving them keeps every card the same height.
             ItemCaption(item: item, reservedLines: 3)
@@ -439,20 +505,27 @@ struct MediaShelf: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Layout.shelfHeadingGap) {
             heading
                 .padding(.horizontal)
 
             ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: 12) {
+                LazyHStack(alignment: .top, spacing: Layout.cardSpacing) {
                     ForEach(shownItems) { item in
                         card(for: item)
                     }
+                    #if os(tvOS)
+                    seeAllCard
+                    #endif
                 }
                 .padding(.horizontal)
             }
             .scrollIndicators(.hidden)
+            // Lets a focused card lift and grow past the edge of the scroll view.
+            .scrollClipDisabled()
         }
+        // Focus moving up or down lands on this row from anywhere along its width.
+        .tvFocusSection()
         // The reload has arrived, so the real data replaces the local changes.
         .onChange(of: items) { effects = [] }
         .watchActionAlerts(watchActions)
@@ -473,8 +546,6 @@ struct MediaShelf: View {
         .cardLinkStyle()
         .contextMenu {
             ItemActionButtons(entries: actions?.menuEntries(for: item) ?? [])
-        } preview: {
-            ItemPeek(item: item)
         }
         #endif
     }
@@ -491,8 +562,46 @@ struct MediaShelf: View {
         }
     }
 
+    #if os(tvOS)
+    /// The last card in a tvOS shelf, which opens the full list. It stands in for the heading link, so the heading
+    /// isn't an extra stop for focus above every row.
+    @ViewBuilder
+    private var seeAllCard: some View {
+        if onHeadingTap != nil || destination != nil {
+            // Exactly the size of a card's artwork, at the top of the row, so it lines up with the posters beside it.
+            let card = RoundedRectangle(cornerRadius: 12)
+                .fill(.quaternary)
+                .aspectRatio(isWide ? 16.0 / 9.0 : 2.0 / 3.0, contentMode: .fit)
+                .frame(width: isWide ? Layout.wideCardWidth : Layout.posterWidth)
+                .overlay {
+                    VStack(spacing: 12) {
+                        Image(systemName: "chevron.right.circle")
+                            .font(.largeTitle)
+                        Text("See All")
+                            .font(.headline)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+                .focusHighlight()
+
+            if let onHeadingTap {
+                Button(action: onHeadingTap) { card }
+                    .cardLinkStyle()
+            } else if let destination {
+                NavigationLink(value: destination) { card }
+                    .cardLinkStyle()
+            }
+        }
+    }
+    #endif
+
     @ViewBuilder
     private var heading: some View {
+        #if os(tvOS)
+        Text(title)
+            .font(.title2.bold())
+        #else
         if let onHeadingTap {
             ShelfHeadingLink(title: LocalizedStringKey(title), action: onHeadingTap)
                 .accessibilityLabel("\(title), show all")
@@ -514,6 +623,7 @@ struct MediaShelf: View {
             Text(title)
                 .font(.title2.bold())
         }
+        #endif
     }
 }
 
@@ -545,6 +655,10 @@ struct ItemRowActions {
     /// The download entries for the item: download, pause, resume or remove, depending on where its download is. Empty
     /// for anything that can't be downloaded. They're built with the item's download state, so they follow it.
     var downloadEntries: [ItemMenuEntry] = []
+
+    /// Plays the item. Offered first in the menu on tvOS, where selecting a card opens its detail screen rather
+    /// than playing it. Nil for anything that can't be played.
+    var play: (() -> Void)?
 }
 
 /// Compact list row: thumbnail plus title and details.
@@ -585,9 +699,11 @@ struct ItemRow: View {
                     .accessibilityLabel("Watched")
             }
 
+            #if !os(tvOS)
             if let actions {
                 ItemActionsMenu(item: item, actions: actions)
             }
+            #endif
         }
         // The peek layer covers the row except the menu button's end (if it has one), so that button keeps
         // its own taps.
@@ -602,6 +718,7 @@ struct ItemRow: View {
 struct ItemMenuEntry: Identifiable {
     /// What an entry does, which identifies it within a menu.
     enum ID: Hashable {
+        case play
         case goTo
         case goToSeason
         case goToShow
@@ -632,9 +749,16 @@ extension ItemRowActions {
     /// The menu entries for an item: "Go to …" (if given), then the watch-state actions, then the download actions.
     func menuEntries(for item: MediaItem) -> [ItemMenuEntry] {
         var entries: [ItemMenuEntry] = []
+        #if os(tvOS)
+        // Selecting a card already opens the item, so the menu leads with Play instead of "Go to …".
+        if let play {
+            entries.append(ItemMenuEntry(id: .play, title: item.playButtonTitle(forShow: false), systemImage: "play.fill", perform: play))
+        }
+        #else
         if let goTo {
             entries.append(ItemMenuEntry(id: .goTo, title: item.goToMenuTitle, systemImage: "info.circle", perform: goTo))
         }
+        #endif
         if let goToSeason {
             entries.append(ItemMenuEntry(id: .goToSeason, title: String(localized: "Go to Season"), systemImage: "square.stack", perform: goToSeason))
         }
@@ -862,9 +986,11 @@ struct ShelfGridCard: View {
                 Spacer()
             }
 
+            #if !os(tvOS)
             if let actions {
                 ItemActionsMenu(item: item, actions: actions, overArtwork: true)
             }
+            #endif
         }
         .font(.subheadline.weight(.semibold))
         // The bar sits on artwork that doesn't grow with the text, so at accessibility sizes its time left was cut to

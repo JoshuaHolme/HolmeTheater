@@ -11,7 +11,7 @@ import SwiftUI
 struct MainView: View {
     @Environment(AppModel.self) private var appModel
 
-    private enum Section: Hashable { case home, libraries, downloads, search }
+    private enum Section: Hashable { case home, libraries, downloads, search, account }
 
     /// With no network, the app opens on what can still be watched.
     @State private var selection = NetworkMonitor.shared.isOnline ? Section.home : Section.downloads
@@ -19,6 +19,7 @@ struct MainView: View {
     @State private var librariesPath = NavigationPath()
     @State private var downloadsPath = NavigationPath()
     @State private var searchPath = NavigationPath()
+    @State private var accountPath = NavigationPath()
 
     var body: some View {
         TabView(selection: $selection) {
@@ -57,7 +58,20 @@ struct MainView: View {
                         .accountButton()
                 }
             }
+
+            #if os(tvOS)
+            // Account lives in the sidebar on Apple TV, which has no navigation bar to hold a profile button.
+            Tab("Account", systemImage: "person.crop.circle", value: Section.account) {
+                NavigationStack(path: $accountPath) {
+                    AccountView()
+                        .mediaNavigationDestinations()
+                }
+            }
+            #endif
         }
+        #if os(tvOS)
+        .tabViewStyle(.sidebarAdaptable)
+        #endif
         .overlay(alignment: .top) { toast }
         .animation(.easeInOut, value: appModel.toastMessage)
         .environment(\.openDownloads, OpenDownloadsAction { selection = .downloads })
@@ -71,6 +85,7 @@ struct MainView: View {
             case .libraries: librariesPath.append(show)
             case .downloads: downloadsPath.append(show)
             case .search: searchPath.append(show)
+            case .account: accountPath.append(show)
             }
         }
     }

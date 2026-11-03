@@ -37,7 +37,18 @@ struct PlayerView: View {
                     // A new session is a new player: its own model, controls and clock.
                     .id(ObjectIdentifier(session))
                 #else
-                VideoPlayer(player: session.player)
+                TVPlayerController(
+                    session: session,
+                    service: appModel.service,
+                    playNext: playNext,
+                    // Closes the player, then the tab that's showing opens the page, as "Go to Show" does on iOS.
+                    openItem: { item in
+                        appModel.pendingShow = item
+                        close()
+                    }
+                )
+                    // A new session is a new player controller, with its own menus and subtitles.
+                    .id(ObjectIdentifier(session))
                     .ignoresSafeArea()
                 #endif
             } else if let errorMessage {
@@ -269,7 +280,22 @@ final class PlaybackSession {
         title.identifier = .commonIdentifierTitle
         title.value = item.title as NSString
         title.extendedLanguageTag = "und"
-        playerItem.externalMetadata = [title]
+        var metadata = [title]
+        #if os(tvOS)
+        // What the Apple TV player's title view and Info panel show.
+        func add(_ identifier: AVMetadataIdentifier, _ text: String?) {
+            guard let text, !text.isEmpty else { return }
+            let entry = AVMutableMetadataItem()
+            entry.identifier = identifier
+            entry.value = text as NSString
+            entry.extendedLanguageTag = "und"
+            metadata.append(entry)
+        }
+        add(.iTunesMetadataTrackSubTitle, item.subtitle)
+        add(.commonIdentifierDescription, item.overview)
+        add(.quickTimeMetadataGenre, item.genres.first)
+        #endif
+        playerItem.externalMetadata = metadata
         return playerItem
     }
 

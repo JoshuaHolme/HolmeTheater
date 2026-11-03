@@ -52,6 +52,16 @@ struct HomeView: View {
     /// The seasonal theme showing, if any.
     private var theme: AppTheme? { appModel.themeSettings.activeTheme }
 
+    /// Whether the page draws its own heading. On tvOS the sidebar already names the screen, so there's none (it
+    /// collided with the hero's title). That includes a holiday theme's greeting; the theme still tints the page.
+    private var showsHeader: Bool {
+        #if os(tvOS)
+        false
+        #else
+        true
+        #endif
+    }
+
     /// One shelf on the home screen.
     private struct Shelf: Identifiable {
         let id: String
@@ -74,7 +84,7 @@ struct HomeView: View {
             let safeArea = proxy.safeAreaInsets
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if !showsHero {
+                    if !showsHero && showsHeader {
                         header
                             .padding(.top, safeArea.top)
                             .padding(.top)
@@ -83,7 +93,7 @@ struct HomeView: View {
                     // Loads inside the scroll view, below the header, so the profile button in the bar stays
                     // reachable (e.g. to sign out) even if loading fails.
                     AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, offersDownloads: true) { data in
-                        LazyVStack(alignment: .leading, spacing: 24) {
+                        LazyVStack(alignment: .leading, spacing: Layout.shelfSpacing) {
                             if !data.hero.isEmpty {
                                 HomeHeroCarousel(
                                     items: data.hero,
@@ -97,7 +107,7 @@ struct HomeView: View {
                                     open: { goToItem = $0 },
                                     play: { playingItem = $0 }
                                 ) {
-                                    header.foregroundStyle(.white)
+                                    if showsHeader { header.foregroundStyle(.white) }
                                 }
 
                             }
@@ -127,7 +137,12 @@ struct HomeView: View {
         }
         // The title is set so pushed screens can show "Home" on their back button. The bar itself only holds the profile
         // button (added where the tab is made): the heading below already names the screen.
+        #if os(tvOS)
+        // tvOS draws the title over the content, which here is the hero artwork; the sidebar already says "Home".
+        .navigationTitle("")
+        #else
         .navigationTitle("Home")
+        #endif
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(removing: .title)

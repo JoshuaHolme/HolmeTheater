@@ -66,7 +66,12 @@ private struct StandardItemDetailView: View {
                 .padding(.horizontal)
             }
         }
+        #if os(tvOS)
+        // The page's own heading already names the item.
+        .navigationTitle("")
+        #else
         .navigationTitle(item.title)
+        #endif
         .fullScreenCover(item: $playingItem) {
             PlayerView(item: $0, onStop: { Task { await refresh() } })
         }

@@ -126,6 +126,10 @@ private struct ThemeScheduleDetailView: View {
             .disabled(!settings.isScheduled(theme))
         }
         .navigationTitle(theme.title)
+        #if os(tvOS)
+        // A long list of days opens as its own screen, rather than as a menu too tall for a TV.
+        .pickerStyle(.navigationLink)
+        #endif
     }
 
     // MARK: Seasons

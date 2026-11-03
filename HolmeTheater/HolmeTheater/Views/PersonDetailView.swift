@@ -158,7 +158,7 @@ struct PersonDetailView: View {
     }
 
     /// e.g. "Born June 1, 1960 (age 65)", "Born in Los Angeles, USA", "Died March 3, 2020 (age 59)".
-    private static func factLines(for details: PersonDetails) -> [String] {
+    static func factLines(for details: PersonDetails) -> [String] {
         // Birth and death dates are calendar dates stored at midnight UTC, so they're read in UTC.
         let utc = TimeZone(identifier: "UTC") ?? .gmt
         let style = Date.FormatStyle(date: .long, time: .omitted, timeZone: utc)
@@ -205,7 +205,7 @@ struct PersonDetailView: View {
                     .font(.title2.bold())
                     .accessibilityAddTraits(.isHeader)
 
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: min(posterMinimum, Layout.posterWidth * 2)), spacing: 12, alignment: .top)], spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: min(posterMinimum, Layout.posterWidth * 2)), spacing: Layout.cardSpacing, alignment: .top)], spacing: Layout.cardSpacing) {
                     ForEach(credits) { credit in
                         creditPeek(credit)
                     }
@@ -237,8 +237,6 @@ struct PersonDetailView: View {
         .cardLinkStyle()
         .contextMenu {
             ItemActionButtons(entries: actions?.menuEntries(for: item) ?? [])
-        } preview: {
-            ItemPeek(item: item)
         }
         #endif
     }

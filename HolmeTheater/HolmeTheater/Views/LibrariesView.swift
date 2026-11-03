@@ -23,7 +23,7 @@ struct LibrariesView: View {
         AsyncContent(load: { try await appModel.service.libraries() }, offersDownloads: true) { libraries in
             ScrollView {
                 // As many columns as fit, so a wide screen shows several cards across instead of stretching one.
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: 16)], spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: Layout.cardSpacing)], spacing: Layout.cardSpacing) {
                     ForEach(libraries) { library in
                         NavigationLink(value: library) {
                             CollageCard(title: library.name, systemImage: library.systemImage, cacheKey: "\(appModel.cacheScope)|library-\(library.id)") {

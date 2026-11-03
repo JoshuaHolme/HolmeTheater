@@ -79,14 +79,15 @@ private struct CodeBoxes: View {
         )
     }
 
-    var body: some View {
+    /// The row of boxes, one per digit.
+    private var boxes: some View {
         HStack(spacing: 10) {
             ForEach(0..<length, id: \.self) { index in
                 let characters = Array(code)
                 let isCurrent = isFocused && index == min(characters.count, length - 1)
                 Text(index < characters.count ? String(characters[index]) : "")
                     .font(.title.monospacedDigit().weight(.semibold))
-                    .frame(maxWidth: 52, minHeight: 64)
+                    .frame(maxWidth: Self.boxWidth, minHeight: Self.boxHeight)
                     .background(.fill.tertiary, in: .rect(cornerRadius: 12))
                     .overlay {
                         RoundedRectangle(cornerRadius: 12)
@@ -97,6 +98,28 @@ private struct CodeBoxes: View {
         .frame(maxWidth: .infinity)
         // Hidden from VoiceOver, which reads the field instead.
         .accessibilityHidden(true)
+    }
+
+    #if os(tvOS)
+    private static let boxWidth: CGFloat = 96
+    private static let boxHeight: CGFloat = 112
+    #else
+    private static let boxWidth: CGFloat = 52
+    private static let boxHeight: CGFloat = 64
+    #endif
+
+    var body: some View {
+        #if os(tvOS)
+        // A text field you can't see can't be focused with the remote, so on tvOS the field is a real one below the
+        // boxes, which show what's been typed.
+        VStack(spacing: 24) {
+            boxes
+            TextField("Enter Code", text: digits)
+                .focused($isFocused)
+                .autocorrectionDisabled()
+        }
+        #else
+        boxes
         .overlay {
             TextField("", text: digits)
                 .focused($isFocused)
@@ -115,6 +138,7 @@ private struct CodeBoxes: View {
         .contentShape(Rectangle())
         .onTapGesture { isFocused = true }
         .task { isFocused = true }
+        #endif
     }
 }
 

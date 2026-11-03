@@ -45,8 +45,8 @@ struct SignInView: View {
     /// Whether the user typed `http://` or `https://` themselves, in which case that's what's used as it is.
     private var typedScheme: Bool { trimmedAddress.contains("://") }
 
-    var body: some View {
-        NavigationStack {
+    /// The iPhone and iPad layout: a grouped form.
+    private var iosForm: some View {
             Form {
                 Section {
                     TextField("Server address", text: $address)
@@ -83,43 +83,9 @@ struct SignInView: View {
                     }
                 }
 
-                Section("Quick Connect") {
-                    if let code = quickConnectCode {
-                        Text(code)
-                            .font(.largeTitle.monospaced().bold())
-                        Text("In another signed-in Jellyfin app, open Quick Connect and enter this code.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        Button("Cancel", role: .cancel) { cancelQuickConnect() }
-                    } else if quickConnectTask != nil || isWorking {
-                        ProgressView()
-                    } else {
-                        Button("Use Quick Connect") { Task { await signIn(using: .quickConnect) } }
-                            .disabled(trimmedAddress.isEmpty)
-                    }
-                }
-
-                Section {
-                    // Content types let password managers and iCloud Keychain offer AutoFill.
-                    TextField("Username", text: $username)
-                        .textContentType(.username)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .autocorrectionDisabled()
-                    SecureField("Password", text: $password)
-                        .textContentType(.password)
-                        .onSubmit { Task { await signIn(using: .password) } }
-
-                    Button("Sign In") { Task { await signIn(using: .password) } }
-                        .disabled(trimmedAddress.isEmpty || username.isEmpty || isWorking)
-                } header: {
-                    if let server {
-                        Text("Sign in to \(server.name)")
-                    } else {
-                        Text("Account")
-                    }
-                }
+                // Quick Connect first: typing a username and password with the remote is slow.
+                quickConnectSection
+                accountSection
 
                 if let disclaimer = branding?.loginDisclaimer {
                     Section {
@@ -135,6 +101,17 @@ struct SignInView: View {
                             .foregroundStyle(.red)
                     }
                 }
+            }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                #if os(tvOS)
+                tvLayout
+                #else
+                iosForm
+                #endif
             }
             .navigationTitle("Sign In")
             // The server's splash screen behind the form, dimmed so the form stays readable.
@@ -185,6 +162,168 @@ struct SignInView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Couldn't connect to \(server?.url.host() ?? trimmedAddress) securely, so this would use plain HTTP. Your password and what you watch can be seen by others on the same network.")
+            }
+        }
+    }
+
+    #if os(tvOS)
+    /// Whether the username and password fields are showing. Quick Connect is the easy way on a TV, so they stay
+    /// out of the way until asked for.
+    @State private var showsPasswordFields = false
+
+    /// The Apple TV layout: one centered column with large controls, instead of a form stretched across the screen.
+    /// Quick Connect leads, since typing with the remote is slow.
+    private var tvLayout: some View {
+        ScrollView {
+            VStack(spacing: 40) {
+                VStack(spacing: 12) {
+                    Text(server.map { String(localized: "Sign in to \($0.name)") } ?? String(localized: "Connect to Your Server"))
+                        .font(.title2.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                    tvAddressNote
+                }
+
+                TextField("Server address", text: $address)
+                    .autocorrectionDisabled()
+                    .textContentType(.URL)
+                    .submitLabel(.next)
+                    // Looks the server up now, so its branding shows before anything else is typed.
+                    .onSubmit {
+                        Task {
+                            isWorking = true
+                            errorMessage = nil
+                            _ = await connectIfNeeded()
+                            isWorking = false
+                        }
+                    }
+
+                tvQuickConnect
+
+                if showsPasswordFields {
+                    VStack(spacing: 24) {
+                        TextField("Username", text: $username)
+                            .textContentType(.username)
+                            .autocorrectionDisabled()
+                        SecureField("Password", text: $password)
+                            .textContentType(.password)
+                            .onSubmit { Task { await signIn(using: .password) } }
+                        Button("Sign In") { Task { await signIn(using: .password) } }
+                            .disabled(trimmedAddress.isEmpty || username.isEmpty || isWorking)
+                    }
+                } else if quickConnectCode == nil {
+                    Button("Sign In with Password") { showsPasswordFields = true }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+
+                if let disclaimer = branding?.loginDisclaimer {
+                    Text(disclaimer)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .frame(maxWidth: 900)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 60)
+        }
+        .scrollClipDisabled()
+    }
+
+    /// The hint under the heading: how to type the address, or a warning if the connection isn't encrypted.
+    @ViewBuilder
+    private var tvAddressNote: some View {
+        if let server, server.url.scheme?.lowercased() == "http" {
+            Label {
+                Text("This connection isn't encrypted. Your password and what you watch can be seen by others on the same network.")
+            } icon: {
+                Image(systemName: "lock.open")
+                    .foregroundStyle(.orange)
+            }
+            .font(.callout)
+            .multilineTextAlignment(.center)
+        } else {
+            Text("Type it however you like, with or without https://. Without it, a secure connection is tried first.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    /// The Quick Connect button, or the code to enter on another device once it's been asked for.
+    @ViewBuilder
+    private var tvQuickConnect: some View {
+        if let code = quickConnectCode {
+            VStack(spacing: 20) {
+                Text(code)
+                    .font(.system(size: 96, weight: .bold, design: .monospaced))
+                Text("In another signed-in Jellyfin app, open Quick Connect and enter this code.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Cancel", role: .cancel) { cancelQuickConnect() }
+            }
+        } else if quickConnectTask != nil || isWorking {
+            ProgressView()
+        } else {
+            Button {
+                Task { await signIn(using: .quickConnect) }
+            } label: {
+                Label("Use Quick Connect", systemImage: "qrcode")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(trimmedAddress.isEmpty)
+        }
+    }
+    #endif
+
+    private var quickConnectSection: some View {
+        Section("Quick Connect") {
+            if let code = quickConnectCode {
+                Text(code)
+                    .font(.largeTitle.monospaced().bold())
+                Text("In another signed-in Jellyfin app, open Quick Connect and enter this code.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("Cancel", role: .cancel) { cancelQuickConnect() }
+            } else if quickConnectTask != nil || isWorking {
+                ProgressView()
+            } else {
+                Button("Use Quick Connect") { Task { await signIn(using: .quickConnect) } }
+                    .disabled(trimmedAddress.isEmpty)
+            }
+        }
+    }
+
+    private var accountSection: some View {
+        Section {
+            // Content types let password managers and iCloud Keychain offer AutoFill.
+            TextField("Username", text: $username)
+                .textContentType(.username)
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .autocorrectionDisabled()
+            SecureField("Password", text: $password)
+                .textContentType(.password)
+                .onSubmit { Task { await signIn(using: .password) } }
+
+            Button("Sign In") { Task { await signIn(using: .password) } }
+                .disabled(trimmedAddress.isEmpty || username.isEmpty || isWorking)
+        } header: {
+            if let server {
+                Text("Sign in to \(server.name)")
+            } else {
+                Text("Account")
             }
         }
     }

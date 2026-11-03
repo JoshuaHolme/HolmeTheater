@@ -130,10 +130,9 @@ struct ShelfListView: View {
             ForEach(items) { item in
                 // Built once and shared by the "more" menu and the long-press menu.
                 let actions = watchActions.actions(for: item, navigation: navigation, omitting: omittedLinks)
-                ItemRow(item: item, captionLines: captionLines(for: item), actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
-                    #if !os(iOS)
-                    .background { tapTarget(for: item) }
-                    #endif
+                tvTarget(for: item, actions: actions) {
+                    ItemRow(item: item, captionLines: captionLines(for: item), actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
+                }
             }
 
             pageFooter
@@ -145,13 +144,12 @@ struct ShelfListView: View {
     private var grid: some View {
         ScrollView {
             LazyVStack(spacing: 16) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 16, alignment: .top)], spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: Layout.cardSpacing, alignment: .top)], spacing: Layout.cardSpacing) {
                     ForEach(items) { item in
                         let actions = watchActions.actions(for: item, navigation: navigation, omitting: omittedLinks)
-                        ShelfGridCard(item: item, actions: actions, captionLines: captionLines(for: item), peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
-                            #if !os(iOS)
-                            .background { tapTarget(for: item) }
-                            #endif
+                        tvTarget(for: item, actions: actions) {
+                            ShelfGridCard(item: item, actions: actions, captionLines: captionLines(for: item), peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
+                        }
                     }
                 }
 
@@ -162,14 +160,24 @@ struct ShelfListView: View {
         .pullToRefresh { await refresh() }
     }
 
-    /// On iOS the peek layer handles taps. Elsewhere, this button behind a row or card does: it sits behind,
-    /// so the menu button takes its own taps, and `contentShape` makes its clear label tappable.
-    private func tapTarget(for item: MediaItem) -> some View {
+    /// On iOS the peek layer handles taps, so a row or card is shown as it is. On tvOS the row or card is itself
+    /// the button, so it has a single focus stop: selecting opens the item, and the actions are in its long-press
+    /// menu rather than a separate "…" button.
+    @ViewBuilder
+    private func tvTarget<Content: View>(for item: MediaItem, actions: ItemRowActions?, @ViewBuilder content: () -> Content) -> some View {
+        #if os(tvOS)
         Button { navigation.tap(item) } label: {
-            Color.clear.contentShape(Rectangle())
+            content()
+                .padding(12)
         }
-        .cardLinkStyle()
+        .buttonStyle(.card)
+        .contextMenu {
+            ItemActionButtons(entries: actions?.menuEntries(for: item) ?? [])
+        }
         .accessibilityLabel(item.accessibilityDescription)
+        #else
+        content()
+        #endif
     }
 
     /// The error and Retry button if a page failed, or else a spinner that loads the next page when it scrolls
