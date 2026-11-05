@@ -13,8 +13,13 @@ struct ShowLogo: View {
     /// What to type out instead of the item's own title, if there is no logo. Nil to use the title.
     var fallbackTitle: String?
 
+    /// A cap to use instead of the usual one, for where the logo should be smaller (the Home carousel on tvOS).
+    var maxSizeOverride: CGSize?
+
+    private var maxSize: CGSize { maxSizeOverride ?? Self.defaultMaxSize }
+
     /// The largest the logo gets. Logos vary from wide wordmarks to near-square badges, so both are capped.
-    private static var maxSize: CGSize {
+    private static var defaultMaxSize: CGSize {
         #if os(tvOS)
         return CGSize(width: 600, height: 220)
         #else
@@ -30,13 +35,13 @@ struct ShowLogo: View {
                     image
                         .resizable()
                         .scaledToFit()
-                        .frame(maxWidth: Self.maxSize.width, maxHeight: Self.maxSize.height, alignment: .bottomLeading)
+                        .frame(maxWidth: maxSize.width, maxHeight: maxSize.height, alignment: .bottomLeading)
                         .accessibilityLabel(item.title)
                         .accessibilityAddTraits(.isHeader)
                 case .empty:
                     // Hold the logo's room while it loads, rather than flashing the name first.
                     Color.clear
-                        .frame(width: Self.maxSize.width, height: Self.maxSize.height)
+                        .frame(width: maxSize.width, height: maxSize.height)
                 default:
                     title
                 }
@@ -61,6 +66,10 @@ struct TruncatingOverview: View {
 
     /// The color of the text and of MORE. White over the show's artwork; the primary color elsewhere.
     var foreground: Color = .white
+
+    /// Whether the remote can focus the description (on tvOS, where it's a button). A page turns it off while it moves
+    /// focus to its Play button, so focus doesn't flash on the description on the way there.
+    var isFocusable = true
 
     /// Called when MORE is tapped.
     let onMore: () -> Void
@@ -92,6 +101,7 @@ struct TruncatingOverview: View {
                 .frame(maxWidth: 900, alignment: .leading)
         }
         .buttonStyle(.plain)
+        .focusable(isFocusable)
         .accessibilityHint("Shows the full description")
         #else
         Text(text)

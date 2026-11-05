@@ -7,6 +7,43 @@ import SwiftUI
 import UIKit
 #endif
 
+/// The buttons in the carousel's row (tvOS) that focus is moved to by name.
+private enum HeroControl: Hashable {
+    case play
+    case info
+}
+
+/// Layout shared by the carousel and the page that holds it.
+enum HeroLayout {
+    /// How far above the carousel's bottom edge its page dots sit: just above the first shelf's heading, as in the Apple
+    /// TV app, which is closer to the shelf than the buttons are.
+    static var dotsLift: CGFloat { bottomReserve == 0 ? 0 : bottomReserve - 52 }
+
+    /// How much room the text leaves under it for the button row, which on tvOS isn't part of a page: it's one row on the
+    /// carousel, so it stays put (and keeps focus) as the pages slide.
+    static var textLift: CGFloat {
+        #if os(tvOS)
+        return buttonRowHeight + 12
+        #else
+        return 0
+        #endif
+    }
+
+    /// The height of the button row.
+    static var buttonRowHeight: CGFloat { 70 }
+
+    /// How much of the carousel's bottom edge the first shelf rises over, so the shelf's heading and the tops of its
+    /// cards show over the artwork at rest, as in the Apple TV app. Only tvOS does this; the carousel keeps its
+    /// details and page dots above this much of its bottom.
+    static var bottomReserve: CGFloat {
+        #if os(tvOS)
+        return 260
+        #else
+        return 0
+        #endif
+    }
+}
+
 /// A row of full-width hero images, one for each of the newest items on the server, that advances by itself.
 ///
 /// It moves to the next item after ``advanceInterval`` and loops back to the first after the last. Touching it, by
@@ -33,6 +70,9 @@ struct HomeHeroCarousel<Header: View>: View {
     /// Called when an item's Play button is tapped. (On tvOS, also when More Info is selected.)
     let play: (MediaItem) -> Void
 
+    /// Called with the item showing, when the carousel first shows and each time it moves to another.
+    var onSelectionChange: ((MediaItem) -> Void)?
+
     /// The page's heading, over the top of the artwork.
     @ViewBuilder let header: () -> Header
 
@@ -42,8 +82,16 @@ struct HomeHeroCarousel<Header: View>: View {
     /// How long each item stays up before the next one slides in.
     static var advanceInterval: Duration { .seconds(15) }
 
-    /// The position of the item showing.
-    @State private var index = 0
+    /// Where the carousel is along an endless strip of pages: the page showing, counting every step taken, so going past the
+    /// last item continues to a further page that shows the first again, not back to it. The pages are placed by this, so a
+    /// page that's still sliding off is never taken away while it's in view, and the next is always right beside it.
+    @State private var virtualIndex = 0
+
+    /// The position in `items` of the item showing.
+    private var index: Int {
+        guard items.count > 1 else { return 0 }
+        return ((virtualIndex % items.count) + items.count) % items.count
+    }
 
     /// With either of these on, it doesn't move by itself: content sliding away unasked is hard to follow, and with
     /// VoiceOver it would move what's being read.
@@ -73,32 +121,55 @@ struct HomeHeroCarousel<Header: View>: View {
     /// How far through its wait the item showing is, from 0 to 1, which fills its page dot.
     @State private var progress: CGFloat = 0
 
-    /// Whether one of the carousel's buttons has focus.
-    @FocusState private var hasFocus: Bool
+    /// Which of the buttons has focus, if one does. Setting it moves focus there.
+    @FocusState private var heroFocus: HeroControl?
 
-    /// Whether the focus holds the carousel still. Only tvOS has focus to hold it.
-    private var holdsFocus: Bool {
-        #if os(tvOS)
-        hasFocus
-        #else
-        false
-        #endif
-    }
+    /// The item whose text and buttons are showing (tvOS). It follows `index` a moment late: when the hero changes, the text
+    /// and buttons fade out, then this catches up while they're invisible, and they fade back in as the new item's.
+    @State private var shownIndex = 0
+
+    /// How visible the text and buttons are (tvOS), for that fade.
+    @State private var contentOpacity: Double = 1
+
+    /// The fade in progress, so a quick run of changes restarts it rather than piling up.
+    @State private var fadeTask: Task<Void, Never>?
 
     private var width: CGFloat { screenSize.width }
 
     /// The carousel's height: tall and nearly poster-shaped on a narrow screen, and no more than most of the screen's
     /// height on a wide one. Like the artwork, it runs up under the status bar.
     private var height: CGFloat {
-        min(width * 1.25, screenSize.height * 0.82)
+        #if os(tvOS)
+        // The whole screen, like the Apple TV app's. The first shelf rises over its bottom edge (see `HeroLayout`).
+        return screenSize.height
+        #else
+        return min(width * 1.25, screenSize.height * 0.82)
+        #endif
     }
 
-    /// How many pages the item at `position` is to the right of the one showing, going the short way around so
-    /// the last item sits just left of the first. Zero is the one showing.
-    private func offset(of position: Int) -> Int {
-        var distance = (position - index) % items.count
-        if distance < 0 { distance += items.count }
-        return distance > items.count / 2 ? distance - items.count : distance
+    /// How many pages each side of the one showing exist. Enough that, however fast the remote turns pages, the page that's
+    /// leaving is still there, in view, while the ones after it slide in.
+    private static var pagesEachSide: Int { 3 }
+
+    /// The pages that exist: those within `pagesEachSide` of the one showing.
+    private var pages: [Int] {
+        guard items.count > 1 else { return [virtualIndex] }
+        return Array((virtualIndex - Self.pagesEachSide)...(virtualIndex + Self.pagesEachSide))
+    }
+
+    /// The item a page along the strip shows.
+    private func item(onPage page: Int) -> MediaItem {
+        guard items.count > 1 else { return items[0] }
+        return items[((page % items.count) + items.count) % items.count]
+    }
+
+    /// How many steps along the strip, the short way round, to the page showing the item at `position`.
+    private func steps(to position: Int) -> Int {
+        guard items.count > 1 else { return 0 }
+        var delta = (position - index) % items.count
+        if delta > items.count / 2 { delta -= items.count }
+        if delta < -(items.count / 2) { delta += items.count }
+        return delta
     }
 
     var body: some View {
@@ -106,28 +177,22 @@ struct HomeHeroCarousel<Header: View>: View {
         // another item animates their positions, so the one leaving slides off as the one arriving slides on, and
         // the first slides in after the last the same way as any other.
         ZStack {
-            ForEach(Array(items.enumerated()), id: \.element.id) { position, item in
-                let distance = offset(of: position)
-                if abs(distance) <= 1 {
-                    HeroPage(
-                        item: item,
-                        playTarget: playTargets[item.id],
-                        safeArea: safeArea,
-                        open: { if !isSwiping { open($0) } },
-                        play: { if !isSwiping { play($0) } },
-                        step: { delta in
-                            guard items.count > 1 else { return }
-                            withAnimation(Self.swipeSlide) { index = (index + delta + items.count) % items.count }
-                        }
-                    )
-                    // The closures are new each time this runs, which would redraw every page for every frame of a
-                    // drag. See `HeroPage.==` for why comparing without them is safe.
-                    .equatable()
-                    .frame(width: width, height: height)
-                    .offset(x: CGFloat(distance) * width)
-                    // The neighbors are only there to slide in; VoiceOver reads the one showing.
-                    .accessibilityHidden(distance != 0)
-                }
+            ForEach(pages, id: \.self) { page in
+                let item = item(onPage: page)
+                HeroPage(
+                    item: item,
+                    playTarget: playTargets[item.id],
+                    safeArea: safeArea,
+                    open: { if !isSwiping { open($0) } },
+                    play: { if !isSwiping { play($0) } }
+                )
+                // The closures are new each time this runs, which would redraw every page for every frame of a
+                // drag. See `HeroPage.==` for why comparing without them is safe.
+                .equatable()
+                .frame(width: width, height: height)
+                .offset(x: CGFloat(page - virtualIndex) * width)
+                // The others are only there to slide in or out; VoiceOver reads the one showing.
+                .accessibilityHidden(page != virtualIndex)
             }
         }
         // The drag moves every page together, so it's one transform on the stack, not a new position for each page.
@@ -144,6 +209,15 @@ struct HomeHeroCarousel<Header: View>: View {
                 .padding(.leading, safeArea.leading)
                 .padding(.trailing, safeArea.trailing)
         }
+        #if os(tvOS)
+        // The text and buttons aren't on the pages: they fade out and in as the hero changes, while the artwork slides.
+        .overlay(alignment: .bottomLeading) {
+            let item = items[min(shownIndex, items.count - 1)]
+            HeroDetails(item: item, playTarget: playTargets[item.id], safeArea: safeArea, play: play)
+                .opacity(contentOpacity)
+        }
+        .overlay(alignment: .bottomLeading) { tvControls }
+        #endif
         .overlay(alignment: .bottom) {
             pageDots
         }
@@ -152,15 +226,116 @@ struct HomeHeroCarousel<Header: View>: View {
         .ignoresSafeArea(edges: .horizontal)
         // Restarts whenever the item changes, whether it moved by itself or was swiped, and while a finger is down,
         // so the wait is always the full interval from the last touch. Cancelled when the screen goes away.
-        // On tvOS, also holds still while a button on it has focus, so the focused button isn't pulled away.
-        .focused($hasFocus)
-        .task(id: Advance(index: index, isDragging: isDragging, isPaused: reduceMotion || voiceOverEnabled || holdsFocus)) {
+        .task(id: Advance(index: index, isDragging: isDragging, isPaused: reduceMotion || voiceOverEnabled)) {
             await advanceAfterWait()
         }
+        .onChange(of: index, initial: true) { _, position in
+            if items.indices.contains(position) { onSelectionChange?(items[position]) }
+        }
+        .onAppear {
+            startFocusLogging { "index=\(index) shown=\(shownIndex) heroFocus=\(String(describing: heroFocus))" }
+        }
+        #if os(tvOS)
+        .onChange(of: index) { _, position in fadeContent(to: position) }
+        #endif
         // A reload can bring fewer items; start again from the first rather than point past the end.
         .onChange(of: items.count) { _, count in
-            if index >= count { index = 0 }
+            if shownIndex >= count { shownIndex = 0 }
         }
+    }
+
+    #if os(tvOS)
+    /// Play and More Info, as one row on the carousel rather than on each page, so the buttons are the same two views
+    /// whichever hero is showing, and focus stays on them as the pages change.
+    ///
+    /// Left of the row is a strip of invisible targets (`BackStandIn`) that turns the page back when the remote moves left from
+    /// Play. On the first hero they're off, so left opens the sidebar as usual.
+    private var tvControls: some View {
+        let item = items[min(shownIndex, items.count - 1)]
+        let leading = safeArea.leading + (Layout.contentInset ?? 0)
+
+        return ZStack(alignment: .bottomLeading) {
+            HStack(spacing: 24) {
+                if let target = playTargets[item.id] {
+                    Button { play(target) } label: {
+                        Label(target.playButtonTitle(forShow: item.kind == .series), systemImage: "play.fill")
+                            .font(.callout.weight(.semibold))
+                    }
+                    // The same bordered style as More Info and the item pages' buttons, so it takes the theme's color when
+                    // focused (the prominent style draws white).
+                    .buttonStyle(.bordered)
+                    // A pill: fully round ends, not just rounded corners.
+                    .buttonBorderShape(.capsule)
+                    .focused($heroFocus, equals: .play)
+                }
+
+                // Just an icon, as in the Apple TV app; the label is for VoiceOver.
+                Button { open(item) } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 30, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel("More Info")
+                .focused($heroFocus, equals: .info)
+                // At the right edge, moving right goes to the next item rather than nowhere.
+                .onMoveCommand { direction in
+                    focusLog("onMoveCommand \(direction) on info")
+                    if direction == .right { stepPage(1) }
+                }
+            }
+            .tvFocusSection()
+            .opacity(contentOpacity)
+            .padding(.leading, leading)
+
+            // From the screen's edge to the buttons, at their height.
+            BackStandIn(
+                canGoBack: { index > 0 },
+                onBack: { if index > 0 { stepPage(-1) } },
+                // Straight back to Play, whenever focus lands on the strip.
+                onReturnFocus: {
+                    focusLog("onReturnFocus: heroFocus = .play (was \(String(describing: heroFocus)))")
+                    if heroFocus == .play {
+                        // SwiftUI may not have noticed yet that focus has left Play, and setting the same value again
+                        // would do nothing. Clear it first, so the next setting is a change.
+                        heroFocus = nil
+                        DispatchQueue.main.async { heroFocus = .play }
+                    } else {
+                        heroFocus = .play
+                    }
+                }
+            )
+            .frame(width: max(0, leading - 4), height: HeroLayout.buttonRowHeight)
+            .accessibilityHidden(true)
+        }
+        .padding(.bottom, 44 + HeroLayout.bottomReserve)
+    }
+    #endif
+
+    #if os(tvOS)
+    /// Fades the text and buttons out, switches them to the item at `position` while they can't be seen, and fades them in.
+    /// The artwork slides meanwhile, so the new text arrives as it settles, as in the Apple TV app. A new change before this
+    /// is done starts it over from wherever the fade has got to.
+    private func fadeContent(to position: Int) {
+        fadeTask?.cancel()
+        fadeTask = Task { @MainActor in
+            withAnimation(.easeOut(duration: 0.18)) { contentOpacity = 0 }
+            try? await Task.sleep(for: .milliseconds(260))
+            guard !Task.isCancelled else { return }
+            // Out of sight, so no animation: it just becomes the new item's.
+            var instant = Transaction()
+            instant.disablesAnimations = true
+            withTransaction(instant) { shownIndex = position }
+            withAnimation(.easeIn(duration: 0.4)) { contentOpacity = 1 }
+        }
+    }
+    #endif
+
+    /// Moves to the next hero (1) or the previous (-1).
+    private func stepPage(_ delta: Int) {
+        focusLog("stepPage delta=\(delta) virtualIndex=\(virtualIndex) index=\(index)")
+        guard items.count > 1 else { return }
+        withAnimation(Self.manualSlide) { virtualIndex += delta }
     }
 
     /// What the wait depends on: a new value starts it over.
@@ -172,6 +347,16 @@ struct HomeHeroCarousel<Header: View>: View {
 
     /// The slide when it moves by itself: a slow, even glide.
     private static var slide: Animation { .easeInOut(duration: 0.6) }
+
+    /// The slide when the remote turns the page (tvOS): the same slow glide as the timer's, so turning a page by hand looks
+    /// like the carousel moving by itself. A swipe on iOS keeps its quick spring.
+    private static var manualSlide: Animation {
+        #if os(tvOS)
+        slide
+        #else
+        swipeSlide
+        #endif
+    }
 
     /// The slide after a swipe or tap on a dot. A spring, which starts moving at full speed the instant a finger lifts,
     /// where an ease-in curve would start slowly and feel as if the swipe stalled.
@@ -195,9 +380,9 @@ struct HomeHeroCarousel<Header: View>: View {
         let travel = translation + velocity * Self.swipeCoastTime
         withAnimation(Self.swipeSlide) {
             if travel < -width * Self.flickThreshold || translation < -width * Self.dragThreshold {
-                index = (index + 1) % items.count
+                virtualIndex += 1
             } else if travel > width * Self.flickThreshold || translation > width * Self.dragThreshold {
-                index = (index + items.count - 1) % items.count
+                virtualIndex -= 1
             }
             dragOffset = 0
         }
@@ -210,14 +395,14 @@ struct HomeHeroCarousel<Header: View>: View {
         reset.disablesAnimations = true
         withTransaction(reset) { progress = 0 }
 
-        guard items.count > 1, !isDragging, !reduceMotion, !voiceOverEnabled, !holdsFocus else { return }
+        guard items.count > 1, !isDragging, !reduceMotion, !voiceOverEnabled else { return }
         withAnimation(.linear(duration: Double(Self.advanceInterval.components.seconds))) { progress = 1 }
         try? await Task.sleep(for: Self.advanceInterval)
         guard !Task.isCancelled else { return }
 
         // After the last one, back to the first.
         withAnimation(Self.slide) {
-            index = (index + 1) % items.count
+            virtualIndex += 1
         }
     }
 
@@ -229,7 +414,7 @@ struct HomeHeroCarousel<Header: View>: View {
         label()
         #else
         Button {
-            withAnimation(Self.swipeSlide) { index = position }
+            withAnimation(Self.swipeSlide) { virtualIndex += steps(to: position) }
         } label: {
             label()
         }
@@ -237,9 +422,45 @@ struct HomeHeroCarousel<Header: View>: View {
         #endif
     }
 
+    /// The most dots shown at once on tvOS. With more items than this, the dots are a window that follows the one showing.
+    private static var maxVisibleDots: Int { 8 }
+
+    /// The positions that get a dot: all of them, except on tvOS with more items than `maxVisibleDots`, where it's a
+    /// window around the one showing, so the row never grows wider than the pill that holds it.
+    private var visiblePositions: [Int] {
+        #if os(tvOS)
+        let count = items.count
+        guard count > Self.maxVisibleDots else { return Array(items.indices) }
+        // The one showing stays a few dots in from the start, until the window runs out at either end.
+        let start = min(max(index - (Self.maxVisibleDots - 3), 0), count - Self.maxVisibleDots)
+        return Array(start..<(start + Self.maxVisibleDots))
+        #else
+        return Array(items.indices)
+        #endif
+    }
+
+    /// How much a dot is shrunk. The last dot or two in a window that has more items past it get smaller toward the edge,
+    /// which says there's more beyond.
+    private func dotScale(_ position: Int) -> CGFloat {
+        #if os(tvOS)
+        guard let first = visiblePositions.first, let last = visiblePositions.last else { return 1 }
+        if first > 0 {
+            if position == first { return 0.5 }
+            if position == first + 1 { return 0.78 }
+        }
+        if last < items.count - 1 {
+            if position == last { return 0.5 }
+            if position == last - 1 { return 0.78 }
+        }
+        return 1
+        #else
+        return 1
+        #endif
+    }
+
     private var pageDots: some View {
         HStack(spacing: 0) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { position, _ in
+            ForEach(visiblePositions, id: \.self) { position in
                 let isSelected = position == index
                 dotButton(position) {
                     // The one showing stretches into a pill that fills as its time runs out, like the Apple TV app's.
@@ -258,6 +479,8 @@ struct HomeHeroCarousel<Header: View>: View {
                             }
                         }
                         .clipShape(Capsule())
+                        // On tvOS, the dots at the ends shrink when there are more past them.
+                        .scaleEffect(dotScale(position))
                         // A bigger target than the dot itself.
                         .padding(.horizontal, 3.5)
                         .padding(.vertical, 8)
@@ -265,8 +488,18 @@ struct HomeHeroCarousel<Header: View>: View {
                 }
             }
         }
+        #if os(tvOS)
+        // On a blurred, darkened pill, as in the Apple TV app, so the dots read over any artwork.
+        .padding(.horizontal, 14)
+        .padding(.vertical, 2)
+        .background {
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .overlay(Capsule().fill(.black.opacity(0.3)))
+        }
+        #endif
         .animation(.easeInOut(duration: 0.25), value: index)
-        .padding(.bottom, 4)
+        .padding(.bottom, 4 + HeroLayout.dotsLift)
         .environment(\.colorScheme, .dark)
         // One element for VoiceOver, which swipes up and down to move between the items.
         .accessibilityElement(children: .ignore)
@@ -275,8 +508,8 @@ struct HomeHeroCarousel<Header: View>: View {
         .accessibilityAdjustableAction { direction in
             guard !items.isEmpty else { return }
             switch direction {
-            case .increment: index = (index + 1) % items.count
-            case .decrement: index = (index + items.count - 1) % items.count
+            case .increment: virtualIndex += 1
+            case .decrement: virtualIndex -= 1
             @unknown default: break
             }
         }
@@ -300,21 +533,6 @@ private struct HeroPage: View, Equatable {
     let safeArea: EdgeInsets
     let open: (MediaItem) -> Void
     let play: (MediaItem) -> Void
-
-    /// Moves the carousel to the next item (1) or the previous (-1), for the Siri Remote.
-    let step: (Int) -> Void
-
-    /// e.g. "TV Show · Crime · Thriller": what kind of thing it is, then its first genres.
-    private var kindLine: String {
-        var parts: [String] = []
-        switch item.kind {
-        case .movie: parts.append(String(localized: "Movie"))
-        case .series: parts.append(String(localized: "TV Show"))
-        default: break
-        }
-        parts.append(contentsOf: item.genres.prefix(2))
-        return parts.joined(separator: " · ")
-    }
 
     var body: some View {
         Color.black
@@ -341,7 +559,16 @@ private struct HeroPage: View, Equatable {
                     endPoint: .bottom
                 )
             }
-            #if !os(tvOS)
+            #if os(tvOS)
+            // Darker on the side the text is on, fading out toward the other, so the text reads over any artwork.
+            .overlay {
+                LinearGradient(
+                    colors: [.black.opacity(0.6), .black.opacity(0.25), .clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+            #else
             // Tapping the artwork opens the item. The buttons over it take their own taps. (On tvOS a screen-sized
             // button would be a focus stop of its own, so the More Info button does this instead.)
             .overlay {
@@ -351,23 +578,77 @@ private struct HeroPage: View, Equatable {
                     .accessibilityHint("Opens the details")
             }
             #endif
-            .overlay(alignment: .bottomLeading) { details }
+            #if !os(tvOS)
+            // On tvOS the text isn't part of the page: it belongs to the carousel, which fades it between items.
+            .overlay(alignment: .bottomLeading) {
+                HeroDetails(item: item, playTarget: playTarget, safeArea: safeArea, play: play)
+            }
+            #endif
+    }
+}
+
+/// What's written over a hero's artwork: its logo, what it is, a short description and, on iOS, a Play button. On tvOS the
+/// carousel shows one of these over the artwork, rather than each page carrying its own, so it can fade between items
+/// while the artwork slides.
+private struct HeroDetails: View {
+    let item: MediaItem
+    let playTarget: MediaItem?
+    let safeArea: EdgeInsets
+    let play: (MediaItem) -> Void
+
+    /// e.g. "TV Show · Crime · Thriller": what kind of thing it is, then its first genres.
+    private var kindLine: String {
+        var parts: [String] = []
+        switch item.kind {
+        case .movie: parts.append(String(localized: "Movie"))
+        case .series: parts.append(String(localized: "TV Show"))
+        default: break
+        }
+        parts.append(contentsOf: item.genres.prefix(2))
+        return parts.joined(separator: " · ")
     }
 
-    private var details: some View {
+    /// The logo's size cap. On tvOS it's smaller than the item pages' logos, to match the Apple TV app's carousel.
+    private static var logoSize: CGSize? {
+        #if os(tvOS)
+        CGSize(width: 440, height: 150)
+        #else
+        nil
+        #endif
+    }
+
+    /// The genre line and the content rating beside it: about 30 points on tvOS, as in the Apple TV app.
+    private static var kindFont: Font {
+        #if os(tvOS)
+        // About 22 points, measured from the Apple TV app. The tvOS text styles don't go this small.
+        .system(size: 22, weight: .medium)
+        #else
+        .title3
+        #endif
+    }
+
+    private static var ratingFont: Font {
+        #if os(tvOS)
+        .system(size: 16, weight: .semibold)
+        #else
+        .subheadline.weight(.semibold)
+        #endif
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ShowLogo(item: item)
+            ShowLogo(item: item, maxSizeOverride: Self.logoSize)
 
             // Left out when there's nothing to say, so it doesn't leave a gap between the title and the buttons.
             if !kindLine.isEmpty || item.officialRating != nil {
                 HStack(spacing: 10) {
                     if !kindLine.isEmpty {
                         Text(kindLine)
-                            .font(.title3)
+                            .font(Self.kindFont)
                     }
                     if let rating = item.officialRating {
                         Text(rating)
-                            .font(.subheadline.weight(.semibold))
+                            .font(Self.ratingFont)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 1)
                             .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(.white, lineWidth: 1.5) }
@@ -376,26 +657,17 @@ private struct HeroPage: View, Equatable {
             }
 
             #if os(tvOS)
-            HStack(spacing: 24) {
-                if let playTarget {
-                    Button { play(playTarget) } label: {
-                        Label(playTarget.playButtonTitle(forShow: item.kind == .series), systemImage: "play.fill")
-                            .font(.headline)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    // At the left edge, moving left goes to the previous item rather than nowhere.
-                    .onMoveCommand { if $0 == .left { step(-1) } }
-                }
-
-                Button { open(item) } label: {
-                    Label("More Info", systemImage: "info.circle")
-                        .font(.headline)
-                }
-                .buttonStyle(.bordered)
-                .onMoveCommand { if $0 == .right { step(1) } }
+            // A short description under the genres, as in the Apple TV app.
+            if let overview = item.overview {
+                Text(overview)
+                    // Lighter and smaller than the genre line above it, and dimmer, so the two read as different things.
+                    .font(.system(size: 21))
+                    .foregroundStyle(.white.opacity(0.7))
+                    // A TV has the room: four lines of it, across more of the screen.
+                    .lineLimit(4)
+                    .frame(maxWidth: 1100, alignment: .leading)
             }
-            .padding(.top, 4)
-            .tvFocusSection()
+
             #else
             HStack(spacing: 12) {
                 if let playTarget {
@@ -418,12 +690,16 @@ private struct HeroPage: View, Equatable {
         }
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
+        #if os(tvOS)
+        // A soft shadow keeps the text readable over bright artwork.
+        .shadow(color: .black.opacity(0.55), radius: 8)
+        #endif
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal)
+        .padding(.horizontal, Layout.contentInset)
         .padding(.leading, safeArea.leading)
         .padding(.trailing, safeArea.trailing)
         // Leaves room for the page dots.
-        .padding(.bottom, 44)
+        .padding(.bottom, 44 + HeroLayout.bottomReserve + HeroLayout.textLift)
     }
 }
 
@@ -501,6 +777,146 @@ private final class HorizontalPanGestureRecognizer: UIPanGestureRecognizer {
             }
         }
         super.touchesMoved(touches, with: event)
+    }
+}
+#endif
+
+#if os(tvOS)
+/// Two invisible focus targets just left of the carousel's buttons, which turn the page back when the remote moves left from
+/// them, as the Apple TV app does, instead of letting focus fall through to the sidebar.
+///
+/// What a real Siri Remote does, which a simulated one doesn't: one swipe left is more than one move. Another follows 100 to
+/// 300ms later. From a target with nothing to its left that move fails, and the tab view answers a failed move left by
+/// sending focus to the sidebar, which is the flash. (UIKit doesn't ask anyone's permission for that: there's no
+/// `shouldUpdateFocus` call to refuse.) Getting focus back to Play before the follow-on takes about 400ms, too slow.
+///
+/// So focus stays on the strip, and there is always a target to its left. Whichever target has focus is moved to the right
+/// and the other to the left of it, so every move left succeeds, however many arrive. A move that lands on a target turns
+/// the page back, but not twice within a short while, so a swipe's follow-on doesn't skip a page. Once the moves stop,
+/// focus goes back to Play (right moves it there at once too).
+///
+/// At the first hero there's nothing to go back to, so the targets stop being focusable, after a moment's grace for the last
+/// swipe's follow-on, and the next move goes on to the sidebar.
+private struct BackStandIn: UIViewRepresentable {
+    let canGoBack: () -> Bool
+    let onBack: () -> Void
+    let onReturnFocus: () -> Void
+
+    func makeUIView(context: Context) -> StandInStrip {
+        StandInStrip()
+    }
+
+    func updateUIView(_ strip: StandInStrip, context: Context) {
+        strip.configure(canGoBack: canGoBack, onBack: onBack, onReturnFocus: onReturnFocus)
+    }
+
+    /// What the targets share: the closures, and when things last happened.
+    final class Shared {
+        var canGoBack: () -> Bool = { false }
+        var onBack: () -> Void = {}
+        var onReturnFocus: () -> Void = {}
+        var holdsFocus: () -> Bool = { false }
+        var promote: (StandInView) -> Void = { _ in }
+        var lastTurn = Date.distantPast
+        var graceUntil = Date.distantPast
+        var idleToken = 0
+    }
+
+    final class StandInStrip: UIView {
+        private let shared = Shared()
+        private let targets: [StandInView]
+
+        /// The target on the right, which has focus or had it last; the other is to its left.
+        private var front: StandInView
+
+        override init(frame: CGRect) {
+            let shared = shared
+            let targets = [StandInView(shared: shared), StandInView(shared: shared)]
+            self.targets = targets
+            front = targets[0]
+            super.init(frame: frame)
+            targets.forEach(addSubview)
+            shared.holdsFocus = { [weak self] in self?.targets.contains { $0.isFocused } ?? false }
+            shared.promote = { [weak self] target in
+                self?.front = target
+                self?.setNeedsLayout()
+                self?.layoutIfNeeded()
+            }
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        func configure(canGoBack: @escaping () -> Bool, onBack: @escaping () -> Void, onReturnFocus: @escaping () -> Void) {
+            shared.canGoBack = canGoBack
+            shared.onBack = onBack
+            shared.onReturnFocus = onReturnFocus
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let width = bounds.width / 2
+            for target in targets {
+                let slot: CGFloat = target === front ? 1 : 0
+                target.frame = CGRect(x: slot * width, y: 0, width: width, height: bounds.height)
+            }
+        }
+    }
+
+    final class StandInView: UIView {
+        private let shared: Shared
+
+        /// How long after the page turns that another move onto a target is taken for the same swipe's follow-on rather than
+        /// another press.
+        private static var swipeFollowOn: TimeInterval { 0.25 }
+
+        /// How long after the last move onto a target focus goes back to Play, and how long a target stays focusable at the
+        /// first hero (longer, so it's still there when this runs).
+        private static var idleDelay: TimeInterval { 0.6 }
+        private static var grace: TimeInterval { 0.9 }
+
+        init(shared: Shared) {
+            self.shared = shared
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        /// While there's an earlier hero to go back to, and just after the last move onto a target.
+        override var canBecomeFocused: Bool { shared.canGoBack() || Date() < shared.graceUntil }
+
+        override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+            super.didUpdateFocus(in: context, with: coordinator)
+            guard context.nextFocusedItem === self else { return }
+
+            let fromStrip = context.previouslyFocusedItem is StandInView
+            let movedLeft = context.focusHeading.contains(.left)
+            guard movedLeft else {
+                // From the sidebar or a shelf, say: not where focus should rest. Straight to Play.
+                focusLog("standIn: landed from \(FocusDebug.describe(context.previouslyFocusedItem)) heading=\(FocusDebug.heading(context.focusHeading)) -> to Play")
+                DispatchQueue.main.async { [shared] in shared.onReturnFocus() }
+                return
+            }
+
+            shared.promote(self)
+            shared.graceUntil = Date().addingTimeInterval(Self.grace)
+            let now = Date()
+            if now.timeIntervalSince(shared.lastTurn) > Self.swipeFollowOn {
+                shared.lastTurn = now
+                focusLog("standIn: PRESS (from \(fromStrip ? "strip" : "buttons")) -> turning page back")
+                shared.onBack()
+            } else {
+                focusLog("standIn: follow-on (\(Int(now.timeIntervalSince(shared.lastTurn) * 1000))ms) -> no page turn")
+            }
+
+            // Once the moves stop, focus goes back to Play.
+            shared.idleToken += 1
+            let token = shared.idleToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleDelay) { [shared] in
+                guard shared.idleToken == token, shared.holdsFocus() else { return }
+                focusLog("standIn: idle -> back to Play")
+                shared.onReturnFocus()
+            }
+        }
     }
 }
 #endif

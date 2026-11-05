@@ -63,6 +63,18 @@ struct ShowDetailView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+    /// Whether the description can take focus. On tvOS it can't until focus has been moved to Play, so it never
+    /// flashes on the description first. (Always true elsewhere, where there's no focus to move.)
+    @State private var overviewIsFocusable = Self.startsFocusable
+
+    private static var startsFocusable: Bool {
+        #if os(tvOS)
+        false
+        #else
+        true
+        #endif
+    }
+
     #if os(tvOS)
     /// The screen's focus scope, so Play can be the first thing focused rather than whatever comes first on the page.
     @Namespace private var focusNamespace
@@ -70,6 +82,11 @@ struct ShowDetailView: View {
 
     /// Whether focus has been settled on Play since the screen first appeared.
     @State private var didSettleFocus = false
+
+    /// Which of the hero's controls has focus, if it's one that's tracked. Setting it moves focus there.
+    @FocusState private var focusedControl: HeroControl?
+
+    private enum HeroControl { case play }
     #endif
 
     /// How many lines a short line of the hero's text gets: two, or all it needs at accessibility sizes, where
@@ -159,6 +176,13 @@ struct ShowDetailView: View {
             didSettleFocus = true
             try? await Task.sleep(for: .milliseconds(250))
             resetFocus(in: focusNamespace)
+            // The preference above is only a hint to the focus engine, so also ask for Play outright, once the page
+            // has had time to lay out.
+            try? await Task.sleep(for: .milliseconds(350))
+            focusedControl = .play
+            // Focus is on Play now (or there's no Play button), so the description can take it from here on.
+            try? await Task.sleep(for: .milliseconds(150))
+            overviewIsFocusable = true
         }
         #endif
         .task(id: reloadCount) { await load() }
@@ -215,7 +239,7 @@ struct ShowDetailView: View {
             }
 
             if let overview = current.overview {
-                TruncatingOverview(text: overview, lineLimit: 3) { showsOverview = true }
+                TruncatingOverview(text: overview, lineLimit: 3, isFocusable: overviewIsFocusable) { showsOverview = true }
             }
 
             // The run (and whether it's over) on one line, the ratings on the next.
@@ -234,12 +258,19 @@ struct ShowDetailView: View {
             .foregroundStyle(.white.opacity(0.75))
 
             // The trailer's label gives way to just its icon if the row doesn't fit.
+            #if os(tvOS)
+            // The row is never too wide for a TV (there's no trailer button), so there's nothing to choose between.
+            // Choosing could rebuild the Play button as the hero's size settles, and lose the focus given to it.
+            actionButtons(showsTrailerTitle: false, compactPlay: false)
+                .padding(.top, 4)
+            #else
             ViewThatFits(in: .horizontal) {
                 actionButtons(showsTrailerTitle: true, compactPlay: false)
                 actionButtons(showsTrailerTitle: false, compactPlay: false)
                 actionButtons(showsTrailerTitle: false, compactPlay: true)
             }
             .padding(.top, 4)
+            #endif
         }
         .foregroundStyle(.white)
         // The details sit on a dark fade whatever the appearance, so their secondary colors are the light ones.
@@ -581,9 +612,11 @@ struct ShowDetailView: View {
                     #endif
             }
             #if os(tvOS)
-            // The standard prominent button, which tvOS draws white and lifts when focused. It's what's focused first.
-            .buttonStyle(.borderedProminent)
+            // The same bordered style as the buttons beside it, so all of them take the theme's color when focused (the
+            // prominent style draws light gray instead). Play is what's focused first.
+            .buttonStyle(.bordered)
             .prefersDefaultFocus(true, in: focusNamespace)
+            .focused($focusedControl, equals: .play)
             #else
             .buttonStyle(.glassProminent)
             .tint(.white)

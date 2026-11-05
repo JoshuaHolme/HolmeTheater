@@ -11,7 +11,7 @@ enum Layout {
     /// Width of a widescreen card in shelves (extras); larger on tvOS.
     static var wideCardWidth: CGFloat {
         #if os(tvOS)
-        return 420
+        return 320
         #else
         return 220
         #endif
@@ -20,7 +20,7 @@ enum Layout {
     /// Width of a poster in shelves; larger on tvOS for the "ten-foot" UI.
     static var posterWidth: CGFloat {
         #if os(tvOS)
-        return 220
+        return 260
         #else
         return 130
         #endif
@@ -36,12 +36,32 @@ enum Layout {
         #endif
     }
 
+    /// A shelf's heading. On tvOS the 57-point bold title2 is far larger than the Apple TV app's, whose row headings are
+    /// about 30 points and semibold.
+    static var shelfHeadingFont: Font {
+        #if os(tvOS)
+        return .callout.weight(.semibold)
+        #else
+        return .title2.bold()
+        #endif
+    }
+
     /// Space between a shelf's heading and its cards, with the same room for the focused card to lift into.
     static var shelfHeadingGap: CGFloat {
         #if os(tvOS)
-        return 32
+        return 24
         #else
         return 8
+        #endif
+    }
+
+    /// Space between the content's leading edge and the safe area's, for shelves and the carousel's text, so they line up.
+    /// Nil is the system's usual padding. On tvOS it's less, to match the Apple TV app's margin.
+    static var contentInset: CGFloat? {
+        #if os(tvOS)
+        return 16
+        #else
+        return nil
         #endif
     }
 
@@ -386,6 +406,50 @@ struct WatchedBadge: View {
     }
 }
 
+#if os(tvOS)
+/// The strip along the bottom of a widescreen card's picture: a play icon, how far through it is, and what's left or
+/// how long it is (e.g. "S4, E4 · 33m"), over a fade so it reads on any picture.
+private struct WideCardStatus: View {
+    let item: MediaItem
+
+    var body: some View {
+        if item.playedFraction != nil || item.gridStatusLine != nil {
+            HStack(spacing: 10) {
+                Image(systemName: "play.fill")
+                    .accessibilityHidden(true)
+
+                if let fraction = item.playedFraction {
+                    Capsule()
+                        .fill(.white.opacity(0.3))
+                        .frame(width: 70, height: 4)
+                        .overlay(alignment: .leading) {
+                            Capsule()
+                                .fill(.white)
+                                .frame(width: 70 * min(max(fraction, 0), 1))
+                        }
+                        .accessibilityHidden(true)
+                }
+
+                if let status = item.gridStatusLine {
+                    Text(status)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .padding(.top, 36)
+            .background(LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom))
+            // Square at the top, rounded at the bottom to follow the picture's corners.
+            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12))
+        }
+    }
+}
+#endif
+
 /// A widescreen card: the item's still with a progress bar (if partly watched) and a watched checkmark, and its
 /// caption beneath.
 struct WideCard: View {
@@ -395,11 +459,16 @@ struct WideCard: View {
         VStack(alignment: .leading, spacing: Layout.captionGap) {
             ArtworkView(url: item.gridArtworkURL, aspectRatio: 16.0 / 9.0)
                 .overlay(alignment: .bottom) {
+                    #if os(tvOS)
+                    // The play icon, progress and time left over the picture, as in the Apple TV app.
+                    WideCardStatus(item: item)
+                    #else
                     if let fraction = item.playedFraction {
                         ProgressView(value: fraction)
                             .artworkOverlayEdge()
                             .padding(6)
                     }
+                    #endif
                 }
                 .overlay(alignment: .topTrailing) {
                     if item.showsWatchedBadge {
@@ -507,7 +576,7 @@ struct MediaShelf: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Layout.shelfHeadingGap) {
             heading
-                .padding(.horizontal)
+                .padding(.horizontal, Layout.contentInset)
 
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: Layout.cardSpacing) {
@@ -518,7 +587,7 @@ struct MediaShelf: View {
                     seeAllCard
                     #endif
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, Layout.contentInset)
             }
             .scrollIndicators(.hidden)
             // Lets a focused card lift and grow past the edge of the scroll view.
@@ -600,7 +669,9 @@ struct MediaShelf: View {
     private var heading: some View {
         #if os(tvOS)
         Text(title)
-            .font(.title2.bold())
+            .font(Layout.shelfHeadingFont)
+            .foregroundStyle(.secondary)
+            .accessibilityAddTraits(.isHeader)
         #else
         if let onHeadingTap {
             ShelfHeadingLink(title: LocalizedStringKey(title), action: onHeadingTap)

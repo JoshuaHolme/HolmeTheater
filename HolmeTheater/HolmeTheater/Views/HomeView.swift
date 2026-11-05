@@ -49,6 +49,10 @@ struct HomeView: View {
     /// that are showing, so it always matches what's on screen, not from a load that may yet be thrown away.
     @State private var showsHero = false
 
+    /// The artwork of the carousel's current item, which tvOS shows blurred behind the whole page, so the shelves keep the
+    /// hero's colors after it has scrolled away.
+    @State private var heroBackdropURL: URL?
+
     /// The seasonal theme showing, if any.
     private var theme: AppTheme? { appModel.themeSettings.activeTheme }
 
@@ -93,7 +97,7 @@ struct HomeView: View {
                     // Loads inside the scroll view, below the header, so the profile button in the bar stays
                     // reachable (e.g. to sign out) even if loading fails.
                     AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, offersDownloads: true) { data in
-                        LazyVStack(alignment: .leading, spacing: Layout.shelfSpacing) {
+                        HomeColumn {
                             if !data.hero.isEmpty {
                                 HomeHeroCarousel(
                                     items: data.hero,
@@ -102,18 +106,27 @@ struct HomeView: View {
                                     // The whole screen, past the side safe areas the carousel runs under.
                                     screenSize: CGSize(
                                         width: proxy.size.width + safeArea.leading + safeArea.trailing,
-                                        height: proxy.size.height
+                                        height: screenHeight(proxy)
                                     ),
                                     open: { goToItem = $0 },
-                                    play: { playingItem = $0 }
+                                    play: { playingItem = $0 },
+                                    onSelectionChange: { heroBackdropURL = $0.backdropURL ?? $0.posterURL }
                                 ) {
                                     if showsHeader { header.foregroundStyle(.white) }
                                 }
-
+                                #if os(tvOS)
+                                // The first shelf rises over the artwork's bottom edge, so its heading and the tops of its
+                                // cards show over the hero at rest.
+                                .padding(.bottom, -HeroLayout.bottomReserve)
+                                #endif
                             }
+                            #if os(tvOS)
+                            shelvesSection(data.shelves, heroSize: CGSize(width: proxy.size.width + safeArea.leading + safeArea.trailing, height: screenHeight(proxy)))
+                            #else
                             ForEach(data.shelves) { shelf in
                                 self.shelf(shelf.destination, items: shelf.items)
                             }
+                            #endif
                             if data.shelves.isEmpty {
                                 ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
                             }
@@ -151,6 +164,80 @@ struct HomeView: View {
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: reload) }
     }
 
+    /// The height of the whole screen, safe areas included. The carousel on tvOS is that tall.
+    private func screenHeight(_ proxy: GeometryProxy) -> CGFloat {
+        #if os(tvOS)
+        proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+        #else
+        proxy.size.height
+        #endif
+    }
+
+    #if os(tvOS)
+    /// The shelves, starting a little way in so the first heading clears the artwork's bottom edge, over a reflection of
+    /// the artwork.
+    private func shelvesSection(_ shelves: [Shelf], heroSize: CGSize) -> some View {
+        LazyVStack(alignment: .leading, spacing: Layout.shelfSpacing) {
+            ForEach(shelves) { shelf in
+                self.shelf(shelf.destination, items: shelf.items)
+            }
+        }
+        // Close under the artwork's edge: the heading and the tops of the first cards show over the artwork, with about as
+        // much of them as the Apple TV app's.
+        .padding(.top, 12)
+        .background(alignment: .top) { heroReflection(heroSize) }
+    }
+
+    /// How far down the reflection reaches.
+    private static let reflectionHeight: CGFloat = 560
+
+    /// A blurred reflection of the current hero artwork's bottom edge, hanging under the artwork and fading out downward,
+    /// as if the artwork stood on a glossy floor. It's part of the page, so it scrolls up with the artwork and leaves
+    /// with it. The artwork itself isn't touched, and the page's background stays the theme's.
+    @ViewBuilder
+    private func heroReflection(_ heroSize: CGSize) -> some View {
+        if showsHero, let url = heroBackdropURL {
+            CachedAsyncImage(url: url) { phase in
+                if case .success(let image) = phase {
+                    image.resizable().scaledToFill()
+                }
+            }
+            // Laid out exactly as the artwork is, so the reflection lines up with it, then turned upside down.
+            .frame(width: heroSize.width, height: heroSize.height)
+            .clipped()
+            .scaleEffect(y: -1)
+            // Only the part next to the artwork's edge, which is the top of the upside-down copy.
+            .frame(width: heroSize.width, height: Self.reflectionHeight, alignment: .top)
+            .clipped()
+            .blur(radius: 24)
+            .opacity(0.6)
+            .mask(LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom))
+            .ignoresSafeArea(edges: .horizontal)
+            // The shelves start above the artwork's bottom edge (they rise over it), so this moves the reflection down to
+            // that edge. Starting higher, it would cover the bottom of the artwork.
+            .offset(y: HeroLayout.bottomReserve - Layout.shelfSpacing)
+            .id(url)
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 0.6), value: url)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+    #endif
+
+    /// Whether a shelf shows widescreen cards, with their progress and time left over the picture, as the Apple TV app's
+    /// Continue Watching does. Only on tvOS, where there's room; elsewhere every shelf is posters.
+    private static func usesWideCards(_ destination: ShelfDestination) -> Bool {
+        #if os(tvOS)
+        switch destination {
+        case .continueWatching, .continueWatchingAndUpNext, .nextUp: true
+        default: false
+        }
+        #else
+        false
+        #endif
+    }
+
     /// A shelf whose heading opens `destination`'s full list. Its posters play here, and its watch-state
     /// actions reload the whole screen.
     private func shelf(_ destination: ShelfDestination, items: [MediaItem]) -> some View {
@@ -158,6 +245,7 @@ struct HomeView: View {
             title: destination.title,
             items: items,
             destination: destination,
+            isWide: Self.usesWideCards(destination),
             onChange: reload,
             navigation: ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
         )
@@ -390,4 +478,21 @@ struct HomeView: View {
             .mediaNavigationDestinations()
     }
     .environment(AppModel.preview())
+}
+
+/// The column that holds the carousel and the shelves. Lazy, so shelves far down the page aren't built until they're near.
+/// Not on tvOS: there the first shelf is pulled up over the carousel's bottom edge, so the carousel draws below its layout
+/// box. A lazy stack goes by the layout box, so it threw the carousel away while its bottom was still on screen, then had
+/// to build it and load its picture again on the way back, which showed as the hero popping out and in. (The shelves are
+/// still lazy on tvOS: see `shelvesSection`.)
+private struct HomeColumn<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        #if os(tvOS)
+        VStack(alignment: .leading, spacing: Layout.shelfSpacing) { content }
+        #else
+        LazyVStack(alignment: .leading, spacing: Layout.shelfSpacing) { content }
+        #endif
+    }
 }

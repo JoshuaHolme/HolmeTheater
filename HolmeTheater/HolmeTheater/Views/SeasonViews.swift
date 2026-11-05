@@ -107,7 +107,7 @@ struct ShelfHeadingLink: View {
             // The chevron stays beside the first line when the heading wraps.
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title)
-                    .font(.title2.bold())
+                    .font(Layout.shelfHeadingFont)
                     .multilineTextAlignment(.leading)
                 Image(systemName: "chevron.right")
                     .font(.headline)
