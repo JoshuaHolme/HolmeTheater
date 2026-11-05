@@ -209,6 +209,108 @@ private struct TVCastButtonStyle: ButtonStyle {
     }
 }
 
+/// The card offering the next episode as this one ends: its still, number and title, a countdown to starting it, and
+/// buttons to play it at once or stay.
+private struct TVUpNextCard: View {
+    let next: MediaItem
+    /// When the system starts the episode by itself, if the viewer does nothing.
+    let acceptanceDate: Date?
+    let accept: () -> Void
+    let reject: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top, spacing: 20) {
+                CachedAsyncImage(url: next.thumbnailURL ?? next.backdropURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Color.white.opacity(0.1)
+                    }
+                }
+                .frame(width: 200, height: 112)
+                .clipShape(.rect(cornerRadius: 12))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Up Next")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    if let line = Self.numberLine(for: next) {
+                        Text(line)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Text(next.title)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            HStack(spacing: 16) {
+                Button(action: accept) {
+                    Label("Play", systemImage: "play.fill")
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                .buttonStyle(.glassProminent)
+
+                Button {
+                    reject()
+                } label: {
+                    Text("Cancel")
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                .buttonStyle(.glass)
+
+                Spacer(minLength: 0)
+
+                if let acceptanceDate {
+                    TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                        let seconds = max(0, Int(acceptanceDate.timeIntervalSince(context.date).rounded(.up)))
+                        Text("Playing in \(seconds)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .font(.callout.weight(.medium))
+            .buttonBorderShape(.capsule)
+        }
+        .padding(24)
+        .frame(width: 640)
+        .glassEffect(.regular, in: .rect(cornerRadius: 36))
+    }
+
+    /// "Season 2, Episode 4", or what's known of it.
+    private static func numberLine(for item: MediaItem) -> String? {
+        switch (item.seasonNumber, item.episodeNumber) {
+        case let (season?, episode?): String(localized: "Season \(season), Episode \(episode)")
+        case let (nil, episode?): String(localized: "Episode \(episode)")
+        default: nil
+        }
+    }
+}
+
+/// The Up Next card in the bottom corner of the screen, over a clear background. Presented over the player, which plays on
+/// behind it. Menu puts the card away, like Cancel.
+private struct TVUpNextOverlay: View {
+    let next: MediaItem
+    let acceptanceDate: Date
+    let accept: () -> Void
+    let reject: () -> Void
+
+    var body: some View {
+        TVUpNextCard(next: next, acceptanceDate: acceptanceDate, accept: accept, reject: reject)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            .padding(20)
+            .onExitCommand(perform: reject)
+    }
+}
+
 /// What the server knows about a person: their portrait, name and role, when and where they were born, and their
 /// biography, then the movies and shows they're credited on. Selecting one of those closes the player and opens it.
 private struct TVPersonSheet: View {
@@ -296,14 +398,14 @@ private struct TVPersonSheet: View {
 /// - a Cast tab beside the system's Info tab, where selecting someone opens a sheet about them
 /// - Subtitles, Audio, Quality and Subtitle Timing menus in the transport bar
 /// - a Skip button while the picture is in an intro, recap or the like the server has marked
-/// - the next episode offered as the system's "Up Next" proposal near the end
+/// - an Up Next card for the next episode, over the picture from the credits on
 struct TVPlayerController: UIViewControllerRepresentable {
     let session: PlaybackSession
 
     /// Fetches the full item for its cast.
     let service: any MediaService
 
-    /// Called to move on to the following episode, which the player's proposal or the end of the episode asks for.
+    /// Called to move on to the following episode, which the Up Next card or the end of the episode asks for.
     let playNext: (MediaItem) -> Void
 
     /// Closes the player and opens an item's page, for a movie or show picked from a person's credits.
@@ -347,7 +449,7 @@ struct TVPlayerController: UIViewControllerRepresentable {
         private var timeObserver: Any?
         private var endObserver: NSObjectProtocol?
         private var artworkTask: Task<Void, Never>?
-        private var proposalTask: Task<Void, Never>?
+        private var upNextTask: Task<Void, Never>?
 
         /// The marked stretch the Skip button is showing for, if any.
         private var shownSegment: MediaSegment?
@@ -355,9 +457,13 @@ struct TVPlayerController: UIViewControllerRepresentable {
         /// What the transport bar's menus were last built from; they're built again when it changes.
         private var menuSignature: MenuSignature?
 
-        /// The player item the Up Next proposal was set on, and for which episode.
-        private weak var proposalItem: AVPlayerItem?
-        private var proposedEpisodeID: String?
+        /// The Up Next card, while it's on screen, and when it came up.
+        private weak var upNextHost: UIViewController?
+        private var upNextShownAt: Date?
+        private var isShowingUpNext = false
+
+        /// How long the card counts down before it plays the next episode.
+        private static let upNextCountdown: TimeInterval = 15
 
         private struct MenuSignature: Hashable {
             var subtitleIndex: Int?
@@ -381,7 +487,7 @@ struct TVPlayerController: UIViewControllerRepresentable {
             if let timeObserver { session.player.removeTimeObserver(timeObserver) }
             if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
             artworkTask?.cancel()
-            proposalTask?.cancel()
+            upNextTask?.cancel()
             castTask?.cancel()
         }
 
@@ -531,7 +637,7 @@ struct TVPlayerController: UIViewControllerRepresentable {
             subtitles.text = session.subtitleText(at: seconds)
             updateSkipAction(at: seconds)
             if menuSignature != currentSignature { updateMenus() }
-            proposeNextEpisodeIfReady()
+            updateUpNext(at: seconds)
             // A new stream (another quality or track) is a new player item, which starts with none.
             applyChapters()
         }
@@ -539,7 +645,8 @@ struct TVPlayerController: UIViewControllerRepresentable {
         // MARK: Skip
 
         private func updateSkipAction(at seconds: TimeInterval) {
-            let segment = session.segment(at: seconds)
+            // Not under the Up Next card, as on iOS.
+            let segment = isShowingUpNext ? nil : session.segment(at: seconds)
             guard segment != shownSegment else { return }
             shownSegment = segment
             controller?.contextualActions = segment.map { [skipAction(for: $0)] } ?? []
@@ -685,47 +792,79 @@ struct TVPlayerController: UIViewControllerRepresentable {
 
         // MARK: Up Next
 
-        /// Once the length of the episode is known, offers the next one as the player's "Up Next" proposal, shown
-        /// when the credits begin (or the last 30 seconds if the server hasn't marked them).
-        private func proposeNextEpisodeIfReady() {
-            guard let next = session.nextEpisode,
-                  let playerItem = session.player.currentItem,
-                  !(proposalItem === playerItem && proposedEpisodeID == next.id) else { return }
-            let duration = playerItem.duration.seconds
-            guard duration.isFinite, duration > 0 else { return }
+        /// Puts the Up Next card over the picture from the credits on (where the server says they start, if it does, else 45
+        /// seconds before the end, so the countdown has time to run; never later than 10 seconds from the end), and takes it
+        /// away if the position moves back before them. It's the app's own card, shown over a player that keeps playing, since
+        /// the system's proposal fades the picture out and pauses it when it's turned down.
+        private func updateUpNext(at seconds: TimeInterval) {
+            guard let controller, let next = session.nextEpisode,
+                  let duration = session.player.currentItem?.duration.seconds, duration.isFinite, duration > 60 else { return }
 
-            proposalItem = playerItem
-            proposedEpisodeID = next.id
-            let start = session.segments.first { $0.kind == .outro }?.start ?? max(duration - 30, 0)
+            let latest = duration - 10
+            let start = session.segments.last { $0.kind == .outro && $0.start > duration / 2 }.map { min($0.start, latest) }
+                ?? min(duration - 45, latest)
+            let isDue = !session.autoPlayCancelled && seconds >= start && seconds < duration + 1
 
-            proposalTask?.cancel()
-            proposalTask = Task { [weak self, weak playerItem] in
-                var image: UIImage?
-                if let url = next.gridArtworkURL, let (data, _) = try? await URLSession.shared.data(from: url) {
-                    image = UIImage(data: data)
-                }
-                guard !Task.isCancelled, let self, let playerItem, self.proposalItem === playerItem else { return }
-                playerItem.nextContentProposal = AVContentProposal(
-                    contentTimeForTransition: CMTime(seconds: start, preferredTimescale: 600),
-                    title: next.title,
-                    previewImage: image
-                )
+            if isDue, !isShowingUpNext, controller.presentedViewController == nil {
+                showUpNext(next, over: controller)
+            } else if isShowingUpNext {
+                // Not presented, because something else was in the way when it was asked to: ask again.
+                let failed = upNextHost?.presentingViewController == nil && Date.now.timeIntervalSince(upNextShownAt ?? .now) > 1
+                if !isDue || failed { hideUpNext(animated: !failed) }
             }
         }
 
-        private func itemFinished(_ finished: AVPlayerItem?) {
-            guard let finished, finished === session.player.currentItem,
-                  let next = session.nextEpisode, !session.autoPlayCancelled else { return }
+        private func showUpNext(_ next: MediaItem, over controller: AVPlayerViewController) {
+            let host = UIHostingController(rootView: TVUpNextOverlay(
+                next: next,
+                acceptanceDate: .now.addingTimeInterval(Self.upNextCountdown),
+                accept: { [weak self] in self?.acceptUpNext(next) },
+                reject: { [weak self] in self?.rejectUpNext() }
+            ))
+            host.view.backgroundColor = .clear
+            host.modalPresentationStyle = .overFullScreen
+            host.modalTransitionStyle = .crossDissolve
+            upNextHost = host
+            upNextShownAt = .now
+            isShowingUpNext = true
+            controller.present(host, animated: true)
+
+            upNextTask?.cancel()
+            upNextTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(Self.upNextCountdown))
+                guard !Task.isCancelled else { return }
+                self?.acceptUpNext(next)
+            }
+        }
+
+        /// Takes the card away and leaves the picture as it is.
+        private func hideUpNext(animated: Bool = true) {
+            upNextTask?.cancel()
+            isShowingUpNext = false
+            upNextHost?.dismiss(animated: animated)
+            upNextHost = nil
+        }
+
+        private func acceptUpNext(_ next: MediaItem) {
+            hideUpNext(animated: false)
             playNext(next)
         }
 
-        func playerViewController(_ playerViewController: AVPlayerViewController, didAccept proposal: AVContentProposal) {
-            if let next = session.nextEpisode { playNext(next) }
+        /// Cancel: the card goes, and this episode doesn't move on by itself at the end.
+        private func rejectUpNext() {
+            session.autoPlayCancelled = true
+            hideUpNext()
         }
 
-        func playerViewController(_ playerViewController: AVPlayerViewController, didReject proposal: AVContentProposal) {
-            // They chose to stay with this episode, so it doesn't move on by itself at the end.
-            session.autoPlayCancelled = true
+        private func itemFinished(_ finished: AVPlayerItem?) {
+            guard let finished, finished === session.player.currentItem else { return }
+            if let next = session.nextEpisode, !session.autoPlayCancelled {
+                acceptUpNext(next)
+            } else {
+                // A movie, the last episode, or one whose autoplay was cancelled: back to the page it was started from.
+                hideUpNext(animated: false)
+                close()
+            }
         }
 
         // MARK: Artwork

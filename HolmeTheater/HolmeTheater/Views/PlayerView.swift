@@ -75,6 +75,19 @@ struct PlayerView: View {
             followingLoad?.cancel()
             session?.viewerDisappeared()
         }
+        #if os(iOS)
+        // An item that plays to its end with no episode to follow it, or whose autoplay was cancelled, closes the player and
+        // leaves the page it was opened from. (tvOS does this in its own controller.) One with a next episode moves on
+        // through the Up Next card.
+        .task(id: session.map { ObjectIdentifier($0) }) {
+            guard let session else { return }
+            for await note in NotificationCenter.default.notifications(named: AVPlayerItem.didPlayToEndTimeNotification) {
+                guard let finished = note.object as? AVPlayerItem, finished === session.player.currentItem else { continue }
+                if session.nextEpisode == nil || session.autoPlayCancelled { close() }
+                return
+            }
+        }
+        #endif
     }
 
     /// Picks up the item's playback if it's already going, or asks the server how to play it and starts.
