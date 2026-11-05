@@ -45,7 +45,8 @@ struct PlayerView: View {
                     openItem: { item in
                         appModel.pendingShow = item
                         close()
-                    }
+                    },
+                    close: close
                 )
                     // A new session is a new player controller, with its own menus and subtitles.
                     .id(ObjectIdentifier(session))

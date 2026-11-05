@@ -118,23 +118,94 @@ private struct TVCastTab: View {
     /// The person whose sheet is showing.
     @State private var selected: MediaPerson?
 
+    /// The slab's height, which is also what the tab asks the player's panel for. About the Info tab's.
+    static let slabHeight: CGFloat = 248
+
     var body: some View {
         ScrollView(.horizontal) {
-            LazyHStack(alignment: .top, spacing: 48) {
+            LazyHStack(alignment: .top, spacing: 20) {
                 ForEach(model.people) { person in
                     Button { selected = person } label: {
-                        PersonCard(person: person, size: 160)
-                            .frame(width: 220)
+                        TVCastCard(person: person)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(TVCastButtonStyle())
                 }
             }
-            .padding(.horizontal, 80)
-            .padding(.vertical, 24)
+            .padding(.horizontal, 56)
+            // The row is only as tall as its tallest card, with the portraits along its top so they line up, and that is
+            // centered in the slab.
+            .fixedSize(horizontal: false, vertical: true)
+            // A fixed height, not one taken from the container: the container's own height comes from this tab's, so when the
+            // player brings the tab back a second time it would be sized to nothing.
+            .frame(height: Self.slabHeight, alignment: .center)
         }
         .scrollIndicators(.hidden)
-        .scrollClipDisabled()
+        // The row fades out at the slab's ends, rather than being cut off in a straight line across its rounded corners.
+        .mask {
+            HStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing).frame(width: 48)
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: 48)
+            }
+        }
+        // The same slab as the Info tab's, which this tab sits in the place of.
+        .glassEffect(.regular, in: .rect(cornerRadius: 56))
         .sheet(item: $selected) { TVPersonSheet(person: $0, service: service, open: open) }
+    }
+}
+
+/// Hosts the Cast tab, and tells the player's panel how tall it is each time the tab comes on screen. The panel only asked
+/// once, so the second time it came up at the wrong height, with the slab halfway up the screen.
+private final class TVCastHostingController: UIHostingController<TVCastTab> {
+    static var contentSize: CGSize { CGSize(width: 0, height: TVCastTab.slabHeight) }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        preferredContentSize = Self.contentSize
+    }
+}
+
+/// A person's portrait, name and role, sized to fit the Cast tab's slab.
+private struct TVCastCard: View {
+    let person: MediaPerson
+
+    var body: some View {
+        VStack(spacing: 6) {
+            PersonPortrait(person: person, size: 116)
+
+            Text(person.name)
+                .font(.system(size: 24, weight: .semibold))
+                .lineLimit(2)
+            if let subtitle = person.subtitle {
+                Text(subtitle)
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(width: 250)
+    }
+}
+
+/// Lifts a Cast card's portrait when it has focus, circle and photo together. (The system's highlight effect draws a square
+/// plate behind a photo, and a borderless button only enlarges the photo inside its circle.)
+private struct TVCastButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        FocusLift(configuration: configuration)
+    }
+
+    private struct FocusLift: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isFocused) private var isFocused
+
+        var body: some View {
+            configuration.label
+                .scaleEffect(isFocused ? 1.08 : 1)
+                .shadow(color: .black.opacity(isFocused ? 0.4 : 0), radius: 16, y: 8)
+                .opacity(configuration.isPressed ? 0.8 : 1)
+                .animation(.smooth(duration: 0.2), value: isFocused)
+        }
     }
 }
 
@@ -238,8 +309,11 @@ struct TVPlayerController: UIViewControllerRepresentable {
     /// Closes the player and opens an item's page, for a movie or show picked from a person's credits.
     let openItem: (MediaItem) -> Void
 
+    /// Closes the player, for Menu pressed on one of the transport bar's buttons.
+    let close: () -> Void
+
     func makeCoordinator() -> Coordinator {
-        Coordinator(session: session, service: service, playNext: playNext, openItem: openItem)
+        Coordinator(session: session, service: service, playNext: playNext, openItem: openItem, close: close)
     }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
@@ -255,14 +329,16 @@ struct TVPlayerController: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         context.coordinator.playNext = playNext
         context.coordinator.openItem = openItem
+        context.coordinator.close = close
     }
 
     @MainActor
-    final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
+    final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         let session: PlaybackSession
         let service: any MediaService
         var playNext: (MediaItem) -> Void
         var openItem: (MediaItem) -> Void
+        var close: () -> Void
 
         private let subtitles = TVSubtitleModel()
         private let cast = TVCastModel()
@@ -293,11 +369,12 @@ struct TVPlayerController: UIViewControllerRepresentable {
             var isSwitching: Bool
         }
 
-        init(session: PlaybackSession, service: any MediaService, playNext: @escaping (MediaItem) -> Void, openItem: @escaping (MediaItem) -> Void) {
+        init(session: PlaybackSession, service: any MediaService, playNext: @escaping (MediaItem) -> Void, openItem: @escaping (MediaItem) -> Void, close: @escaping () -> Void) {
             self.session = session
             self.service = service
             self.playNext = playNext
             self.openItem = openItem
+            self.close = close
         }
 
         isolated deinit {
@@ -310,6 +387,13 @@ struct TVPlayerController: UIViewControllerRepresentable {
 
         func attach(to controller: AVPlayerViewController) {
             self.controller = controller
+
+            // Menu on one of the transport bar's buttons would only move focus back to the progress bar, and take more presses
+            // to leave. Close the player at once instead.
+            let menuPress = UITapGestureRecognizer(target: self, action: #selector(menuPressed))
+            menuPress.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
+            menuPress.delegate = self
+            controller.view.addGestureRecognizer(menuPress)
 
             // The app has its own Subtitles menu in the transport bar. Allowing no languages empties the player's own, which
             // would otherwise sit beside it as a second subtitle button.
@@ -365,14 +449,20 @@ struct TVPlayerController: UIViewControllerRepresentable {
 
                 if !people.isEmpty, let controller = self.controller {
                     self.cast.people = people
-                    let host = UIHostingController(rootView: TVCastTab(
+                    let host = TVCastHostingController(rootView: TVCastTab(
                         model: self.cast,
                         service: self.service,
                         open: { [weak self] item in self?.openItem(item) }
                     ))
                     host.title = String(localized: "Cast")
-                    // The height of the tab, which is as tall as one row of portraits and names.
-                    host.preferredContentSize = CGSize(width: 0, height: 420)
+                    // As tall as the Info tab's slab. The panel is as tall as its tallest tab and keeps each tab at the top, so
+                    // a taller one would leave a gap under the Info tab's.
+                    host.preferredContentSize = TVCastHostingController.contentSize
+                    host.sizingOptions = [.intrinsicContentSize]
+                    // The panel takes its height from the tab's own size, which would otherwise include however much of the
+                    // screen's safe area the tab overlaps. Measured while the panel is closed and off the bottom of the
+                    // screen, that's a lot, and the panel came back that much taller, with the slab halfway up the screen.
+                    host.safeAreaRegions = []
                     controller.customInfoViewControllers = [host]
                 }
 
@@ -467,6 +557,23 @@ struct TVPlayerController: UIViewControllerRepresentable {
             return UIAction(title: title, image: UIImage(systemName: "forward.end.fill")) { [weak self] _ in
                 self?.session.player.seek(to: CMTime(seconds: segment.end, preferredTimescale: 600))
             }
+        }
+
+        // MARK: Menu button
+
+        @objc private func menuPressed() {
+            close()
+        }
+
+        /// Only for Menu pressed on a button in the transport bar, at the bottom of the screen. Anywhere else, such as the Info
+        /// panel at the top, or with another screen or menu in front, Menu does what the player does.
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let controller, controller.presentedViewController == nil,
+                  let focused = UIFocusSystem.focusSystem(for: controller.view)?.focusedItem as? UIView,
+                  focused is UIControl,
+                  let window = controller.view.window else { return false }
+            let frame = focused.convert(focused.bounds, to: window)
+            return frame.midY > window.bounds.height * 0.6
         }
 
         // MARK: Subtitle timing
