@@ -634,12 +634,36 @@ struct TVPlayerController: UIViewControllerRepresentable {
 
         private func tick(_ time: CMTime) {
             let seconds = time.seconds.isFinite ? time.seconds : 0
-            subtitles.text = session.subtitleText(at: seconds)
+            session.loadReplayCues()
+            subtitles.text = session.subtitleText(at: seconds) ?? replaySubtitleText(at: seconds)
             updateSkipAction(at: seconds)
             if menuSignature != currentSignature { updateMenus() }
             updateUpNext(at: seconds)
             // A new stream (another quality or track) is a new player item, which starts with none.
             applyChapters()
+        }
+
+        // MARK: Instant replay
+
+        /// Until when the subtitles are showing for a replay, with the viewer's own off.
+        private var replayUntil: TimeInterval?
+
+        /// Going back 10 seconds with the remote's left button, as the Apple TV app does, shows subtitles for the stretch that
+        /// plays again, so a line that was missed can be read. A fresh skip back during one carries it on.
+        func playerViewController(_ playerViewController: AVPlayerViewController, willResumePlaybackAfterUserNavigatedFrom oldTime: CMTime, to targetTime: CMTime) {
+            let (old, target) = (oldTime.seconds, targetTime.seconds)
+            guard session.subtitleIndex == nil, old.isFinite, target.isFinite, (5...15).contains(old - target) else { return }
+            replayUntil = old + 1
+            session.loadReplayCues()
+        }
+
+        private func replaySubtitleText(at seconds: TimeInterval) -> String? {
+            guard let until = replayUntil else { return nil }
+            guard seconds < until, session.subtitleIndex == nil else {
+                replayUntil = nil
+                return nil
+            }
+            return session.replaySubtitleText(at: seconds)
         }
 
         // MARK: Skip

@@ -370,9 +370,45 @@ final class PlaybackSession {
 
     /// The subtitle to show at `time`, if any.
     func subtitleText(at time: TimeInterval) -> String? {
-        let shifted = time - subtitleOffset
-        let lines = subtitleCues.filter { $0.start <= shifted && shifted < $0.end }.map(\.text)
+        Self.text(in: subtitleCues, at: time - subtitleOffset)
+    }
+
+    private static func text(in cues: [SubtitleCue], at shifted: TimeInterval) -> String? {
+        let lines = cues.filter { $0.start <= shifted && shifted < $0.end }.map(\.text)
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    /// The lines of a track kept ready for an instant replay: a few seconds of subtitles after going back, while the
+    /// viewer has none on. Empty until fetched, or if the file has no track the app can draw.
+    @ObservationIgnored private var replayCues: [SubtitleCue] = []
+    @ObservationIgnored private var replayTask: Task<Void, Never>?
+    @ObservationIgnored private var didRequestReplayCues = false
+
+    /// The track an instant replay shows: a text one the app can draw, in the language being spoken if that can be told
+    /// from the audio track's name, else the first.
+    private var replayTrack: MediaTrack? {
+        guard !info.subtitlesBurnedIn else { return nil }
+        let tracks = info.subtitleTracks.filter { $0.url != nil }
+        if let language = info.audioTracks.first(where: { $0.index == audioIndex })?.title.components(separatedBy: " - ").first,
+           let match = tracks.first(where: { $0.title.hasPrefix(language) }) {
+            return match
+        }
+        return tracks.first
+    }
+
+    /// Fetches the lines for an instant replay, once, unless subtitles are on already.
+    func loadReplayCues() {
+        guard subtitleIndex == nil, !didRequestReplayCues, let url = replayTrack?.url else { return }
+        didRequestReplayCues = true
+        replayTask = Task {
+            guard let (data, _) = try? await Self.subtitleSession.data(from: url), !Task.isCancelled else { return }
+            replayCues = WebVTT.parse(String(decoding: data, as: UTF8.self))
+        }
+    }
+
+    /// The instant replay's subtitle at `time`, if any.
+    func replaySubtitleText(at time: TimeInterval) -> String? {
+        Self.text(in: replayCues, at: time - subtitleOffset)
     }
 
     /// Fetches subtitle files. Their URLs carry the access token, which the shared session's cache would write to disk.
@@ -382,6 +418,10 @@ final class PlaybackSession {
     private func loadSubtitleCues() {
         cueTask?.cancel()
         subtitleCues = []
+        // The tracks may have changed too, so the replay's are fetched again when they're next wanted.
+        replayTask?.cancel()
+        replayCues = []
+        didRequestReplayCues = false
         guard !info.subtitlesBurnedIn, let subtitleIndex,
               let url = info.subtitleTracks.first(where: { $0.index == subtitleIndex })?.url else { return }
         cueTask = Task {
