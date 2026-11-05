@@ -274,7 +274,7 @@ struct HomeView: View {
     /// The carousel's items from the newest ones: movies and shows as they are, and an episode or season as the show it
     /// belongs to. A TV library's newest items are often single episodes, which the carousel should show as the show.
     /// A show that comes up more than once is shown once, where it first appears.
-    private static func heroes(from newest: [MediaItem], limit: Int, service: any MediaService) async -> [MediaItem] {
+    private static func heroes(from newest: [MediaItem], limit: Int, hidesWatched: Bool, service: any MediaService) async -> [MediaItem] {
         // Enough to still have `limit` once shows that repeat are gone.
         let candidates = Array(newest.prefix(limit * 3))
 
@@ -294,7 +294,7 @@ struct HomeView: View {
                 default: item
                 }
             }
-            .filter { seen.insert($0.id).inserted && ($0.backdropURL != nil || $0.posterURL != nil) }
+            .filter { seen.insert($0.id).inserted && ($0.backdropURL != nil || $0.posterURL != nil) && !(hidesWatched && $0.isPlayed) }
             .prefix(limit)
             .map { $0 }
     }
@@ -435,7 +435,7 @@ struct HomeView: View {
             }
             newest = picks.filter(hasArtwork).shuffled()
         }
-        let hero = await Self.heroes(from: newest, limit: Self.heroCount, service: service)
+        let hero = await Self.heroes(from: newest, limit: Self.heroCount, hidesWatched: settings.heroHidesWatched, service: service)
 
         // The first posters of each shelf are loaded before the shelves show, so they don't pop in. Every other
         // poster starts downloading now, so it's cached by the time you scroll to it.

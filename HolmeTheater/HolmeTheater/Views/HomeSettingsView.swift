@@ -19,6 +19,7 @@ struct HomeSettingsView: View {
                     Picker("Show", selection: $settings.heroOrder) {
                         ForEach(HomeSettings.HeroOrder.allCases) { Text($0.title).tag($0) }
                     }
+                    Toggle("Hide Watched", isOn: $settings.heroHidesWatched)
                     NavigationLink("Libraries") {
                         HomeLibraryChoiceView(
                             title: String(localized: "Carousel"),

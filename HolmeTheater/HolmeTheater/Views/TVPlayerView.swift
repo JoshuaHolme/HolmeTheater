@@ -13,6 +13,66 @@ final class TVSubtitleModel {
     var text: String?
 }
 
+/// Nudges the subtitles earlier or later, with the video still playing behind. Each press is 0.1 s, so the timing can be dialed
+/// in over several presses.
+struct TVSubtitleTimingPanel: View {
+    let session: PlaybackSession
+    let done: () -> Void
+
+    var body: some View {
+        // A slab across the top of the screen that the picture shows through, like the player's Info panel, rather than a
+        // card floating in the middle.
+        VStack(spacing: 0) {
+            HStack(spacing: 48) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Subtitle Timing")
+                        .font(.title3.weight(.semibold))
+                    Text(Self.offsetText(session.subtitleOffset))
+                        .font(.system(size: 64, weight: .semibold).monospacedDigit())
+                        .contentTransition(.numericText())
+                }
+
+                Spacer()
+
+                HStack(spacing: 24) {
+                    Button { session.adjustSubtitleOffset(by: -0.1) } label: {
+                        Label("Earlier", systemImage: "minus")
+                    }
+                    .accessibilityLabel("Show Earlier")
+
+                    Button { session.adjustSubtitleOffset(by: 0.1) } label: {
+                        Label("Later", systemImage: "plus")
+                    }
+                    .accessibilityLabel("Show Later")
+
+                    Button("Reset") { session.resetSubtitleOffset() }
+                        .disabled(session.subtitleOffset == 0)
+
+                    Button("Done", action: done)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
+                .focusSection()
+            }
+            .padding(.horizontal, 90)
+            .padding(.top, 70)
+            .padding(.bottom, 50)
+            .frame(maxWidth: .infinity)
+            .glassEffect(.regular, in: UnevenRoundedRectangle(bottomLeadingRadius: 48, bottomTrailingRadius: 48))
+            .ignoresSafeArea()
+
+            Spacer()
+        }
+        .animation(.smooth(duration: 0.2), value: session.subtitleOffset)
+    }
+
+    /// "+1.5 s", "−0.25 s" or "0 s".
+    static func offsetText(_ offset: TimeInterval) -> String {
+        let sign = offset > 0 ? "+" : offset < 0 ? "−" : ""
+        return "\(sign)\(abs(offset).formatted(.number.precision(.fractionLength(0...1)))) s"
+    }
+}
+
 /// The subtitles, drawn over the picture. The player's own subtitles are off, because the app follows the position
 /// itself (see `PlaybackSession.subtitleText(at:)`), as it does on iOS.
 private struct TVSubtitleView: View {
@@ -29,9 +89,12 @@ private struct TVSubtitleView: View {
                         .shadow(color: .black, radius: 2)
                         .shadow(color: .black, radius: 6)
                         .padding(.horizontal, 160)
-                        .padding(.bottom, 80)
+                        // The bottom of the last line sits about 6% of the screen's height up from its bottom edge, the usual
+                        // place for subtitles. The safe area would add another 60 points to that.
+                        .padding(.bottom, 64)
                 }
             }
+            .ignoresSafeArea()
             .allowsHitTesting(false)
             .accessibilityHidden(true)
     }
@@ -248,6 +311,10 @@ struct TVPlayerController: UIViewControllerRepresentable {
         func attach(to controller: AVPlayerViewController) {
             self.controller = controller
 
+            // The app has its own Subtitles menu in the transport bar. Allowing no languages empties the player's own, which
+            // would otherwise sit beside it as a second subtitle button.
+            controller.allowedSubtitleOptionLanguages = []
+
             // The subtitles go in the player's overlay, between the picture and its controls.
             if let overlay = controller.contentOverlayView {
                 let host = UIHostingController(rootView: TVSubtitleView(model: subtitles))
@@ -402,6 +469,32 @@ struct TVPlayerController: UIViewControllerRepresentable {
             }
         }
 
+        // MARK: Subtitle timing
+
+        /// Hides the player's controls behind a small panel at the top of the screen, for nudging the subtitles earlier or
+        /// later while the picture plays on. Menu (or Done) closes it and brings the controls back.
+        private func showTimingPanel() {
+            let host = UIHostingController(rootView: TVSubtitleTimingPanel(session: session) { [weak self] in
+                self?.controller?.dismiss(animated: true)
+            })
+            host.view.backgroundColor = .clear
+            host.modalPresentationStyle = .overFullScreen
+            host.modalTransitionStyle = .crossDissolve
+            present(host, triesLeft: 10)
+        }
+
+        /// Presents `host` once the menu that was tapped has finished closing; presenting while it's still going is ignored.
+        private func present(_ host: UIViewController, triesLeft: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self, let controller = self.controller else { return }
+                if controller.presentedViewController == nil {
+                    controller.present(host, animated: true)
+                } else if triesLeft > 0 {
+                    self.present(host, triesLeft: triesLeft - 1)
+                }
+            }
+        }
+
         // MARK: Transport bar menus
 
         private var currentSignature: MenuSignature {
@@ -427,14 +520,33 @@ struct TVPlayerController: UIViewControllerRepresentable {
             let subtitleTracks = session.info.subtitleTracks
             if !subtitleTracks.isEmpty {
                 let off = UIAction(title: String(localized: "Off"), state: session.subtitleIndex == nil ? .on : .off) { [weak self] _ in
-                    Task { await self?.session.selectSubtitle(nil) }
+                    Task {
+                        await self?.session.selectSubtitle(nil)
+                        self?.updateMenus()
+                    }
                 }
                 let tracks = subtitleTracks.map { track in
                     UIAction(title: track.title, state: session.subtitleIndex == track.index ? .on : .off) { [weak self] _ in
-                        Task { await self?.session.selectSubtitle(track.index) }
+                        Task {
+                            await self?.session.selectSubtitle(track.index)
+                            self?.updateMenus()
+                        }
                     }
                 }
-                menus.append(UIMenu(title: String(localized: "Subtitles"), image: UIImage(systemName: "captions.bubble"), children: [off] + tracks))
+                let languages = UIMenu(options: .displayInline, children: [off] + tracks)
+
+                // For a file whose subtitles don't line up with the speech. Always listed, so it can be found; it's only
+                // usable with a subtitle on, and not when they're burned into the picture.
+                let canAdjust = session.subtitleIndex != nil && !session.info.subtitlesBurnedIn
+                let offset = session.subtitleOffset
+                let timingTitle = offset == 0
+                    ? String(localized: "Adjust Timing…")
+                    : String(localized: "Adjust Timing… (\(TVSubtitleTimingPanel.offsetText(offset)))")
+                let timing = UIAction(title: timingTitle, image: UIImage(systemName: "clock.arrow.2.circlepath"), attributes: canAdjust ? [] : .disabled) { [weak self] _ in
+                    self?.showTimingPanel()
+                }
+
+                menus.append(UIMenu(title: String(localized: "Subtitles"), image: UIImage(systemName: "captions.bubble"), children: [languages, timing]))
             }
 
             // The system's own menu offers the file's tracks too, but only this one switches the stream when it has to.
@@ -459,19 +571,6 @@ struct TVPlayerController: UIViewControllerRepresentable {
                     }
                 }
                 menus.append(UIMenu(title: String(localized: "Quality"), image: UIImage(systemName: "slider.horizontal.3"), children: [auto] + choices))
-            }
-
-            if session.subtitleIndex != nil, !session.info.subtitlesBurnedIn {
-                let earlier = UIAction(title: String(localized: "Earlier (0.5 s)")) { [weak self] _ in
-                    self?.session.adjustSubtitleOffset(by: -0.5)
-                }
-                let later = UIAction(title: String(localized: "Later (0.5 s)")) { [weak self] _ in
-                    self?.session.adjustSubtitleOffset(by: 0.5)
-                }
-                let reset = UIAction(title: String(localized: "Reset"), attributes: session.subtitleOffset == 0 ? .disabled : []) { [weak self] _ in
-                    self?.session.resetSubtitleOffset()
-                }
-                menus.append(UIMenu(title: String(localized: "Subtitle Timing"), image: UIImage(systemName: "timer"), children: [earlier, later, reset]))
             }
 
             return menus

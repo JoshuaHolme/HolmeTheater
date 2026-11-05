@@ -67,6 +67,8 @@ final class HomeSettings {
         /// Optional so settings saved before this existed still load; nil is ``HeroOrder/recentlyAdded``.
         var heroOrder: HeroOrder?
         var heroExcludedLibraries: Set<String> = []
+        /// Optional so settings saved before this existed still load; nil is off.
+        var heroHidesWatched: Bool?
     }
 
     private var stored: Stored {
@@ -209,6 +211,12 @@ final class HomeSettings {
     var heroOrder: HeroOrder {
         get { stored.heroOrder ?? .recentlyAdded }
         set { stored.heroOrder = newValue }
+    }
+
+    /// Whether the carousel leaves out movies and shows that have been watched.
+    var heroHidesWatched: Bool {
+        get { stored.heroHidesWatched ?? false }
+        set { stored.heroHidesWatched = newValue ? true : nil }
     }
 
     func heroIncludes(_ library: Library) -> Bool {

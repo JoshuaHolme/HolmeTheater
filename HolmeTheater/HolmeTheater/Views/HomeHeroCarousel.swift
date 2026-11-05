@@ -232,9 +232,6 @@ struct HomeHeroCarousel<Header: View>: View {
         .onChange(of: index, initial: true) { _, position in
             if items.indices.contains(position) { onSelectionChange?(items[position]) }
         }
-        .onAppear {
-            startFocusLogging { "index=\(index) shown=\(shownIndex) heroFocus=\(String(describing: heroFocus))" }
-        }
         #if os(tvOS)
         .onChange(of: index) { _, position in fadeContent(to: position) }
         #endif
@@ -280,7 +277,6 @@ struct HomeHeroCarousel<Header: View>: View {
                 .focused($heroFocus, equals: .info)
                 // At the right edge, moving right goes to the next item rather than nowhere.
                 .onMoveCommand { direction in
-                    focusLog("onMoveCommand \(direction) on info")
                     if direction == .right { stepPage(1) }
                 }
             }
@@ -294,7 +290,6 @@ struct HomeHeroCarousel<Header: View>: View {
                 onBack: { if index > 0 { stepPage(-1) } },
                 // Straight back to Play, whenever focus lands on the strip.
                 onReturnFocus: {
-                    focusLog("onReturnFocus: heroFocus = .play (was \(String(describing: heroFocus)))")
                     if heroFocus == .play {
                         // SwiftUI may not have noticed yet that focus has left Play, and setting the same value again
                         // would do nothing. Clear it first, so the next setting is a change.
@@ -333,7 +328,6 @@ struct HomeHeroCarousel<Header: View>: View {
 
     /// Moves to the next hero (1) or the previous (-1).
     private func stepPage(_ delta: Int) {
-        focusLog("stepPage delta=\(delta) virtualIndex=\(virtualIndex) index=\(index)")
         guard items.count > 1 else { return }
         withAnimation(Self.manualSlide) { virtualIndex += delta }
     }
@@ -888,11 +882,9 @@ private struct BackStandIn: UIViewRepresentable {
             super.didUpdateFocus(in: context, with: coordinator)
             guard context.nextFocusedItem === self else { return }
 
-            let fromStrip = context.previouslyFocusedItem is StandInView
             let movedLeft = context.focusHeading.contains(.left)
             guard movedLeft else {
                 // From the sidebar or a shelf, say: not where focus should rest. Straight to Play.
-                focusLog("standIn: landed from \(FocusDebug.describe(context.previouslyFocusedItem)) heading=\(FocusDebug.heading(context.focusHeading)) -> to Play")
                 DispatchQueue.main.async { [shared] in shared.onReturnFocus() }
                 return
             }
@@ -902,10 +894,7 @@ private struct BackStandIn: UIViewRepresentable {
             let now = Date()
             if now.timeIntervalSince(shared.lastTurn) > Self.swipeFollowOn {
                 shared.lastTurn = now
-                focusLog("standIn: PRESS (from \(fromStrip ? "strip" : "buttons")) -> turning page back")
                 shared.onBack()
-            } else {
-                focusLog("standIn: follow-on (\(Int(now.timeIntervalSince(shared.lastTurn) * 1000))ms) -> no page turn")
             }
 
             // Once the moves stop, focus goes back to Play.
@@ -913,7 +902,6 @@ private struct BackStandIn: UIViewRepresentable {
             let token = shared.idleToken
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleDelay) { [shared] in
                 guard shared.idleToken == token, shared.holdsFocus() else { return }
-                focusLog("standIn: idle -> back to Play")
                 shared.onReturnFocus()
             }
         }
