@@ -626,14 +626,19 @@ final class DownloadManager {
         }
     }
 
-    /// Saves the text subtitle tracks, which the player draws itself. Returns each one's file name by track index.
+    /// Saves the subtitle tracks the player draws itself. Returns each one's file name by track index.
     private func saveSubtitles(of info: PlaybackInfo, in directory: URL) async -> [Int: String] {
         var files: [Int: String] = [:]
         for track in info.subtitleTracks {
             guard let url = track.url,
                   let (data, response) = try? await detailsSession.data(from: url),
                   (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
-            let name = "subtitles-\(track.index).vtt"
+            let fileExtension = switch track.format {
+            case .pgs: "sup"
+            case .ass: "ass"
+            case .webVTT, nil: "vtt"
+            }
+            let name = "subtitles-\(track.index).\(fileExtension)"
             if (try? data.write(to: directory.appending(path: name), options: .atomic)) != nil {
                 files[track.index] = name
             }

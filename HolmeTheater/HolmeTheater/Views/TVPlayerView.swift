@@ -11,6 +11,12 @@ import UIKit
 @MainActor @Observable
 final class TVSubtitleModel {
     var text: String?
+    /// The lines the track puts somewhere other than along the bottom.
+    var placed: [SubtitleCue] = []
+    /// For a track of pictures.
+    var picture: PictureSubtitle?
+    /// The video's size as shown, for where it sits on the screen: zero until the player knows it.
+    var videoSize: CGSize = .zero
 }
 
 /// Nudges the subtitles earlier or later, with the video still playing behind. Each press is 0.1 s, so the timing can be dialed
@@ -78,8 +84,33 @@ struct TVSubtitleTimingPanel: View {
 private struct TVSubtitleView: View {
     let model: TVSubtitleModel
 
+    /// The overlay's size: the screen, which the picture fills (or fits in, with bars).
+    @State private var size: CGSize = .zero
+
+    /// Where the video is: fitted to the screen, as the player shows it.
+    private var videoFrame: CGRect {
+        let screen = CGRect(origin: .zero, size: size)
+        guard model.videoSize.width > 0, model.videoSize.height > 0 else { return screen }
+        return AVMakeRect(aspectRatio: model.videoSize, insideRect: screen)
+    }
+
     var body: some View {
         Color.clear
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+            .overlay(alignment: .topLeading) {
+                // A track of pictures is drawn where the picture says, scaled with the video.
+                if let picture = model.picture {
+                    let rect = picture.rect(onVideo: videoFrame, within: CGRect(origin: .zero, size: size))
+                    Image(decorative: picture.image, scale: 1)
+                        .resizable()
+                        .frame(width: rect.width, height: rect.height)
+                        .offset(x: rect.minX, y: rect.minY)
+                }
+            }
+            // An overlay of its own: sharing one with the picture, it stopped the picture being drawn.
+            .overlay(alignment: .topLeading) {
+                PlacedSubtitlesView(cues: model.placed, frame: videoFrame, fontSize: 52, shadowRadius: 6)
+            }
             .overlay(alignment: .bottom) {
                 if let text = model.text {
                     Text(text)
@@ -636,8 +667,17 @@ struct TVPlayerController: UIViewControllerRepresentable {
         private func tick(_ time: CMTime) {
             let seconds = time.seconds.isFinite ? time.seconds : 0
             session.loadReplayCues()
-            // A replay's full subtitles take over from a forced track's, going back to it afterwards.
-            subtitles.text = replaySubtitleText(at: seconds) ?? session.subtitleText(at: seconds)
+            // A replay's full subtitles (text or pictures) take over from a forced track's, going back to it afterwards.
+            let isReplaying = isShowingReplaySubtitles(at: seconds)
+            let replayText = isReplaying ? session.replaySubtitleText(at: seconds) : nil
+            let replayPicture = isReplaying ? session.replaySubtitlePicture(at: seconds) : nil
+            let hasReplayLine = replayText != nil || replayPicture != nil
+            subtitles.text = hasReplayLine ? replayText : session.subtitleText(at: seconds)
+            subtitles.picture = hasReplayLine ? replayPicture : session.subtitlePicture(at: seconds)
+            let placed = hasReplayLine ? [] : session.placedSubtitles(at: seconds)
+            if subtitles.placed != placed { subtitles.placed = placed }
+            let videoSize = session.player.currentItem?.presentationSize ?? .zero
+            if subtitles.videoSize != videoSize { subtitles.videoSize = videoSize }
             updateSkipAction(at: seconds)
             if menuSignature != currentSignature { updateMenus() }
             updateUpNext(at: seconds)
@@ -659,13 +699,14 @@ struct TVPlayerController: UIViewControllerRepresentable {
             session.loadReplayCues()
         }
 
-        private func replaySubtitleText(at seconds: TimeInterval) -> String? {
-            guard let until = replayUntil else { return nil }
+        /// Whether a replay's subtitles are showing at `seconds`, ending the replay once it's past.
+        private func isShowingReplaySubtitles(at seconds: TimeInterval) -> Bool {
+            guard let until = replayUntil else { return false }
             guard seconds < until, session.allowsReplaySubtitles else {
                 replayUntil = nil
-                return nil
+                return false
             }
-            return session.replaySubtitleText(at: seconds)
+            return true
         }
 
         // MARK: Skip

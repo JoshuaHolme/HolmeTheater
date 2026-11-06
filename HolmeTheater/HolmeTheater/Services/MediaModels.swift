@@ -418,9 +418,12 @@ nonisolated struct MediaTrack: Identifiable, Hashable, Sendable, Codable {
     /// Whether the track is in a separate file next to the video rather than inside it.
     let isExternal: Bool
 
-    /// For a text subtitle track: where to fetch it as WebVTT, so the app can show it itself. `nil` for anything
-    /// else, including picture-based subtitles, which only the server can draw (by burning them into the video).
+    /// For a subtitle track the app can draw itself: where to fetch it, in ``format``. `nil` for anything else, such as
+    /// picture-based subtitles other than PGS, which only the server can draw (by burning them into the video).
     var url: URL? = nil
+
+    /// What ``url`` holds. Nil means WebVTT, as for every track saved before this was kept.
+    var format: SubtitleFormat? = nil
 
     /// For a subtitle track: whether it only has the lines that aren't understood otherwise, e.g. foreign speech. Nil
     /// when unknown, as for tracks saved before this was kept.
@@ -432,6 +435,16 @@ nonisolated struct MediaTrack: Identifiable, Hashable, Sendable, Codable {
     }
 
     var id: Int { index }
+}
+
+/// The kinds of subtitle file the app draws itself.
+nonisolated enum SubtitleFormat: String, Hashable, Sendable, Codable {
+    /// Text, which the server converts most text tracks to.
+    case webVTT
+    /// SubStation Alpha text (`.ass` or `.ssa`), as it is: converted, it would lose where its lines go.
+    case ass
+    /// Pictures, as on Blu-ray discs (a `.sup` file), sent as they are: the server can't turn them into text.
+    case pgs
 }
 
 /// What to ask the server for when (re)starting a stream. Nil fields leave the choice to the server.

@@ -551,12 +551,32 @@ struct SubtitleOverlay: View {
     /// The text size setting, as a factor on the usual size: the subtitles follow it, up to a point.
     @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
 
+    /// The size of the whole screen, which pictures are kept on.
+    @State private var screenSize: CGSize = .zero
+
+    private var fontSize: CGFloat { max(14, frame.height * 0.055) * min(textScale, 1.6) }
+
     var body: some View {
         Color.clear
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { screenSize = $0 }
+            .overlay(alignment: .topLeading) {
+                // A track of pictures is drawn where the picture says, scaled with the video.
+                if let picture = session.subtitlePicture(at: model.currentTime) {
+                    let rect = picture.rect(onVideo: frame, within: CGRect(origin: .zero, size: screenSize))
+                    Image(decorative: picture.image, scale: 1)
+                        .resizable()
+                        .frame(width: rect.width, height: rect.height)
+                        .offset(x: rect.minX, y: rect.minY)
+                }
+            }
+            // Each kind in an overlay of its own: sharing one, the placed lines stopped the others being drawn.
+            .overlay(alignment: .topLeading) {
+                PlacedSubtitlesView(cues: session.placedSubtitles(at: model.currentTime), frame: frame, fontSize: fontSize, shadowRadius: 4)
+            }
             .overlay(alignment: .topLeading) {
                 if let text = session.subtitleText(at: model.currentTime) {
                     Text(text)
-                        .font(.system(size: max(14, frame.height * 0.055) * min(textScale, 1.6), weight: .semibold))
+                        .font(.system(size: fontSize, weight: .semibold))
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.white)
                         .shadow(color: .black, radius: 2)

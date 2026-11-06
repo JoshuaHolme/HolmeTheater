@@ -728,13 +728,28 @@ actor JellyfinMediaService: MediaService {
                 guard stream.type == type, let index = stream.index else { return nil }
                 let title = stream.displayTitle ?? stream.title ?? stream.language ?? String(localized: "Track \(index)")
                 // Text subtitles are fetched as WebVTT and drawn by the app (see `SubtitleOverlay`): the player's
-                // own HLS subtitles drift out of step with the speech.
-                let subtitleURL = type == .subtitle && stream.isTextSubtitleStream == true
-                    ? client.url(path: "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.vtt")
-                        .map { Self.addingAccessToken(client.accessToken, to: $0) }
-                    : nil
+                // own HLS subtitles drift out of step with the speech. PGS pictures are fetched as they are, which the
+                // server (10.9 and later) only offers for a track it's sending separately; an older one burns them in.
+                // SubStation Alpha is fetched as it is too (as the web client does), since its WebVTT leaves out the
+                // picture size its positions are measured on and the alignment its styles give.
+                var subtitlePath: String?
+                var format: SubtitleFormat?
+                let codec = stream.codec?.lowercased()
+                if type == .subtitle, stream.isTextSubtitleStream == true, let codec, codec == "ass" || codec == "ssa" {
+                    subtitlePath = "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.\(codec)"
+                    format = .ass
+                } else if type == .subtitle, stream.isTextSubtitleStream == true {
+                    subtitlePath = "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.vtt"
+                    format = .webVTT
+                } else if type == .subtitle, codec == "pgssub", stream.deliveryMethod == .external {
+                    subtitlePath = stream.deliveryURL ?? "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.pgssub"
+                    format = .pgs
+                }
+                let subtitleURL = subtitlePath
+                    .flatMap { client.url(path: $0) }
+                    .map { Self.addingAccessToken(client.accessToken, to: $0) }
                 return MediaTrack(index: index, title: title, isExternal: stream.isExternal == true, url: subtitleURL,
-                                  isForced: type == .subtitle ? stream.isForced : nil)
+                                  format: format, isForced: type == .subtitle ? stream.isForced : nil)
             }
         }
 
@@ -913,7 +928,10 @@ actor JellyfinMediaService: MediaService {
             SubtitleProfile(format: "subrip", method: .external),
             SubtitleProfile(format: "ass", method: .external),
             SubtitleProfile(format: "ssa", method: .external),
-            SubtitleProfile(format: "mov_text", method: .external)
+            SubtitleProfile(format: "mov_text", method: .external),
+            // Pictures, which the server can't make text of. Burning them in instead means re-encoding the video, which
+            // is slow to start and leaves the app nothing to adjust the timing of. The app draws them (see `PGS`).
+            SubtitleProfile(format: "pgssub", method: .external)
         ],
         transcodingProfiles: [
             TranscodingProfile(
