@@ -532,10 +532,16 @@ final class PlaybackSession {
     /// has closed for real (rather than being rebuilt for a new window shape), so playback stops.
     func viewerDisappeared() {
         viewers = max(0, viewers - 1)
+        #if os(tvOS)
+        // The window never changes shape here, so there's no rebuild to wait out: stop at once, or the sound carries on
+        // for a moment after the player has gone.
+        if viewers == 0 { stop(then: onStop) }
+        #else
         Task {
             try? await Task.sleep(for: .seconds(1))
             if viewers == 0 { stop(then: onStop) }
         }
+        #endif
     }
 
     // MARK: Quality and tracks
