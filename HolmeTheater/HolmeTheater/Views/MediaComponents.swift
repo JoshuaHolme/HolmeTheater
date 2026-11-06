@@ -772,6 +772,12 @@ struct MediaShelf: View {
     /// Whether there's more behind the shelf than it shows. Only then does it end with a See All card.
     var hasMore = true
 
+    /// How far the row's scroll view reaches past the shelf's sides, which its content is padded in by to match. For a shelf
+    /// that sits inside the screen's safe areas: the cards aren't clipped there, so they show out to the screen's edge, but a
+    /// lazy row stops drawing a card once it leaves the scroll view's own frame, which would be the safe area's edge. So
+    /// cards would vanish while still on screen. Reaching out to the screen's edge keeps them until they've gone.
+    var bleed: CGFloat = 0
+
     /// Menu links to leave out, for a shelf that's inside the screen they lead to.
     var omitting: Set<RelatedLink> = []
 
@@ -818,7 +824,9 @@ struct MediaShelf: View {
                     #endif
                 }
                 .padding(.horizontal, Layout.contentInset)
+                .padding(.horizontal, bleed)
             }
+            .padding(.horizontal, -bleed)
             .scrollIndicators(.hidden)
             // Lets a focused card lift and grow past the edge of the scroll view.
             .scrollClipDisabled()

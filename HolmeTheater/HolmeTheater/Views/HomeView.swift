@@ -127,7 +127,7 @@ struct HomeView: View {
                                 #endif
                             }
                             #if os(tvOS)
-                            shelvesSection(data.shelves)
+                            shelvesSection(data.shelves, bleed: max(safeArea.leading, safeArea.trailing))
                                 // The carousel is as wide as the whole screen, which stretches the column past the safe areas.
                                 // Without this the rows were that wide too, and scrolled to their ends with the last card
                                 // still beyond the screen's edge.
@@ -212,10 +212,10 @@ struct HomeView: View {
 
     #if os(tvOS)
     /// The shelves, starting a little way in so the first heading clears the artwork's bottom edge.
-    private func shelvesSection(_ shelves: [Shelf]) -> some View {
+    private func shelvesSection(_ shelves: [Shelf], bleed: CGFloat) -> some View {
         LazyVStack(alignment: .leading, spacing: Layout.shelfSpacing) {
             ForEach(shelves) { shelf in
-                self.shelf(shelf)
+                self.shelf(shelf, bleed: bleed)
             }
         }
         // Close under the artwork's edge: the heading and the tops of the first cards show over the artwork, with about as
@@ -239,7 +239,7 @@ struct HomeView: View {
 
     /// A shelf whose heading opens `destination`'s full list. Its posters play here, and its watch-state
     /// actions reload the whole screen.
-    private func shelf(_ shelf: Shelf) -> some View {
+    private func shelf(_ shelf: Shelf, bleed: CGFloat = 0) -> some View {
         let destination = shelf.destination
         return MediaShelf(
             title: destination.title,
@@ -247,6 +247,7 @@ struct HomeView: View {
             destination: destination,
             isWide: Self.usesWideCards(destination),
             hasMore: shelf.hasMore,
+            bleed: bleed,
             onChange: reload,
             navigation: ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
         )
