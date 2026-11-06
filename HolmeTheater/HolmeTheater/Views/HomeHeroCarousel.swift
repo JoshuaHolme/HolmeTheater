@@ -32,6 +32,19 @@ enum HeroLayout {
     /// The height of the button row.
     static var buttonRowHeight: CGFloat { 70 }
 
+    /// How much faster than the page the carousel leaves as the page scrolls up (tvOS), as a share of the scrolling: 0.76
+    /// makes it go 1.76 times as fast. The shelves move with the page and the artwork pulls away above them, so the first
+    /// shelf ends up standing apart from the carousel, with a gap between them, rather than hanging off its edge. At rest
+    /// the shelf rises 200 points or so over the artwork; this has to take back that much and leave a gap, over the
+    /// roughly 335 points the page scrolls to bring the shelf into view. The gap comes to about 56 points from the
+    /// carousel's edge to the heading, as measured in the Apple TV app's home screen.
+    static var parallaxLead: CGFloat { 0.76 }
+
+    /// How far the page scrolls, in points, over which the carousel gets that extra speed. It's about what it takes to bring
+    /// the first shelf into view, which is when the gap is made. Past that the carousel moves with the page, keeping the
+    /// gap, so it stays on screen above the shelves rather than running off the top and leaving the space it filled empty.
+    static var parallaxTravel: CGFloat { 335 }
+
     /// How much of the carousel's bottom edge the first shelf rises over, so the shelf's heading and the tops of its
     /// cards show over the artwork at rest, as in the Apple TV app. Only tvOS does this; the carousel keeps its
     /// details and page dots above this much of its bottom.
@@ -280,6 +293,10 @@ struct HomeHeroCarousel<Header: View>: View {
                     if direction == .right { stepPage(1) }
                 }
             }
+            // As wide as the screen, not just the buttons, so up from a card anywhere along the shelf below reaches them.
+            // The section is what the focus engine looks for above a card, and one only as wide as the buttons was above
+            // just the first card (and barely the second).
+            .frame(maxWidth: .infinity, alignment: .leading)
             .tvFocusSection()
             .opacity(contentOpacity)
             .padding(.leading, leading)

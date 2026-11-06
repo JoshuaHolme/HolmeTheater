@@ -49,10 +49,6 @@ struct HomeView: View {
     /// that are showing, so it always matches what's on screen, not from a load that may yet be thrown away.
     @State private var showsHero = false
 
-    /// The artwork of the carousel's current item, which tvOS shows blurred behind the whole page, so the shelves keep the
-    /// hero's colors after it has scrolled away.
-    @State private var heroBackdropURL: URL?
-
     /// The seasonal theme showing, if any.
     private var theme: AppTheme? { appModel.themeSettings.activeTheme }
 
@@ -111,19 +107,27 @@ struct HomeView: View {
                                         height: screenHeight(proxy)
                                     ),
                                     open: { goToItem = $0 },
-                                    play: { playingItem = $0 },
-                                    onSelectionChange: { heroBackdropURL = $0.backdropURL ?? $0.posterURL }
+                                    play: { playingItem = $0 }
                                 ) {
                                     if showsHeader { header.foregroundStyle(.white) }
                                 }
                                 #if os(tvOS)
+                                // Scrolled up, the carousel leaves faster than the page, so the first shelf, which moves with the
+                                // page, comes away from it and stands on its own, with a gap between them. Read here, not in
+                                // the effect, which runs outside the main actor.
+                                .visualEffect { [lead = HeroLayout.parallaxLead, travel = HeroLayout.parallaxTravel] content, proxy in
+                                    let scrolled = max(0, -proxy.frame(in: .scrollView).minY)
+                                    // Only over the first stretch of scrolling, which is when the gap is made. After that the
+                                    // carousel goes with the page, and stays in view above the shelves.
+                                    return content.offset(y: -min(scrolled, travel) * lead)
+                                }
                                 // The first shelf rises over the artwork's bottom edge, so its heading and the tops of its
                                 // cards show over the hero at rest.
                                 .padding(.bottom, -HeroLayout.bottomReserve)
                                 #endif
                             }
                             #if os(tvOS)
-                            shelvesSection(data.shelves, heroSize: CGSize(width: proxy.size.width + safeArea.leading + safeArea.trailing, height: screenHeight(proxy)))
+                            shelvesSection(data.shelves)
                                 // The carousel is as wide as the whole screen, which stretches the column past the safe areas.
                                 // Without this the rows were that wide too, and scrolled to their ends with the last card
                                 // still beyond the screen's edge.
@@ -191,9 +195,8 @@ struct HomeView: View {
     }
 
     #if os(tvOS)
-    /// The shelves, starting a little way in so the first heading clears the artwork's bottom edge, over a reflection of
-    /// the artwork.
-    private func shelvesSection(_ shelves: [Shelf], heroSize: CGSize) -> some View {
+    /// The shelves, starting a little way in so the first heading clears the artwork's bottom edge.
+    private func shelvesSection(_ shelves: [Shelf]) -> some View {
         LazyVStack(alignment: .leading, spacing: Layout.shelfSpacing) {
             ForEach(shelves) { shelf in
                 self.shelf(shelf)
@@ -202,43 +205,6 @@ struct HomeView: View {
         // Close under the artwork's edge: the heading and the tops of the first cards show over the artwork, with about as
         // much of them as the Apple TV app's.
         .padding(.top, 12)
-        .background(alignment: .top) { heroReflection(heroSize) }
-    }
-
-    /// How far down the reflection reaches.
-    private static let reflectionHeight: CGFloat = 560
-
-    /// A blurred reflection of the current hero artwork's bottom edge, hanging under the artwork and fading out downward,
-    /// as if the artwork stood on a glossy floor. It's part of the page, so it scrolls up with the artwork and leaves
-    /// with it. The artwork itself isn't touched, and the page's background stays the theme's.
-    @ViewBuilder
-    private func heroReflection(_ heroSize: CGSize) -> some View {
-        if showsHero, let url = heroBackdropURL {
-            CachedAsyncImage(url: url) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().scaledToFill()
-                }
-            }
-            // Laid out exactly as the artwork is, so the reflection lines up with it, then turned upside down.
-            .frame(width: heroSize.width, height: heroSize.height)
-            .clipped()
-            .scaleEffect(y: -1)
-            // Only the part next to the artwork's edge, which is the top of the upside-down copy.
-            .frame(width: heroSize.width, height: Self.reflectionHeight, alignment: .top)
-            .clipped()
-            .blur(radius: 24)
-            .opacity(0.6)
-            .mask(LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom))
-            .ignoresSafeArea(edges: .horizontal)
-            // The shelves start above the artwork's bottom edge (they rise over it), so this moves the reflection down to
-            // that edge. Starting higher, it would cover the bottom of the artwork.
-            .offset(y: HeroLayout.bottomReserve - Layout.shelfSpacing)
-            .id(url)
-            .transition(.opacity)
-            .animation(.easeInOut(duration: 0.6), value: url)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
     }
     #endif
 
