@@ -35,6 +35,10 @@ struct AsyncContent<Value, Content: View>: View {
     /// owns the pull to refresh, so it isn't also attached to the scroll views inside.
     var pullsToRefresh = true
 
+    /// The height of the spinner's frame while loading, for a view that knows better than its container where the
+    /// middle is, e.g. one that runs under the safe area. Nil fills the container.
+    var loadingHeight: CGFloat?
+
     /// Whether the error page, when the device is offline, links to the Downloads tab.
     var offersDownloads = false
 
@@ -53,8 +57,16 @@ struct AsyncContent<Value, Content: View>: View {
         Group {
             switch phase {
             case .loading:
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let loadingHeight {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: loadingHeight)
+                } else {
+                    // Filling the container, which is the visible area even inside a scroll view, where a
+                    // maxHeight of infinity would only shrink to the spinner and leave it at the top.
+                    ProgressView()
+                        .containerRelativeFrame([.horizontal, .vertical])
+                }
             case .loaded(let value):
                 content(value)
             case .failed(let message):

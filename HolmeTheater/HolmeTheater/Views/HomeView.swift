@@ -96,7 +96,7 @@ struct HomeView: View {
 
                     // Loads inside the scroll view, below the header, so the profile button in the bar stays
                     // reachable (e.g. to sign out) even if loading fails.
-                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, offersDownloads: true) { data in
+                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, loadingHeight: loadingHeight(proxy), offersDownloads: true) { data in
                         HomeColumn {
                             if !data.hero.isEmpty {
                                 HomeHeroCarousel(
@@ -162,6 +162,17 @@ struct HomeView: View {
         #endif
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: reload) }
+    }
+
+    /// The height to center the loading spinner in. On tvOS the page starts at the top edge of the screen with nothing
+    /// above it, so the whole screen's height puts the spinner in the middle. Elsewhere the header sits above it, so the
+    /// spinner fills what's left of the container.
+    private func loadingHeight(_ proxy: GeometryProxy) -> CGFloat? {
+        #if os(tvOS)
+        screenHeight(proxy)
+        #else
+        nil
+        #endif
     }
 
     /// The height of the whole screen, safe areas included. The carousel on tvOS is that tall.
