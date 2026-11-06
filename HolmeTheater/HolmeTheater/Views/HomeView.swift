@@ -172,6 +172,22 @@ struct HomeView: View {
         #endif
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: reload) }
+        // Coming back from an item's page, the shelves are loaded again, so what was changed there (marked watched, a
+        // favorite, progress made by playing from it) shows at once. The screen below a pushed page doesn't reliably load
+        // again by itself when it's uncovered.
+        .onChange(of: goToItem) { old, new in
+            guard old != nil, new == nil else { return }
+            reload()
+        }
+        // The player reloads the shelves itself once the server has the final position, but that depends on it getting to say
+        // so. Whenever it closes, they're loaded again a moment later too, so what was watched shows without leaving the tab.
+        .onChange(of: playingItem) { old, new in
+            guard old != nil, new == nil else { return }
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                reload()
+            }
+        }
     }
 
     /// The height to center the loading spinner in. On tvOS the page starts at the top edge of the screen with nothing
