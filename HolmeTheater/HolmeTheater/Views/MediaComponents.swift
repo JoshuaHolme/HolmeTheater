@@ -266,6 +266,7 @@ extension View {
     func mediaNavigationDestinations() -> some View {
         navigationDestination(for: MediaItem.self) { ItemDetailView(item: $0) }
             .navigationDestination(for: Library.self) { LibraryView(library: $0) }
+            .navigationDestination(for: SortedLibrary.self) { LibraryView(library: $0.library, sort: $0.sort) }
             .navigationDestination(for: Genre.self) { GenreView(genre: $0) }
             .navigationDestination(for: ShelfDestination.self) { ShelfListView(destination: $0) }
     }
@@ -542,6 +543,9 @@ struct MediaShelf: View {
     /// Whether the cards are widescreen (for extras, which have a still rather than a poster) instead of posters.
     var isWide = false
 
+    /// Whether there's more behind the shelf than it shows. Only then does it end with a See All card.
+    var hasMore = true
+
     /// Menu links to leave out, for a shelf that's inside the screen they lead to.
     var omitting: Set<RelatedLink> = []
 
@@ -636,12 +640,16 @@ struct MediaShelf: View {
     /// isn't an extra stop for focus above every row.
     @ViewBuilder
     private var seeAllCard: some View {
-        if onHeadingTap != nil || destination != nil {
+        if hasMore, onHeadingTap != nil || destination != nil {
             // Exactly the size of a card's artwork, at the top of the row, so it lines up with the posters beside it.
+            // Opaque, so nothing behind the row shows through it.
+            // Given its width and height outright, so the row's scroll width counts all of it. Worked out from an aspect
+            // ratio, the card was laid out narrower than it drew, and the row stopped scrolling with its end off screen.
+            let width = isWide ? Layout.wideCardWidth : Layout.posterWidth
+            let height = width / (isWide ? 16.0 / 9.0 : 2.0 / 3.0)
             let card = RoundedRectangle(cornerRadius: 12)
-                .fill(.quaternary)
-                .aspectRatio(isWide ? 16.0 / 9.0 : 2.0 / 3.0, contentMode: .fit)
-                .frame(width: isWide ? Layout.wideCardWidth : Layout.posterWidth)
+                .fill(Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1) : UIColor(white: 0.88, alpha: 1) }))
+                .frame(width: width, height: height)
                 .overlay {
                     VStack(spacing: 12) {
                         Image(systemName: "chevron.right.circle")
@@ -656,6 +664,10 @@ struct MediaShelf: View {
 
             if let onHeadingTap {
                 Button(action: onHeadingTap) { card }
+                    .cardLinkStyle()
+            } else if let sortedLibrary = destination?.sortedLibrary {
+                // A slice of a library: the rest of it is on the library's page, in the shelf's order.
+                NavigationLink(value: sortedLibrary) { card }
                     .cardLinkStyle()
             } else if let destination {
                 NavigationLink(value: destination) { card }

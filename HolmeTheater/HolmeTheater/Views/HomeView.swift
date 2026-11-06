@@ -71,6 +71,8 @@ struct HomeView: View {
         let id: String
         let destination: ShelfDestination
         let items: [MediaItem]
+        /// Whether there's more behind the shelf than the items shown, which is when it ends with a See All card.
+        let hasMore: Bool
     }
 
     private struct HomeData {
@@ -122,9 +124,13 @@ struct HomeView: View {
                             }
                             #if os(tvOS)
                             shelvesSection(data.shelves, heroSize: CGSize(width: proxy.size.width + safeArea.leading + safeArea.trailing, height: screenHeight(proxy)))
+                                // The carousel is as wide as the whole screen, which stretches the column past the safe areas.
+                                // Without this the rows were that wide too, and scrolled to their ends with the last card
+                                // still beyond the screen's edge.
+                                .frame(width: proxy.size.width, alignment: .leading)
                             #else
                             ForEach(data.shelves) { shelf in
-                                self.shelf(shelf.destination, items: shelf.items)
+                                self.shelf(shelf)
                             }
                             #endif
                             if data.shelves.isEmpty {
@@ -190,7 +196,7 @@ struct HomeView: View {
     private func shelvesSection(_ shelves: [Shelf], heroSize: CGSize) -> some View {
         LazyVStack(alignment: .leading, spacing: Layout.shelfSpacing) {
             ForEach(shelves) { shelf in
-                self.shelf(shelf.destination, items: shelf.items)
+                self.shelf(shelf)
             }
         }
         // Close under the artwork's edge: the heading and the tops of the first cards show over the artwork, with about as
@@ -251,12 +257,14 @@ struct HomeView: View {
 
     /// A shelf whose heading opens `destination`'s full list. Its posters play here, and its watch-state
     /// actions reload the whole screen.
-    private func shelf(_ destination: ShelfDestination, items: [MediaItem]) -> some View {
-        MediaShelf(
+    private func shelf(_ shelf: Shelf) -> some View {
+        let destination = shelf.destination
+        return MediaShelf(
             title: destination.title,
-            items: items,
+            items: shelf.items,
             destination: destination,
             isWide: Self.usesWideCards(destination),
+            hasMore: shelf.hasMore,
             onChange: reload,
             navigation: ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
         )
@@ -357,7 +365,7 @@ struct HomeView: View {
                 group.addTask {
                     async let added = wantsAdded ? service.recentlyAddedItems(in: library) : []
                     // A failure here only costs this shelf; the rest of the screen still loads.
-                    async let released = wantsReleased ? service.recentlyReleasedPage(in: library, offset: 0, limit: Self.shelfLimit) : []
+                    async let released = wantsReleased ? service.recentlyReleasedPage(in: library, offset: 0, limit: Self.shelfLimit + 1) : []
                     return (index, try await added, (try? await released) ?? [])
                 }
             }
@@ -369,7 +377,8 @@ struct HomeView: View {
         let fetched = shelves.sorted { $0.0 < $1.0 }
         let resumeItems = try await resume
         let nextUpItems = try await nextUp
-        let onThisDay = Array((await onThisDayItems ?? []).prefix(Self.shelfLimit))
+        let allOnThisDay = await onThisDayItems ?? []
+        let onThisDay = Array(allOnThisDay.prefix(Self.shelfLimit))
 
         let byLibrary = Dictionary(uniqueKeysWithValues: fetched.map { (libraries[$0.0].id, (added: $0.1, released: $0.2)) })
 
@@ -378,18 +387,23 @@ struct HomeView: View {
         for section in sections {
             switch section {
             case .continueWatching:
-                homeShelves.append(Shelf(id: "continue", destination: combined ? .continueWatchingAndUpNext : .continueWatching, items: resumeItems))
+                // A full page may have another behind it.
+                homeShelves.append(Shelf(id: "continue", destination: combined ? .continueWatchingAndUpNext : .continueWatching, items: resumeItems, hasMore: resumeItems.count >= Self.shelfLimit))
             case .nextUp:
-                homeShelves.append(Shelf(id: "nextUp", destination: .nextUp, items: nextUpItems))
+                homeShelves.append(Shelf(id: "nextUp", destination: .nextUp, items: nextUpItems, hasMore: nextUpItems.count >= Self.shelfLimit))
             case .onThisDay:
-                homeShelves.append(Shelf(id: "onThisDay", destination: .onThisDay, items: onThisDay))
+                homeShelves.append(Shelf(id: "onThisDay", destination: .onThisDay, items: onThisDay, hasMore: allOnThisDay.count > Self.shelfLimit))
             case .recentlyReleased:
                 for library in settings.ordered(libraries, for: .recentlyReleased) where settings.includes(library, in: .recentlyReleased) {
-                    homeShelves.append(Shelf(id: "released-\(library.id)", destination: .recentlyReleased(library), items: byLibrary[library.id]?.released ?? []))
+                    // One more than the shelf shows was asked for, to know whether there's more.
+                    let released = byLibrary[library.id]?.released ?? []
+                    homeShelves.append(Shelf(id: "released-\(library.id)", destination: .recentlyReleased(library), items: Array(released.prefix(Self.shelfLimit)), hasMore: released.count > Self.shelfLimit))
                 }
             case .recentlyAdded:
                 for library in settings.ordered(libraries, for: .recentlyAdded) where settings.includes(library, in: .recentlyAdded) {
-                    homeShelves.append(Shelf(id: "added-\(library.id)", destination: .recentlyAdded(library), items: byLibrary[library.id]?.added ?? []))
+                    // The server's latest-media list can't be asked for one more, so a full one may have more behind it.
+                    let added = byLibrary[library.id]?.added ?? []
+                    homeShelves.append(Shelf(id: "added-\(library.id)", destination: .recentlyAdded(library), items: added, hasMore: added.count >= Self.shelfLimit))
                 }
             }
         }

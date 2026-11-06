@@ -25,6 +25,16 @@ enum ShelfDestination: Hashable {
     /// - omitsShow: Whether the list's menus leave out "Go to Show", because it was opened from the show's page.
     case episodes(MediaItem, omitsShow: Bool)
 
+    /// The library page a shelf's See All card opens, in the order the shelf is in, for the shelves that are a slice of
+    /// one library. Nil for the others, whose See All opens their own list.
+    var sortedLibrary: SortedLibrary? {
+        switch self {
+        case .recentlyAdded(let library): SortedLibrary(library: library, sort: .addedNewest)
+        case .recentlyReleased(let library): SortedLibrary(library: library, sort: .releasedNewest)
+        default: nil
+        }
+    }
+
     var title: String {
         switch self {
         case .continueWatching: String(localized: "Continue Watching")

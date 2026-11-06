@@ -320,14 +320,24 @@ private struct LibraryCollage: View {
     }
 }
 
+/// A library opened in a particular order, as a home-screen shelf's See All does.
+struct SortedLibrary: Hashable {
+    let library: Library
+    let sort: PosterSort
+}
+
 /// Every item in one library, as a poster grid.
 struct LibraryView: View {
     let library: Library
+
+    /// The order the grid starts in.
+    var sort = PosterSort.nameAscending
+
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
         AsyncContent(load: loadItems) { items in
-            PosterBrowser(items: items)
+            PosterBrowser(items: items, sort: sort)
         }
         .navigationTitle(library.name)
     }

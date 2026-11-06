@@ -5,7 +5,7 @@
 import SwiftUI
 
 /// How a collection of posters is ordered.
-enum PosterSort: CaseIterable, Identifiable {
+enum PosterSort: CaseIterable, Identifiable, Hashable {
     case nameAscending, nameDescending
     case addedNewest, addedOldest
     case releasedNewest, releasedOldest
@@ -120,7 +120,7 @@ private extension MediaItem {
 struct PosterBrowser: View {
     let items: [MediaItem]
 
-    @State private var sort = PosterSort.nameAscending
+    @State private var sort: PosterSort
     @State private var filter = PosterFilter()
 
     /// The items as filtered and sorted, and the genres among them, kept rather than worked out on every redraw.
@@ -128,9 +128,11 @@ struct PosterBrowser: View {
     @State private var visibleItems: [MediaItem]
     @State private var genres: [String]
 
-    init(items: [MediaItem]) {
+    /// - Parameter sort: The order the grid starts in. The viewer can change it from the sort menu.
+    init(items: [MediaItem], sort: PosterSort = .nameAscending) {
         self.items = items
-        _visibleItems = State(initialValue: PosterSort.nameAscending.sorted(items))
+        _sort = State(initialValue: sort)
+        _visibleItems = State(initialValue: sort.sorted(items))
         _genres = State(initialValue: Self.genres(in: items))
     }
 
