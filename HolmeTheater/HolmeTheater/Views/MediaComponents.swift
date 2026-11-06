@@ -747,6 +747,21 @@ struct PosterCard: View {
     }
 }
 
+/// Reports a card's focus to a shelf's owner, if it gave somewhere to report it to.
+private struct CardFocusTracking: ViewModifier {
+    let focus: FocusState<String?>.Binding?
+    let key: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let focus {
+            content.focused(focus, equals: key)
+        } else {
+            content
+        }
+    }
+}
+
 /// Horizontally scrolling row of posters under a heading. Tapping a poster plays its item (or, for a show or
 /// season, opens it).
 ///
@@ -777,6 +792,11 @@ struct MediaShelf: View {
     /// lazy row stops drawing a card once it leaves the scroll view's own frame, which would be the safe area's edge. So
     /// cards would vanish while still on screen. Reaching out to the screen's edge keeps them until they've gone.
     var bleed: CGFloat = 0
+
+    /// Where the cards report having focus (tvOS), so the screen can put it back on one after something else was in front.
+    /// Each card's value is `focusPrefix`, a bar, and the item's ID, so the same item in two shelves isn't confused.
+    var focus: FocusState<String?>.Binding?
+    var focusPrefix = ""
 
     /// Menu links to leave out, for a shelf that's inside the screen they lead to.
     var omitting: Set<RelatedLink> = []
@@ -851,6 +871,7 @@ struct MediaShelf: View {
             cardBody(for: item)
         }
         .cardLinkStyle()
+        .modifier(CardFocusTracking(focus: focus, key: "\(focusPrefix)|\(item.id)"))
         .contextMenu {
             ItemActionButtons(entries: actions?.menuEntries(for: item) ?? [])
         }

@@ -40,6 +40,15 @@ struct HomeView: View {
     /// because shelves sit in a lazy stack, where SwiftUI ignores navigation destinations.
     @State private var goToItem: MediaItem?
 
+    /// Which shelf card has focus (tvOS), as the shelf and the item's ID. Setting it moves focus to that card.
+    @FocusState private var focusedCard: String?
+
+    /// The last shelf card that had focus, to put focus back on when an item's page opened from it is closed. Without this
+    /// the screen has to guess where focus should be after it reloads, and often picks a different card. It's the last
+    /// one, not the one at the moment the page opens, because a card's long-press menu takes focus from it first, so by
+    /// then no card has it.
+    @State private var lastFocusedCard: String?
+
     /// The item a tapped poster is playing; setting it presents the full-screen player. The shelves reload
     /// when it closes, so they show the latest progress.
     @State private var playingItem: MediaItem?
@@ -106,7 +115,9 @@ struct HomeView: View {
                                         width: proxy.size.width + safeArea.leading + safeArea.trailing,
                                         height: screenHeight(proxy)
                                     ),
-                                    open: { goToItem = $0 },
+                                    // From the carousel's button, not a card: coming back, focus belongs on that button, which
+                                    // the system puts it back on, not on whichever card had it last.
+                                    open: { lastFocusedCard = nil; goToItem = $0 },
                                     play: { playingItem = $0 }
                                 ) {
                                     if showsHeader { header.foregroundStyle(.white) }
@@ -175,9 +186,13 @@ struct HomeView: View {
         // Coming back from an item's page, the shelves are loaded again, so what was changed there (marked watched, a
         // favorite, progress made by playing from it) shows at once. The screen below a pushed page doesn't reliably load
         // again by itself when it's uncovered.
+        .onChange(of: focusedCard) { _, card in
+            if let card { lastFocusedCard = card }
+        }
         .onChange(of: goToItem) { old, new in
             guard old != nil, new == nil else { return }
             reload()
+            restoreFocus()
         }
         // The player reloads the shelves itself once the server has the final position, but that depends on it getting to say
         // so. Whenever it closes, they're loaded again a moment later too, so what was watched shows without leaving the tab.
@@ -186,6 +201,20 @@ struct HomeView: View {
             Task {
                 try? await Task.sleep(for: .seconds(1.5))
                 reload()
+            }
+        }
+    }
+
+    /// Puts focus back on the card an item's page was opened from, once the screen has settled after coming back to it and
+    /// after the reload has put its shelves back. Does nothing if that card is gone (watched and so off the shelf).
+    private func restoreFocus() {
+        guard let key = lastFocusedCard else { return }
+        Task {
+            // Twice: the system settles focus on its own pick as the page comes back, and again as the reload puts the
+            // shelves back, so the first try can be undone.
+            for delay in [300, 400] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                if focusedCard != key { focusedCard = key }
             }
         }
     }
@@ -248,6 +277,8 @@ struct HomeView: View {
             isWide: Self.usesWideCards(destination),
             hasMore: shelf.hasMore,
             bleed: bleed,
+            focus: $focusedCard,
+            focusPrefix: shelf.id,
             onChange: reload,
             navigation: ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
         )
