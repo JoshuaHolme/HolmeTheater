@@ -388,7 +388,8 @@ final class PlaybackSession {
     /// from the audio track's name, else the first.
     private var replayTrack: MediaTrack? {
         guard !info.subtitlesBurnedIn else { return nil }
-        let tracks = info.subtitleTracks.filter { $0.url != nil }
+        // Not a forced one: it's the very track that lacks the lines a replay is for.
+        let tracks = info.subtitleTracks.filter { $0.url != nil && !$0.looksForced }
         if let language = info.audioTracks.first(where: { $0.index == audioIndex })?.title.components(separatedBy: " - ").first,
            let match = tracks.first(where: { $0.title.hasPrefix(language) }) {
             return match
@@ -396,9 +397,16 @@ final class PlaybackSession {
         return tracks.first
     }
 
-    /// Fetches the lines for an instant replay, once, unless subtitles are on already.
+    /// Whether an instant replay should show its own subtitles: when the viewer has none on, or only a forced track,
+    /// which leaves out most of what's said. A full track they chose is left to show itself.
+    var allowsReplaySubtitles: Bool {
+        guard let subtitleIndex else { return true }
+        return info.subtitleTracks.first { $0.index == subtitleIndex }?.looksForced == true
+    }
+
+    /// Fetches the lines for an instant replay, once, unless full subtitles are on already.
     func loadReplayCues() {
-        guard subtitleIndex == nil, !didRequestReplayCues, let url = replayTrack?.url else { return }
+        guard allowsReplaySubtitles, !didRequestReplayCues, let url = replayTrack?.url else { return }
         didRequestReplayCues = true
         replayTask = Task {
             guard let (data, _) = try? await Self.subtitleSession.data(from: url), !Task.isCancelled else { return }

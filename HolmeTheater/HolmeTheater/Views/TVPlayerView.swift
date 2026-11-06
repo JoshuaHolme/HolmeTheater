@@ -635,7 +635,8 @@ struct TVPlayerController: UIViewControllerRepresentable {
         private func tick(_ time: CMTime) {
             let seconds = time.seconds.isFinite ? time.seconds : 0
             session.loadReplayCues()
-            subtitles.text = session.subtitleText(at: seconds) ?? replaySubtitleText(at: seconds)
+            // A replay's full subtitles take over from a forced track's, going back to it afterwards.
+            subtitles.text = replaySubtitleText(at: seconds) ?? session.subtitleText(at: seconds)
             updateSkipAction(at: seconds)
             if menuSignature != currentSignature { updateMenus() }
             updateUpNext(at: seconds)
@@ -652,14 +653,14 @@ struct TVPlayerController: UIViewControllerRepresentable {
         /// plays again, so a line that was missed can be read. A fresh skip back during one carries it on.
         func playerViewController(_ playerViewController: AVPlayerViewController, willResumePlaybackAfterUserNavigatedFrom oldTime: CMTime, to targetTime: CMTime) {
             let (old, target) = (oldTime.seconds, targetTime.seconds)
-            guard session.subtitleIndex == nil, old.isFinite, target.isFinite, (5...15).contains(old - target) else { return }
+            guard session.allowsReplaySubtitles, old.isFinite, target.isFinite, (5...15).contains(old - target) else { return }
             replayUntil = old + 1
             session.loadReplayCues()
         }
 
         private func replaySubtitleText(at seconds: TimeInterval) -> String? {
             guard let until = replayUntil else { return nil }
-            guard seconds < until, session.subtitleIndex == nil else {
+            guard seconds < until, session.allowsReplaySubtitles else {
                 replayUntil = nil
                 return nil
             }

@@ -733,7 +733,8 @@ actor JellyfinMediaService: MediaService {
                     ? client.url(path: "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.vtt")
                         .map { Self.addingAccessToken(client.accessToken, to: $0) }
                     : nil
-                return MediaTrack(index: index, title: title, isExternal: stream.isExternal == true, url: subtitleURL)
+                return MediaTrack(index: index, title: title, isExternal: stream.isExternal == true, url: subtitleURL,
+                                  isForced: type == .subtitle ? stream.isForced : nil)
             }
         }
 

@@ -422,6 +422,15 @@ nonisolated struct MediaTrack: Identifiable, Hashable, Sendable, Codable {
     /// else, including picture-based subtitles, which only the server can draw (by burning them into the video).
     var url: URL? = nil
 
+    /// For a subtitle track: whether it only has the lines that aren't understood otherwise, e.g. foreign speech. Nil
+    /// when unknown, as for tracks saved before this was kept.
+    var isForced: Bool? = nil
+
+    /// Whether this is a forced track, going by the server's flag or, since not every file sets it, the name.
+    var looksForced: Bool {
+        isForced == true || title.localizedCaseInsensitiveContains("forced")
+    }
+
     var id: Int { index }
 }
 
