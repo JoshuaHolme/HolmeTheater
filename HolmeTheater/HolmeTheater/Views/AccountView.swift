@@ -34,6 +34,16 @@ struct AccountView: View {
             }
 
             Section {
+                // The same setting as the player's Autoplay button, so each shows what the other has set.
+                Toggle("Autoplay Next Episode", isOn: Binding(
+                    get: { appModel.playbackSettings.autoPlaysNext },
+                    set: { appModel.playbackSettings.autoPlaysNext = $0 }
+                ))
+            } footer: {
+                Text("When an episode ends, the next one starts by itself after a short countdown. Turn this off to stop at the end instead, with no \"Up Next\" card.")
+            }
+
+            Section {
                 NavigationLink("Home Screen") { HomeSettingsView() }
                 NavigationLink("Themes") { ThemeSettingsView() }
             }

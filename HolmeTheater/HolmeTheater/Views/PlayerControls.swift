@@ -229,7 +229,10 @@ final class PlayerControlsModel {
         pip = controller
     }
 
-    var supportsPictureInPicture: Bool { pip != nil }
+    /// Whether the device does Picture in Picture, which is known from the start. Not whether the controller exists yet:
+    /// that's made once the video's layer is on screen, and isn't observed, so the button waited for something else to
+    /// redraw the controls and then appeared in the middle of playback.
+    var supportsPictureInPicture: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
 
     func togglePictureInPicture() {
         guard let pip else { return }
@@ -957,6 +960,7 @@ struct PlayerControlsView: View {
             qualityMenu
             if session.info.audioTracks.count > 1 { audioMenu }
             if !session.info.subtitleTracks.isEmpty { subtitlesMenu }
+            autoPlayButton
         }
         .padding(.horizontal, 4)
         .glassEffect(.clear.interactive(), in: .capsule)
@@ -1048,6 +1052,21 @@ struct PlayerControlsView: View {
         .menuOrder(.fixed)
         .accessibilityLabel("Subtitles")
         .accessibilityValue(session.info.subtitleTracks.first { $0.index == session.subtitleIndex }?.title ?? String(localized: "Off"))
+    }
+
+    /// Turns the automatic start of the next episode on or off: the same setting as on the Account screen. Always there,
+    /// whatever's playing: it's a preference, and one that appeared only once something had been looked up (the next episode
+    /// comes from the server after playback starts) would pop in late. The filled glyph is on.
+    private var autoPlayButton: some View {
+        Button {
+            session.autoPlaysNext.toggle()
+        } label: {
+            menuGlyph(session.autoPlaysNext ? "play.square.stack.fill" : "play.square.stack")
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Autoplay Next Episode")
+        .accessibilityValue(session.autoPlaysNext ? "On" : "Off")
+        .accessibilityAddTraits(.isToggle)
     }
 
     /// The cap chosen, or the resolution actually playing when there's no cap.

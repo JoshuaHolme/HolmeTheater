@@ -473,6 +473,7 @@ struct TVPlayerController: UIViewControllerRepresentable {
             var subtitleCount: Int
             var audioCount: Int
             var isSwitching: Bool
+            var autoPlaysNext: Bool
         }
 
         init(session: PlaybackSession, service: any MediaService, playNext: @escaping (MediaItem) -> Void, openItem: @escaping (MediaItem) -> Void, close: @escaping () -> Void) {
@@ -744,7 +745,8 @@ struct TVPlayerController: UIViewControllerRepresentable {
                 offset: session.subtitleOffset,
                 subtitleCount: session.info.subtitleTracks.count,
                 audioCount: session.info.audioTracks.count,
-                isSwitching: session.isSwitching
+                isSwitching: session.isSwitching,
+                autoPlaysNext: session.autoPlaysNext
             )
         }
 
@@ -811,6 +813,24 @@ struct TVPlayerController: UIViewControllerRepresentable {
                 }
                 menus.append(UIMenu(title: String(localized: "Quality"), image: UIImage(systemName: "slider.horizontal.3"), children: [auto] + choices))
             }
+
+            // Autoplay: On or Off, which is the setting on the Account screen too. Always there, whatever's playing: it's a
+            // preference, and a button that appears only once something has been looked up (the next episode comes from the
+            // server after playback starts, and isn't found for some shows) would pop in late, or seem not to exist. A menu
+            // like the others (a bare button isn't something this bar is known to handle here), with the filled glyph for on.
+            // It's rebuilt when the setting changes (see the signature), so it also follows a change made on the Account screen.
+            let isOn = session.autoPlaysNext
+            func choice(_ title: String, _ value: Bool) -> UIAction {
+                UIAction(title: title, state: isOn == value ? .on : .off) { [weak self] _ in
+                    self?.session.autoPlaysNext = value
+                    self?.updateMenus()
+                }
+            }
+            menus.append(UIMenu(
+                title: String(localized: "Autoplay Next Episode"),
+                image: UIImage(systemName: isOn ? "play.square.stack.fill" : "play.square.stack"),
+                children: [choice(String(localized: "On"), true), choice(String(localized: "Off"), false)]
+            ))
 
             return menus
         }

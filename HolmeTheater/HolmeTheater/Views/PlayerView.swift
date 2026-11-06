@@ -109,7 +109,7 @@ struct PlayerView: View {
             let info = try await appModel.service.playbackInfo(for: playing, options: PlaybackOptions())
             // Dismissed while the server was thinking.
             guard !Task.isCancelled else { return }
-            let session = PlaybackSession(item: playing, info: info, service: appModel.service)
+            let session = PlaybackSession(item: playing, info: info, service: appModel.service, settings: appModel.playbackSettings)
             session.originID = item.id
             session.onStop = onStop
             appModel.playback = session
@@ -215,8 +215,23 @@ final class PlaybackSession {
     /// The episode that follows this one, for the "Up Next" card. Nil for anything else, or if there isn't one.
     private(set) var nextEpisode: MediaItem?
 
-    /// Whether the viewer has cancelled the automatic start of the next episode.
-    var autoPlayCancelled = false
+    /// Whether the next episode is off the table: the viewer cancelled its automatic start for this episode, or turned
+    /// autoplay off altogether (see ``PlaybackSettings``). Everything that offers or starts the next episode goes by this, so
+    /// the setting turns off the "Up Next" card with it. Setting it only cancels it for this episode.
+    var autoPlayCancelled: Bool {
+        get { cancelledForThisEpisode || !settings.autoPlaysNext }
+        set { cancelledForThisEpisode = newValue }
+    }
+    private var cancelledForThisEpisode = false
+
+    /// Whether the next episode starts by itself, as set on the Account screen or from the player's controls.
+    var autoPlaysNext: Bool {
+        get { settings.autoPlaysNext }
+        set { settings.autoPlaysNext = newValue }
+    }
+
+    /// The setting behind ``autoPlaysNext``, shared with the rest of the app.
+    @ObservationIgnored private let settings: PlaybackSettings
 
     /// The intro, credits and so on the server has marked, which the player offers to skip.
     private(set) var segments: [MediaSegment] = []
@@ -254,10 +269,17 @@ final class PlaybackSession {
     @ObservationIgnored private var keepAwake: NSKeyValueObservation?
     #endif
 
-    init(item: MediaItem, info: PlaybackInfo, service: any MediaService) {
+    /// - Parameter settings: How playback behaves. The default is one for previews, which doesn't touch the real settings.
+    init(
+        item: MediaItem,
+        info: PlaybackInfo,
+        service: any MediaService,
+        settings: PlaybackSettings = PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard)
+    ) {
         self.item = item
         self.info = info
         self.service = service
+        self.settings = settings
         self.audioIndex = info.audioIndex
         self.subtitleIndex = info.subtitleIndex
         self.subtitleOffset = UserDefaults.standard.double(forKey: Self.offsetKey(for: item))
