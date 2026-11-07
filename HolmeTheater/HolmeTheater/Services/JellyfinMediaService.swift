@@ -214,7 +214,12 @@ actor JellyfinMediaService: MediaService {
             case .music: .music
             default: .other
             }
-            return Library(id: id, name: name, kind: kind)
+            let role: Library.Role = switch dto.collectionType {
+            case .boxsets: .collections
+            case .playlists: .playlists
+            default: .library
+            }
+            return Library(id: id, name: name, kind: kind, role: role)
         }
     }
 

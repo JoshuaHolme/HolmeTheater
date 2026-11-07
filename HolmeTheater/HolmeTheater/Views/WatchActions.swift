@@ -195,7 +195,12 @@ struct WatchActions {
         let start = { state.wrappedValue.downloadPrompt = DownloadPrompt.start(item, downloads: downloads) }
         let confirmRemoval = { state.wrappedValue.downloadPrompt = .remove(item) }
 
-        switch downloads.status(of: item) {
+        // Where the download is, not how far along: so the menu isn't rebuilt with every tick of progress, which makes an
+        // open one flash.
+        let remaining = entry(.download, String(localized: "Download Remaining Episodes"), "arrow.down.circle", start)
+        let hasMore = downloads.hasEpisodesToDownload(item)
+
+        switch downloads.stage(of: item) {
         case .none:
             return [entry(.download, isContainer ? String(localized: "Download All Episodes") : String(localized: "Download"), "arrow.down.circle", start)]
         case .partial:
@@ -204,16 +209,15 @@ struct WatchActions {
                 entry(.removeDownload, String(localized: "Remove Downloads"), "trash", confirmRemoval)
             ]
         case .downloading:
-            return [
-                entry(.pauseDownload, String(localized: "Pause Download"), "pause.circle") { downloads.pause(item) },
+            return [entry(.pauseDownload, String(localized: "Pause Download"), "pause.circle") { downloads.pause(item) }]
+                // A show with one season on its way can still have the rest downloaded.
+                + (hasMore ? [remaining] : [])
                 // Only what's unfinished: a show's or season's finished episodes stay.
-                entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }
-            ]
+                + [entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }]
         case .paused:
-            return [
-                entry(.resumeDownload, String(localized: "Resume Download"), "play.circle") { downloads.resume(item) },
-                entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }
-            ]
+            return [entry(.resumeDownload, String(localized: "Resume Download"), "play.circle") { downloads.resume(item) }]
+                + (hasMore ? [remaining] : [])
+                + [entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }]
         case .downloaded:
             return [entry(.removeDownload, isContainer ? String(localized: "Remove Downloads") : String(localized: "Remove Download"), "trash", confirmRemoval)]
         }

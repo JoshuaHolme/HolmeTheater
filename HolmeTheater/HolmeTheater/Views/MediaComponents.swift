@@ -368,6 +368,9 @@ struct ItemCaption: View {
     /// Lines to show instead of the item's usual caption.
     var lines: [String]?
 
+    /// How many lines the title gets before it's cut off, where a title is worth the room. Nil for the usual one.
+    var titleLineLimit: Int?
+
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
@@ -379,7 +382,7 @@ struct ItemCaption: View {
                     .font(index == 0 ? .subheadline.weight(.medium) : .caption)
                     .foregroundStyle(index == 0 ? .primary : .secondary)
                     // Cards are a fixed width, so at accessibility sizes a one-line title would be cut to a few letters.
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : (index == 0 ? titleLineLimit ?? 1 : 1))
             }
 
             ForEach(lines.count..<max(lines.count, reservedLines), id: \.self) { _ in
@@ -393,16 +396,21 @@ struct ItemCaption: View {
 
 /// The green checkmark in the corner of watched artwork.
 struct WatchedBadge: View {
+    /// The badge's size, which the download badge shares.
+    static var font: Font {
+        #if os(tvOS)
+        // `.title` is 76 points here, which on a 260-point poster is a badge a third of its width. This is closer to the
+        // Apple TV app's.
+        .system(size: 36)
+        #else
+        // Large enough to spot at a glance on a busy poster.
+        .title
+        #endif
+    }
+
     var body: some View {
         Image(systemName: "checkmark.circle.fill")
-            #if os(tvOS)
-            // `.title` is 76 points here, which on a 260-point poster is a badge a third of its width. This is closer to the
-            // Apple TV app's.
-            .font(.system(size: 36))
-            #else
-            // Large enough to spot at a glance on a busy poster.
-            .font(.title)
-            #endif
+            .font(Self.font)
             // It sits on artwork that doesn't grow with the text (a 130pt poster), so at accessibility sizes it
             // would cover most of the poster.
             .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -717,6 +725,9 @@ private struct PosterProgressBar: View {
 struct PosterCard: View {
     let item: MediaItem
 
+    /// How many lines the title gets before it's cut off.
+    var titleLineLimit: Int?
+
     var body: some View {
         VStack(alignment: .leading, spacing: Layout.captionGap) {
             ArtworkView(url: item.posterURL, aspectRatio: 2.0 / 3.0)
@@ -740,7 +751,7 @@ struct PosterCard: View {
                 .focusHighlight()
 
             // Three lines is the most any item shows (an episode); reserving them keeps every card the same height.
-            ItemCaption(item: item, reservedLines: 3)
+            ItemCaption(item: item, reservedLines: 3, titleLineLimit: titleLineLimit)
         }
         // Make the whole card tappable, including the gaps between the artwork and text.
         .contentShape(Rectangle())

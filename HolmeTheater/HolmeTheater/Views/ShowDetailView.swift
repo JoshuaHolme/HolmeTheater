@@ -218,6 +218,12 @@ struct ShowDetailView: View {
         }
         #endif
         .task(id: reloadCount) { await load() }
+        // How many seasons the show has, for whether an episode links to its season.
+        .task {
+            if isEpisode, let seriesID = item.seriesID {
+                SeasonCountCache.shared.prefetch(seriesID: seriesID, service: appModel.service)
+            }
+        }
         .pullToRefresh { await load() }
         .task(id: current.people.map(\.id)) { await preloadCastPortraits() }
         .fullScreenCover(item: $playingItem) {
@@ -238,7 +244,50 @@ struct ShowDetailView: View {
         #endif
     }
 
+    /// Whether there's a season page to go to: an episode's season, unless its show has only the one, whose page would be the
+    /// show's own. The count is fetched if it isn't known yet, and the link waits for it.
+    private var showsSeasonLink: Bool {
+        guard isEpisode, item.seasonID != nil, let seriesID = item.seriesID,
+              let count = SeasonCountCache.shared.count(ofSeries: seriesID) else { return false }
+        return count > 1
+    }
+
+    /// Whether there's a show page to go to: from an episode or a season.
+    private var showsShowLink: Bool { (isEpisode || isSeason) && item.seriesID != nil }
+
+    /// Opens the season or show with this ID, or shows why it couldn't.
+    private func openRelated(id: String) {
+        Task {
+            do {
+                openedShow = try await appModel.service.item(id: id)
+            } catch {
+                watchState.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     #if os(tvOS)
+    /// "Go to Season" and "Go to Show", as round buttons beside the others, where they apply.
+    @ViewBuilder
+    private var goToButtons: some View {
+        if showsSeasonLink, let seasonID = item.seasonID {
+            Button { openRelated(id: seasonID) } label: {
+                Image(systemName: "square.stack")
+                    .font(Self.heroIconFont)
+            }
+            .heroCircleButton()
+            .accessibilityLabel("Go to Season")
+        }
+        if showsShowLink, let seriesID = item.seriesID {
+            Button { openRelated(id: seriesID) } label: {
+                Image(systemName: "tv")
+                    .font(Self.heroIconFont)
+            }
+            .heroCircleButton()
+            .accessibilityLabel("Go to Show")
+        }
+    }
+
     /// Opens the sheet with the full description and everything else known about the show.
     private var detailsButton: some View {
         Button { showsDetails = true } label: {
@@ -738,6 +787,7 @@ struct ShowDetailView: View {
             trailerButton(showsTitle: showsTrailerTitle)
             #if os(tvOS)
             detailsButton
+            goToButtons
             // There's no navigation bar on tvOS, so the favorite and watched buttons sit here. On iOS they're in
             // the toolbar (see `toolbarButtons`).
             favoriteButton
@@ -803,6 +853,20 @@ struct ShowDetailView: View {
     @ToolbarContentBuilder
     private var toolbarButtons: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
+            if showsSeasonLink || showsShowLink {
+                Menu {
+                    if showsSeasonLink, let seasonID = item.seasonID {
+                        Button("Go to Season", systemImage: "square.stack") { openRelated(id: seasonID) }
+                    }
+                    if showsShowLink, let seriesID = item.seriesID {
+                        Button("Go to Show", systemImage: "tv") { openRelated(id: seriesID) }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("Go To")
+            }
+
             Button {
                 toggleFavorite()
             } label: {

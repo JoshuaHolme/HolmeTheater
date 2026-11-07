@@ -19,7 +19,8 @@ struct DownloadedBadge: View {
     var body: some View {
         if downloads?.isDownloaded(item) == true {
             Image(systemName: "arrow.down.circle.fill")
-                .font(.title)
+                // The same size as the watched badge, which shares the artwork's corner.
+                .font(WatchedBadge.font)
                 // It sits on artwork that doesn't grow with the text, like the watched badge.
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                 .foregroundStyle(.white, .blue)
@@ -45,7 +46,30 @@ struct DownloadedRowIcon: View {
     }
 }
 
+/// How wide the artwork in a download's row is: a widescreen still, or a poster in the same space. Bigger on Apple TV, which is
+/// seen from across a room.
+private enum DownloadRowArt {
+    #if os(tvOS)
+    static let still: CGFloat = 176
+    #else
+    static let still: CGFloat = 86
+    #endif
+    static var poster: CGFloat { still / 2 }
+}
+
 extension View {
+    /// The pause, resume and retry buttons at the end of a download's row: on Apple TV a round button, which lights up as a
+    /// circle when focused (the borderless style puts a square behind its icon); elsewhere the plain borderless button.
+    @ViewBuilder
+    fileprivate func roundRowButton() -> some View {
+        #if os(tvOS)
+        buttonStyle(.bordered)
+            .buttonBorderShape(.circle)
+        #else
+        buttonStyle(.borderless)
+        #endif
+    }
+
     /// Deletes something from a list row: by swiping it on iPhone and iPad, or from its long-press menu on Apple TV, which
     /// has no swiping.
     @ViewBuilder
@@ -142,27 +166,35 @@ struct DownloadToolbarButton: View {
     private var isContainer: Bool { item.kind == .season || item.kind == .series }
 
     var body: some View {
-        switch downloads.status(of: item) {
+        // Where the download is, not how far along, so the menus below aren't rebuilt with every tick of progress (which
+        // makes an open one flash). Only the ring, in its own view, follows the progress.
+        switch downloads.stage(of: item) {
         case .none:
             Button(action: start) {
                 Image(systemName: "arrow.down.circle")
             }
             .accessibilityLabel(isContainer ? "Download All Episodes" : "Download")
 
-        case .downloading(let progress):
+        case .downloading:
             Menu {
                 Button("Pause", systemImage: "pause.circle") { downloads.pause(item) }
+                // A show with one season on its way can still have the rest downloaded.
+                if downloads.hasEpisodesToDownload(item) {
+                    Button("Download Remaining Episodes", systemImage: "arrow.down.circle", action: start)
+                }
                 // Only what's unfinished: a show's or season's finished episodes stay.
                 Button("Cancel Download", systemImage: "xmark.circle", role: .destructive) { downloads.cancel(item) }
             } label: {
-                DownloadProgressRing(progress: progress)
+                DownloadProgressLabel(item: item)
             }
             .accessibilityLabel("Downloading")
-            .accessibilityValue(progress.formatted(.percent.precision(.fractionLength(0))))
 
         case .paused:
             Menu {
                 Button("Resume Download", systemImage: "play.circle") { downloads.resume(item) }
+                if downloads.hasEpisodesToDownload(item) {
+                    Button("Download Remaining Episodes", systemImage: "arrow.down.circle", action: start)
+                }
                 Button("Cancel Download", systemImage: "xmark.circle", role: .destructive) { downloads.cancel(item) }
             } label: {
                 Image(systemName: "pause.circle")
@@ -196,21 +228,47 @@ struct DownloadToolbarButton: View {
     }
 }
 
-/// A circle that fills as a download progresses, with an arrow inside.
+/// The download button's ring for an item, redrawn as its progress changes. Separate from the button, so only this follows
+/// the progress, and the button's menu isn't rebuilt with every tick.
+private struct DownloadProgressLabel: View {
+    let item: MediaItem
+
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        let progress: Double = if case .downloading(let value) = appModel.downloads.status(of: item) { value } else { 0 }
+        DownloadProgressRing(progress: progress)
+            .accessibilityValue(progress.formatted(.percent.precision(.fractionLength(0))))
+    }
+}
+
+/// A circle that fills as a download progresses, with an arrow inside. The size of the symbol it stands in for: a button's
+/// other states show an SF Symbol, which is bigger on Apple TV than in a toolbar, and a ring that stayed small there left
+/// the button smaller than its neighbors.
 private struct DownloadProgressRing: View {
     let progress: Double
 
+    #if os(tvOS)
+    private static let diameter: CGFloat = 36
+    private static let lineWidth: CGFloat = 3.5
+    private static let arrowSize: CGFloat = 15
+    #else
+    private static let diameter: CGFloat = 22
+    private static let lineWidth: CGFloat = 2.5
+    private static let arrowSize: CGFloat = 9
+    #endif
+
     var body: some View {
         ZStack {
-            Circle().stroke(.secondary.opacity(0.4), lineWidth: 2.5)
+            Circle().stroke(.secondary.opacity(0.4), lineWidth: Self.lineWidth)
             Circle()
                 .trim(from: 0, to: max(0.03, progress))
-                .stroke(.blue, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .stroke(.blue, style: StrokeStyle(lineWidth: Self.lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             Image(systemName: "arrow.down")
-                .font(.system(size: 9, weight: .bold))
+                .font(.system(size: Self.arrowSize, weight: .bold))
         }
-        .frame(width: 22, height: 22)
+        .frame(width: Self.diameter, height: Self.diameter)
     }
 }
 
@@ -314,29 +372,166 @@ struct DownloadsView: View {
             .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
-    private static var isAppleTV: Bool {
+    var body: some View {
+        content
+            // The system may have removed files since this was last open.
+            .onAppear { downloads.verifyFiles() }
+            .navigationDestination(for: DownloadedShowRoute.self) { DownloadedShowView(seriesID: $0.seriesID, play: { playingItem = $0 }) }
+            .navigationDestination(for: DownloadedSeasonRoute.self) { DownloadedSeasonView(seasonID: $0.seasonID, play: { playingItem = $0 }) }
+            .alert("Delete All Downloads?", isPresented: $confirmsDeleteAll) {
+                Button("Delete", role: .destructive) { downloads.remove(ids: downloads.records.map(\.id)) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Everything saved on this device is deleted. It all stays on your server.")
+            }
+            .fullScreenCover(item: $playingItem) { PlayerView(item: $0) }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         #if os(tvOS)
-        true
+        tvContent
         #else
-        false
+        listContent
         #endif
     }
 
-    var body: some View {
-        List {
-            #if os(tvOS)
-            Section {
-                ExperimentalNotice(isPermanent: downloads.store.isPermanent)
-            }
+    /// The "more" menu, with what it needs handed in as plain values, so it's only redrawn when one of them changes. It's
+    /// separate for that: the page redraws with every tick of an active download's progress, and a menu redrawn under the
+    /// viewer's eyes flashes its items.
+    private var manageMenu: some View {
+        ManageDownloadsMenu(hasUnfinished: !unfinished.isEmpty, confirmsDeleteAll: $confirmsDeleteAll)
+            .equatable()
+    }
 
-            if downloads.records.isEmpty {
-                Section {
-                    Text("No downloads yet. Movies and episodes you download appear here.")
+    #if os(tvOS)
+    /// Whether the sheet explaining what's experimental about downloads on Apple TV is open.
+    @State private var showsNotice = false
+
+    /// A movie's details, opened from its long-press menu (selecting it plays it).
+    @State private var detailItem: MediaItem?
+
+    /// The page as the rest of the app's are: a title line with its buttons, then each kind of download as a row of posters.
+    private var tvContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Layout.shelfSpacing) {
+                tvHeader
+
+                if downloads.records.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Downloads", systemImage: "arrow.down.circle")
+                    } description: {
+                        Text("Movies and episodes you download appear here, and can be watched without a connection.")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 60)
+                } else {
+                    if !unfinished.isEmpty {
+                        tvSection("Downloading") {
+                            VStack(spacing: 16) {
+                                ForEach(unfinished) { record in
+                                    UnfinishedDownloadRow(record: record)
+                                        .padding(20)
+                                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 16))
+                                }
+                            }
+                            // The buttons are at the end of full-width rows, so moving down from anywhere above, such as the
+                            // Experimental pill, which has nothing right beneath it, reaches them.
+                            .tvFocusSection()
+                        }
+                    }
+
+                    if !movies.isEmpty {
+                        tvSection("Movies") {
+                            posterGrid {
+                                ForEach(movies) { record in
+                                    let item = downloads.localized(record.item)
+                                    Button { playingItem = item } label: {
+                                        PosterCard(item: item, titleLineLimit: 2)
+                                    }
+                                    .cardLinkStyle()
+                                    .contextMenu {
+                                        Button("Go to Movie", systemImage: "info.circle") { detailItem = item }
+                                        Button("Delete", systemImage: "trash", role: .destructive) { downloads.remove(ids: [record.id]) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !shows.isEmpty {
+                        tvSection("TV Shows") {
+                            posterGrid {
+                                ForEach(shows, id: \.id) { show in
+                                    NavigationLink(value: DownloadedShowRoute(seriesID: show.id)) {
+                                        ShowDownloadCard(seriesID: show.id, title: show.title, episodes: show.episodes)
+                                    }
+                                    .cardLinkStyle()
+                                    .deleteAction { downloads.remove(ids: show.episodes.map(\.id)) }
+                                }
+                            }
+                        }
+                    }
+
+                    Text("Downloads use \(downloads.totalBytes.formatted(.byteCount(style: .file))) on this device.")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
             }
-            #endif
+            .padding()
+        }
+        // The page draws its own title, level with its buttons.
+        .navigationTitle("")
+        .navigationDestination(item: $detailItem) { ItemDetailView(item: $0) }
+        .sheet(isPresented: $showsNotice) {
+            ScrollView {
+                ExperimentalNotice(isPermanent: downloads.store.isPermanent)
+                    .padding(60)
+            }
+        }
+    }
 
+    private var tvHeader: some View {
+        HStack(spacing: 24) {
+            // No title: the tab bar already says "Downloads".
+            Spacer(minLength: 24)
+            // Downloads here are experimental: a button that says so, which opens what to know before relying on them.
+            Button { showsNotice = true } label: {
+                Label("Experimental", systemImage: "exclamationmark.triangle.fill")
+            }
+            .buttonBorderShape(.capsule)
+            .tint(.orange)
+            if !downloads.records.isEmpty {
+                manageMenu
+            }
+        }
+        // Moving up from anywhere along the first row reaches the buttons.
+        .tvFocusSection()
+        // Up toward the top of the screen, level with the tab bar's label, rather than a row of its own.
+        .padding(.top, -90)
+    }
+
+    private func tvSection<Content: View>(_ title: LocalizedStringKey, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Layout.shelfHeadingGap) {
+            Text(title)
+                .font(Layout.shelfHeadingFont)
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            content()
+        }
+    }
+
+    private func posterGrid<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: Layout.cardSpacing, alignment: .top)], alignment: .leading, spacing: Layout.cardSpacing) {
+            content()
+        }
+        .tvFocusSection()
+    }
+    #endif
+
+    #if !os(tvOS)
+    private var listContent: some View {
+        List {
             if !unfinished.isEmpty {
                 Section("Downloading") {
                     ForEach(unfinished) { record in
@@ -373,8 +568,7 @@ struct DownloadsView: View {
             }
         }
         .overlay {
-            // On Apple TV the notice has to stay visible, so the empty list says so in the list itself, below it.
-            if downloads.records.isEmpty, !Self.isAppleTV {
+            if downloads.records.isEmpty {
                 ContentUnavailableView {
                     Label("No Downloads", systemImage: "arrow.down.circle")
                 } description: {
@@ -382,35 +576,16 @@ struct DownloadsView: View {
                 }
             }
         }
-        .navigationTitle(Self.isAppleTV ? "Downloads (Experimental)" : "Downloads")
-        // The system may have removed files since this was last open.
-        .onAppear { downloads.verifyFiles() }
+        .navigationTitle("Downloads")
         .toolbar {
             if !downloads.records.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        if !unfinished.isEmpty {
-                            Button("Pause All", systemImage: "pause.circle") { downloads.pause() }
-                            Button("Resume All", systemImage: "play.circle") { downloads.resume() }
-                        }
-                        Button("Delete All Downloads", systemImage: "trash", role: .destructive) { confirmsDeleteAll = true }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    .accessibilityLabel("Manage Downloads")
+                    manageMenu
                 }
             }
         }
-        .navigationDestination(for: DownloadedShowRoute.self) { DownloadedShowView(seriesID: $0.seriesID, play: { playingItem = $0 }) }
-        .navigationDestination(for: DownloadedSeasonRoute.self) { DownloadedSeasonView(seasonID: $0.seasonID, play: { playingItem = $0 }) }
-        .alert("Delete All Downloads?", isPresented: $confirmsDeleteAll) {
-            Button("Delete", role: .destructive) { downloads.remove(ids: downloads.records.map(\.id)) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Everything saved on this device is deleted. It all stays on your server.")
-        }
-        .fullScreenCover(item: $playingItem) { PlayerView(item: $0) }
     }
+    #endif
 }
 
 extension View {
@@ -459,6 +634,36 @@ private struct ExperimentalNotice: View {
 }
 #endif
 
+/// The Downloads page's "more" menu: pause or resume everything, or delete it all.
+private struct ManageDownloadsMenu: View, Equatable {
+    let hasUnfinished: Bool
+    @Binding var confirmsDeleteAll: Bool
+
+    @Environment(AppModel.self) private var appModel
+
+    /// Compares what the menu shows, not the binding, so a redraw of the page that changes neither leaves it alone.
+    static func == (lhs: ManageDownloadsMenu, rhs: ManageDownloadsMenu) -> Bool {
+        lhs.hasUnfinished == rhs.hasUnfinished
+    }
+
+    var body: some View {
+        let downloads = appModel.downloads
+        Menu {
+            if hasUnfinished {
+                Button("Pause All", systemImage: "pause.circle") { downloads.pause() }
+                Button("Resume All", systemImage: "play.circle") { downloads.resume() }
+            }
+            Button("Delete All Downloads", systemImage: "trash", role: .destructive) { confirmsDeleteAll = true }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        #if os(tvOS)
+        .buttonBorderShape(.circle)
+        #endif
+        .accessibilityLabel("Manage Downloads")
+    }
+}
+
 /// A download that isn't finished: what it is, how far along, and a button to pause or resume it.
 private struct UnfinishedDownloadRow: View {
     let record: DownloadRecord
@@ -466,52 +671,76 @@ private struct UnfinishedDownloadRow: View {
 
     private var downloads: DownloadManager { appModel.downloads }
 
+    /// The icon in the pause, resume and retry button. The round button grows with it, so on Apple TV, where the system's
+    /// title sizes are large, it's set smaller to keep the button in proportion to its row.
+    private static var buttonIconFont: Font {
+        #if os(tvOS)
+        .system(size: 26, weight: .semibold)
+        #else
+        .title2
+        #endif
+    }
+
     var body: some View {
         let item = downloads.localized(record.item)
         HStack(spacing: 12) {
             ArtworkView(url: item.rowArtworkURL, aspectRatio: item.hasWidescreenRowArtwork ? 16.0 / 9.0 : 2.0 / 3.0)
-                .frame(width: item.hasWidescreenRowArtwork ? 86 : 43)
-                .frame(width: 86)
+                .frame(width: item.hasWidescreenRowArtwork ? DownloadRowArt.still : DownloadRowArt.poster)
+                .frame(width: DownloadRowArt.still)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(2)
-                if let subtitle = item.subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if record.state == .downloading || record.state == .paused {
-                    ProgressView(value: record.progress)
-                }
+                // Every row has all four lines, empty where there's nothing to say, so the rows are the same height whether
+                // a download is waiting or moving, or a movie with no show's name.
+                Text(item.subtitle ?? " ")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(item.subtitle == nil)
+                ProgressView(value: record.state == .downloading || record.state == .paused ? record.progress : 0)
                 Text(statusText)
                     .font(.caption)
                     .foregroundStyle(record.state == .failed ? Color.red : .secondary)
                     .lineLimit(2)
             }
+            // Takes all the room that's left, so the progress bar runs right up to the buttons. A Spacer here would keep
+            // the system's own gap on Apple TV, which is wide, between the two.
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer()
+            HStack(spacing: 16) {
+                switch record.state {
+                case .paused, .failed:
+                    Button {
+                        downloads.resume(item)
+                    } label: {
+                        Image(systemName: record.state == .failed ? "arrow.clockwise.circle" : "play.circle")
+                            .font(Self.buttonIconFont)
+                    }
+                    .roundRowButton()
+                    .accessibilityLabel(record.state == .failed ? "Retry" : "Resume")
+                default:
+                    Button {
+                        downloads.pause(item)
+                    } label: {
+                        Image(systemName: "pause.circle")
+                            .font(Self.buttonIconFont)
+                    }
+                    .roundRowButton()
+                    .accessibilityLabel("Pause")
+                }
 
-            switch record.state {
-            case .paused, .failed:
+                #if os(tvOS)
+                // Apple TV has no swiping, so cancelling has a button here as well as in the long-press menu.
                 Button {
-                    downloads.resume(item)
+                    downloads.remove(ids: [record.id])
                 } label: {
-                    Image(systemName: record.state == .failed ? "arrow.clockwise.circle" : "play.circle")
-                        .font(.title2)
+                    Image(systemName: "xmark.circle")
+                        .font(Self.buttonIconFont)
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(record.state == .failed ? "Retry" : "Resume")
-            default:
-                Button {
-                    downloads.pause(item)
-                } label: {
-                    Image(systemName: "pause.circle")
-                        .font(.title2)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Pause")
+                .roundRowButton()
+                .accessibilityLabel("Cancel Download")
+                #endif
             }
         }
         .deleteAction("Cancel", systemImage: "xmark") { downloads.remove(ids: [record.id]) }
@@ -554,8 +783,8 @@ private struct SavedDownloadRow: View {
             } label: {
                 HStack(spacing: 12) {
                     ArtworkView(url: item.rowArtworkURL, aspectRatio: item.hasWidescreenRowArtwork ? 16.0 / 9.0 : 2.0 / 3.0)
-                        .frame(width: item.hasWidescreenRowArtwork ? 86 : 43)
-                        .frame(width: 86)
+                        .frame(width: item.hasWidescreenRowArtwork ? DownloadRowArt.still : DownloadRowArt.poster)
+                        .frame(width: DownloadRowArt.still)
                         .overlay(alignment: .bottom) {
                             if let fraction = item.playedFraction {
                                 ProgressView(value: fraction)
@@ -610,6 +839,41 @@ private struct SavedDownloadRow: View {
     }
 }
 
+#if os(tvOS)
+/// A show in the Downloads page on Apple TV: its poster, with its name and how much of it is saved beneath, like the rest of
+/// the app's posters.
+private struct ShowDownloadCard: View {
+    let seriesID: String
+    let title: String
+    let episodes: [DownloadRecord]
+
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        let store = appModel.downloads.store
+        let poster = (store.container(id: seriesID) ?? episodes.first?.item).map(store.localized)?.posterURL
+        let bytes = episodes.reduce(Int64(0)) { $0 + $1.fileSize }
+        VStack(alignment: .leading, spacing: Layout.captionGap) {
+            ArtworkView(url: poster, aspectRatio: 2.0 / 3.0)
+                .focusHighlight()
+            VStack(alignment: .leading, spacing: 2) {
+                // Two lines for the name, and the count and size each on a line of their own, so none is cut off.
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(2)
+                Text(episodes.count == 1 ? String(localized: "1 Episode") : String(localized: "\(episodes.count) Episodes"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(bytes.formatted(.byteCount(style: .file)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+}
+#endif
+
 /// A show in the Downloads list: its poster, and how much of it is saved.
 private struct ShowDownloadRow: View {
     let seriesID: String
@@ -624,8 +888,8 @@ private struct ShowDownloadRow: View {
         let bytes = episodes.reduce(Int64(0)) { $0 + $1.fileSize }
         HStack(spacing: 12) {
             ArtworkView(url: poster, aspectRatio: 2.0 / 3.0)
-                .frame(width: 43)
-                .frame(width: 86)
+                .frame(width: DownloadRowArt.poster)
+                .frame(width: DownloadRowArt.still)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.medium))
@@ -665,8 +929,8 @@ private struct DownloadedShowView: View {
                 NavigationLink(value: DownloadedSeasonRoute(seasonID: season.id)) {
                     HStack(spacing: 12) {
                         ArtworkView(url: poster, aspectRatio: 2.0 / 3.0)
-                            .frame(width: 43)
-                            .frame(width: 86)
+                            .frame(width: DownloadRowArt.poster)
+                            .frame(width: DownloadRowArt.still)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(title)
                                 .font(.subheadline.weight(.medium))

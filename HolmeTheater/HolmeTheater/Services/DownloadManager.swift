@@ -13,6 +13,12 @@ import ActivityKit
 import UIKit
 #endif
 
+/// Where the downloads under an item are, without how far along: what its menus offer. It doesn't change with every tick
+/// of progress, so a menu that reads it isn't rebuilt (which makes an open one flash) while a download runs.
+enum DownloadStage: Equatable {
+    case none, downloading, paused, partial, downloaded
+}
+
 /// How the downloads under an item are doing, for its download button.
 enum DownloadStatus: Equatable {
     /// Nothing has been downloaded.
@@ -62,6 +68,13 @@ final class DownloadManager {
     /// The shows and seasons with an episode that isn't downloaded yet: waiting, on its way, paused or failed. Only
     /// changes when that does.
     private(set) var unfinishedContainerIDs: Set<String> = []
+
+    /// The IDs of items, shows and seasons with a download that's downloading or waiting to, and with one that's paused or
+    /// failed. And how many downloads, in any state, each movie, episode, show and season has. They only change when
+    /// something starts, stops, finishes or is added or removed, not with progress (see ``stage(of:)``).
+    private(set) var movingIDs: Set<String> = []
+    private(set) var pausedIDs: Set<String> = []
+    private(set) var recordCounts: [String: Int] = [:]
 
     /// Set when something couldn't be started, to show in an alert. The owner clears it.
     var errorMessage: String?
@@ -273,6 +286,27 @@ final class DownloadManager {
         }
     }
 
+    /// Where an item's downloads are, for what its menus offer. Reads only what changes when that does, not with progress,
+    /// unlike ``status(of:)``, which the download button's ring needs.
+    func stage(of item: MediaItem) -> DownloadStage {
+        guard [.movie, .episode, .season, .series].contains(item.kind), (recordCounts[item.id] ?? 0) > 0 else { return .none }
+        if movingIDs.contains(item.id) { return .downloading }
+        if pausedIDs.contains(item.id) { return .paused }
+        switch item.kind {
+        case .season, .series:
+            return (recordCounts[item.id] ?? 0) >= (item.episodeCount ?? .max) ? .downloaded : .partial
+        default:
+            return .downloaded
+        }
+    }
+
+    /// Whether a show or season has episodes that aren't downloading or downloaded yet, so it can offer to download the
+    /// rest. False if the server hasn't said how many it has.
+    func hasEpisodesToDownload(_ item: MediaItem) -> Bool {
+        guard item.kind == .season || item.kind == .series, let total = item.episodeCount else { return false }
+        return (recordCounts[item.id] ?? 0) < total
+    }
+
     func status(of item: MediaItem) -> DownloadStatus {
         let relevant = records(under: item)
         guard !relevant.isEmpty else { return .none }
@@ -441,8 +475,18 @@ final class DownloadManager {
         var active = 0
         var episodeCounts: [String: Int] = [:]
         var unfinishedContainers = Set<String>()
+        var moving = Set<String>()
+        var paused = Set<String>()
+        var counts: [String: Int] = [:]
         for record in current {
             let containerIDs = [record.item.seriesID, record.item.seasonID].compactMap { $0 }
+            let ids = [record.id] + containerIDs
+            for id in ids { counts[id, default: 0] += 1 }
+            if Self.isInProgress(record.state) {
+                moving.formUnion(ids)
+            } else if record.state == .paused || record.state == .failed {
+                paused.formUnion(ids)
+            }
             if record.isComplete {
                 done.insert(record.id)
                 for id in containerIDs { episodeCounts[id, default: 0] += 1 }
@@ -455,6 +499,9 @@ final class DownloadManager {
         if active != activeCount { activeCount = active }
         if episodeCounts != completedEpisodeCounts { completedEpisodeCounts = episodeCounts }
         if unfinishedContainers != unfinishedContainerIDs { unfinishedContainerIDs = unfinishedContainers }
+        if moving != movingIDs { movingIDs = moving }
+        if paused != pausedIDs { pausedIDs = paused }
+        if counts != recordCounts { recordCounts = counts }
     }
 
     /// Starts waiting downloads, up to the limit.

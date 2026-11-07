@@ -96,6 +96,17 @@ nonisolated struct Library: Identifiable, Hashable, Sendable {
 
     /// The kind of content the library holds.
     let kind: Kind
+
+    /// What a library is to the user: a real library of media, or one of the server's collected views, which are listed
+    /// after the libraries.
+    nonisolated enum Role: Int, Hashable, Sendable {
+        case library
+        case collections
+        case playlists
+    }
+
+    /// Whether this is a library, or the server's collections or playlists.
+    var role: Role = .library
 }
 
 /// A genre such as "Comedy", as a way to browse movies and shows other than by library.
