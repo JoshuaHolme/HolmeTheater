@@ -306,21 +306,32 @@ struct TVPersonButton: View {
             PersonPortrait(person: person, size: size)
                 .hoverEffect(.highlight)
 
-            Text(person.name)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(2)
-                // Wraps to a second line rather than being cut off: the button's layout doesn't give the text spare height.
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: size)
+            // The same height for every card, room for a two-line name and a one-line role, whatever this one has. Cards of
+            // different heights make the page scroll to a different place for each, so it overscrolls on the first and snaps
+            // back on the next.
+            ZStack(alignment: .top) {
+                VStack(spacing: 2) {
+                    Text(verbatim: "1\n2").font(.subheadline.weight(.medium))
+                    Text(verbatim: "1").font(.caption)
+                }
+                .hidden()
+                .accessibilityHidden(true)
 
-            if let subtitle = person.subtitle {
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(width: size)
+                VStack(spacing: 2) {
+                    Text(person.name)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let subtitle = person.subtitle {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
             }
+            .frame(width: size)
         }
         .buttonStyle(.borderless)
         .buttonBorderShape(.circle)

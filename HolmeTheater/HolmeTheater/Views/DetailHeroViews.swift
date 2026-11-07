@@ -267,3 +267,55 @@ struct ShowOverviewSheet: View {
         #endif
     }
 }
+
+#if os(tvOS)
+/// Everything about a show, season, episode or movie in a glass sheet: its name, tagline, the whole description, then the
+/// facts listed under it. The sheet is the system's, so it has the glass look and the Menu button closes it.
+///
+/// Each block can take focus, because a scroll view on tvOS only scrolls as focus moves down through what's in it.
+struct ShowDetailsSheet: View {
+    let title: String
+    let tagline: String?
+    let overview: String?
+    let facts: [(label: String, value: String)]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 32) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(title)
+                        .font(.largeTitle.bold())
+                        .accessibilityAddTraits(.isHeader)
+                    if let tagline {
+                        Text(tagline)
+                            .font(.title3.italic())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .focusable()
+
+                if let overview {
+                    Text(overview)
+                        .font(.body)
+                        .focusable()
+                }
+
+                ForEach(Array(facts.enumerated()), id: \.offset) { _, fact in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(fact.label)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(fact.value)
+                            .font(.body)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .focusable()
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(60)
+        }
+    }
+}
+#endif

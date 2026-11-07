@@ -33,6 +33,11 @@ struct ShowDetailView: View {
     /// Whether the sheet with the show's full description is showing.
     @State private var showsOverview = false
 
+    #if os(tvOS)
+    /// Whether the sheet with everything about the show is open.
+    @State private var showsDetails = false
+    #endif
+
     /// The size of the visible screen, which sets the hero's height.
     @State private var screenSize: CGSize = .zero
 
@@ -221,7 +226,45 @@ struct ShowDetailView: View {
         .sheet(isPresented: $showsOverview) {
             ShowOverviewSheet(item: current)
         }
+        #if os(tvOS)
+        .sheet(isPresented: $showsDetails) {
+            ShowDetailsSheet(title: detailsTitle, tagline: current.tagline, overview: current.overview, facts: detailFacts)
+        }
+        #endif
     }
+
+    #if os(tvOS)
+    /// Opens the sheet with the full description and everything else known about the show.
+    private var detailsButton: some View {
+        Button { showsDetails = true } label: {
+            Image(systemName: "info.circle")
+                .font(Self.heroIconFont)
+        }
+        .heroCircleButton()
+        .accessibilityLabel("Details")
+    }
+
+    /// The sheet's heading: the show's name, or for a season or episode what it is, under the show's.
+    private var detailsTitle: String {
+        if isSeason { return [item.seriesTitle, item.seasonTitle].compactMap { $0 }.joined(separator: " · ") }
+        return item.title
+    }
+
+    /// What the sheet lists besides the description, as label and value, leaving out what isn't known.
+    private var detailFacts: [(label: String, value: String)] {
+        var facts: [(String, String)] = []
+        func add(_ label: String.LocalizationValue, _ value: String?) {
+            if let value, !value.isEmpty { facts.append((String(localized: label), value)) }
+        }
+        add("Genres", current.genres.isEmpty ? nil : current.genres.joined(separator: ", "))
+        add(isMovie ? "Studio" : "Network", current.network)
+        add(isPlayableItem || isSeason ? "Released" : "Status", statusLine)
+        add("Rated", current.officialRating)
+        add("Ratings", ratingsLine)
+        add("Format", current.technicalLine)
+        return facts
+    }
+    #endif
 
     /// The backdrop, with the show's details stacked over its bottom-left corner.
     private var hero: some View {
@@ -283,15 +326,13 @@ struct ShowDetailView: View {
 
             if let overview = current.overview {
                 #if os(tvOS)
-                // Big enough to read from the couch: three lines across most of the screen.
-                TruncatingOverview(
-                    text: overview,
-                    lineLimit: 3,
-                    isFocusable: overviewIsFocusable,
-                    tvFont: .system(size: 29),
-                    tvOpacity: 0.8,
-                    tvMaxWidth: 1300
-                ) { showsOverview = true }
+                // Big enough to read from the couch: three lines across most of the screen. Cut off with an ellipsis if it
+                // runs out of room; the Details button has all of it.
+                Text(overview)
+                    .font(.system(size: 29))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .lineLimit(3)
+                    .frame(maxWidth: 1300, alignment: .leading)
                 #else
                 TruncatingOverview(text: overview, lineLimit: 3, isFocusable: overviewIsFocusable) { showsOverview = true }
                 #endif
@@ -587,6 +628,7 @@ struct ShowDetailView: View {
             playButton(compact: compactPlay)
             trailerButton(showsTitle: showsTrailerTitle)
             #if os(tvOS)
+            detailsButton
             // There's no navigation bar on tvOS, so the favorite and watched buttons sit here. On iOS they're in
             // the toolbar (see `toolbarButtons`).
             favoriteButton
