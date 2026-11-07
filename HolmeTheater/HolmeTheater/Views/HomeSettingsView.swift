@@ -10,9 +10,115 @@ struct HomeSettingsView: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
+        #if os(tvOS)
+        tvBody(appModel.homeSettings)
+        #else
+        listBody
+        #endif
+    }
+
+    #if os(tvOS)
+    /// Rows of their own, as on the account page: a name and what it's set to, with what a group does beneath it.
+    private func tvBody(_ homeSettings: HomeSettings) -> some View {
+        @Bindable var settings = homeSettings
+
+        return VStack(alignment: .leading, spacing: 44) {
+            VStack(alignment: .leading, spacing: 16) {
+                TVSettingsHeading(title: "Carousel")
+                TVToggleRow(title: "Show Carousel", isOn: $settings.showsHero)
+                if settings.showsHero {
+                    // Opens the choices, with the one made ticked, as the Settings app's pages of choices do.
+                    NavigationLink {
+                        HeroOrderChoiceView()
+                    } label: {
+                        TVSettingsRow(title: "Show", value: LocalizedStringKey(settings.heroOrder.title), showsChevron: true)
+                    }
+                    .buttonStyle(.card)
+                    TVToggleRow(title: "Hide Watched", isOn: $settings.heroHidesWatched)
+                    NavigationLink {
+                        HomeLibraryChoiceView(
+                            title: String(localized: "Carousel"),
+                            footer: String(localized: "The carousel takes its items from these libraries.")
+                        ) { library in
+                            Binding(
+                                get: { settings.heroIncludes(library) },
+                                set: { settings.setHeroIncluded($0, library: library) }
+                            )
+                        }
+                    } label: {
+                        TVSettingsRow(title: "Libraries", showsChevron: true)
+                    }
+                    .buttonStyle(.card)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                TVToggleRow(title: "Combine Up Next with Continue Watching", isOn: $settings.combinesUpNext)
+                TVSettingsCaption(text: "Shows the next episode of each show you're watching right after what you've started.")
+            }
+
+            VStack(alignment: .leading, spacing: 16) {
+                TVSettingsHeading(title: "Sections")
+                ForEach(Array(settings.sections.enumerated()), id: \.element) { index, section in
+                    let isVisible = settings.isVisible(section)
+                    HStack(spacing: Self.rowButtonGap) {
+                        // Opens the section's own settings, such as which libraries it takes from.
+                        NavigationLink {
+                            HomeSectionSettingsView(section: section)
+                        } label: {
+                            TVSettingsRow(
+                                title: LocalizedStringKey(section == .continueWatching && settings.combinesUpNext
+                                    ? String(localized: "Continue Watching and Up Next")
+                                    : section.title),
+                                showsChevron: true
+                            )
+                            // A hidden section is dimmed, as well as showing a crossed-out eye.
+                            .opacity(isVisible ? 1 : 0.5)
+                        }
+                        .buttonStyle(.card)
+
+                        // Reordering and hiding don't need the section opened.
+                        sectionButton("chevron.up", label: "Move Up") { settings.moveSection(section, by: -1) }
+                            .disabled(index == 0)
+                        sectionButton("chevron.down", label: "Move Down") { settings.moveSection(section, by: 1) }
+                            .disabled(index == settings.sections.count - 1)
+                        sectionButton(isVisible ? "eye" : "eye.slash", label: isVisible ? "Hide" : "Show") {
+                            settings.setVisible(!isVisible, for: section)
+                        }
+                    }
+                }
+                TVSettingsCaption(text: "Use the arrows to move a section, and the eye to show or hide it. Open one to choose which libraries it takes from.")
+            }
+
+            Button { settings.reset() } label: {
+                TVSettingsRow(title: "Reset Home Screen", isDestructive: true)
+            }
+            .buttonStyle(.card)
+            .disabled(settings.isDefault)
+        }
+        .tvSettingsPage(title: String(localized: "Home Screen"))
+    }
+
+    /// The space between a row and the round buttons beside it. A focused row grows, and a smaller gap has it touch them.
+    private static let rowButtonGap: CGFloat = 40
+
+    /// A round button beside a section's row.
+    private func sectionButton(_ systemImage: String, label: LocalizedStringKey, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 26, weight: .semibold))
+                .frame(width: 36, height: 36)
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel(label)
+    }
+    #endif
+
+    private var listBody: some View {
         @Bindable var settings = appModel.homeSettings
 
-        List {
+        return List {
             Section {
                 Toggle("Show Carousel", isOn: $settings.showsHero)
                 if settings.showsHero {
@@ -83,6 +189,30 @@ struct HomeSettingsView: View {
     }
 }
 
+#if os(tvOS)
+/// The choices for what the carousel shows, as a list with the one chosen ticked. Choosing one goes back.
+private struct HeroOrderChoiceView: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let settings = appModel.homeSettings
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(HomeSettings.HeroOrder.allCases) { order in
+                Button {
+                    settings.heroOrder = order
+                    dismiss()
+                } label: {
+                    TVSettingsRow(title: LocalizedStringKey(order.title), showsCheckmark: settings.heroOrder == order)
+                }
+                .buttonStyle(.card)
+            }
+        }
+        .tvSettingsPage(title: String(localized: "Carousel"))
+    }
+}
+#endif
+
 /// One section's settings: whether it shows, and for most, which libraries it takes from.
 private struct HomeSectionSettingsView: View {
     let section: HomeSettings.Section
@@ -105,19 +235,7 @@ private struct HomeSectionSettingsView: View {
                     ordered: { settings.ordered($0, for: section) },
                     move: { settings.moveLibraries($0, from: $1, to: $2, in: section) }
                 )
-                : nil,
-            // Drag to reorder isn't on tvOS, so the section moves from here instead.
-            move: {
-                #if os(tvOS)
-                { settings.moveSection(section, by: $0) }
-                #else
-                nil
-                #endif
-            }(),
-            canMove: {
-                let index = settings.sections.firstIndex(of: section) ?? 0
-                return (up: index > 0, down: index < settings.sections.count - 1)
-            }()
+                : nil
         ) { library in
             Binding(
                 get: { settings.includes(library, in: section) },
@@ -147,12 +265,6 @@ private struct HomeLibraryChoiceView: View {
     /// Lets the libraries be moved. Nil keeps them in the server's order.
     var reordering: LibraryReordering?
 
-    /// Moves the section up (`-1`) or down (`1`) the home screen. Nil leaves the buttons out.
-    var move: ((Int) -> Void)?
-
-    /// Whether the section has room to move up and down.
-    var canMove: (up: Bool, down: Bool) = (false, false)
-
     /// Makes the switch for a library.
     let isIncluded: (Library) -> Binding<Bool>
 
@@ -165,33 +277,72 @@ private struct HomeLibraryChoiceView: View {
         footer: String? = nil,
         visibility: Binding<Bool>? = nil,
         reordering: LibraryReordering? = nil,
-        move: ((Int) -> Void)? = nil,
-        canMove: (up: Bool, down: Bool) = (false, false),
         isIncluded: @escaping (Library) -> Binding<Bool>
     ) {
         self.title = title
         self.footer = footer
         self.visibility = visibility
         self.reordering = reordering
-        self.move = move
-        self.canMove = canMove
         self.isIncluded = isIncluded
     }
 
     var body: some View {
+        content
+            .task {
+                do {
+                    libraries = try await appModel.service.libraries().filter { $0.kind == .movies || $0.kind == .tvShows }
+                } catch {
+                    failed = true
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        #if os(tvOS)
+        tvContent
+        #else
+        listContent
+        #endif
+    }
+
+    #if os(tvOS)
+    /// The libraries as rows of their own, each a switch that shows whether it's on. (Their order is a touch-screen setting.)
+    private var tvContent: some View {
+        VStack(alignment: .leading, spacing: 44) {
+            if let visibility {
+                TVToggleRow(title: "Show on Home Screen", isOn: visibility)
+            }
+
+            VStack(alignment: .leading, spacing: 16) {
+                TVSettingsHeading(title: "Libraries")
+                if let libraries {
+                    let shown = reordering?.ordered(libraries) ?? libraries
+                    ForEach(shown) { library in
+                        TVToggleRow(title: LocalizedStringKey(library.name), isOn: isIncluded(library))
+                    }
+                    if libraries.isEmpty {
+                        TVSettingsCaption(text: "No movie or TV libraries")
+                    }
+                } else if failed {
+                    TVSettingsCaption(text: "Couldn't load your libraries.")
+                } else {
+                    ProgressView().frame(maxWidth: .infinity)
+                }
+                if let footer { Text(footer).font(.callout).foregroundStyle(.secondary).padding(.horizontal, 24) }
+            }
+            .disabled(visibility?.wrappedValue == false)
+        }
+        .tvSettingsPage(title: title)
+    }
+    #endif
+
+    #if !os(tvOS)
+    private var listContent: some View {
         List {
             if let visibility {
                 Section {
                     Toggle("Show on Home Screen", isOn: visibility)
-                }
-            }
-
-            if let move {
-                Section("Order") {
-                    Button("Move Up") { move(-1) }
-                        .disabled(!canMove.up)
-                    Button("Move Down") { move(1) }
-                        .disabled(!canMove.down)
                 }
             }
 
@@ -251,14 +402,8 @@ private struct HomeLibraryChoiceView: View {
             if reordering != nil { EditButton() }
         }
         #endif
-        .task {
-            do {
-                libraries = try await appModel.service.libraries().filter { $0.kind == .movies || $0.kind == .tvShows }
-            } catch {
-                failed = true
-            }
-        }
     }
+    #endif
 }
 
 #Preview {

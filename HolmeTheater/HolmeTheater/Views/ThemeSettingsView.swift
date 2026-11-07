@@ -10,14 +10,109 @@ struct ThemeSettingsView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// Whether the full-screen preview of the Home screen in each theme is showing.
+    @State private var showsPreview = false
+
     var body: some View {
+        Group {
+            #if os(tvOS)
+            tvBody(appModel.themeSettings)
+            #else
+            listBody
+            #endif
+        }
+        .fullScreenCover(isPresented: $showsPreview) { ThemePreviewView() }
+    }
+
+    #if os(tvOS)
+    /// Rows of their own, as on the other settings pages, with what each group does beneath it.
+    private func tvBody(_ themeSettings: ThemeSettings) -> some View {
+        @Bindable var settings = themeSettings
+
+        return VStack(alignment: .leading, spacing: 44) {
+            VStack(alignment: .leading, spacing: 14) {
+                TVToggleRow(title: "Seasonal Themes", isOn: $settings.isEnabled)
+                TVSettingsCaption(text: "Gives the app a touch of the season or holiday: its color, a symbol on the Home screen, and more.")
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                Button { showsPreview = true } label: {
+                    TVSettingsRow(title: "Preview Themes", showsChevron: true, systemImage: "sparkles.tv")
+                }
+                .buttonStyle(.card)
+                TVSettingsCaption(text: "See the Home screen in each theme, and pick one to use.")
+            }
+
+            if settings.isEnabled {
+                VStack(alignment: .leading, spacing: 14) {
+                    TVToggleRow(title: "Animated Effects", isOn: $settings.showsEffects)
+                        .disabled(reduceMotion)
+                    TVSettingsCaption(text: "Snow, falling leaves, confetti and more drifting across the Home screen.")
+                    if reduceMotion { TVSettingsCaption(text: "Off while Reduce Motion is on.") }
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    TVToggleRow(title: "Change Automatically", isOn: $settings.isAutomatic)
+                    if settings.isAutomatic {
+                        TVSettingsCaption(text: "Follows the calendar. Holidays show instead of the season around them.")
+                        TVSettingsCaption(text: "Now showing: \(settings.scheduledTheme?.title ?? String(localized: "None"))")
+                    } else {
+                        NavigationLink {
+                            TVChoicePage(
+                                title: String(localized: "Theme"),
+                                options: (AppTheme.holidays + AppTheme.seasons).map {
+                                    TVChoiceOption(value: $0, title: $0.title, systemImage: $0.symbolName)
+                                },
+                                selection: $settings.manualTheme
+                            )
+                        } label: {
+                            TVSettingsRow(
+                                title: "Theme",
+                                value: LocalizedStringKey(settings.manualTheme.title),
+                                showsChevron: true,
+                                systemImage: settings.manualTheme.symbolName
+                            )
+                        }
+                        .buttonStyle(.card)
+                    }
+                }
+
+                if settings.isAutomatic {
+                    VStack(alignment: .leading, spacing: 16) {
+                        TVSettingsHeading(title: "Holidays")
+                        ForEach(AppTheme.holidays) { ThemeScheduleRow(theme: $0) }
+                    }
+                    VStack(alignment: .leading, spacing: 16) {
+                        TVSettingsHeading(title: "Seasons")
+                        ForEach(AppTheme.seasons) { ThemeScheduleRow(theme: $0) }
+                    }
+                }
+            }
+
+            Button { settings.reset() } label: {
+                TVSettingsRow(title: "Reset Themes", isDestructive: true)
+            }
+            .buttonStyle(.card)
+            .disabled(settings.isDefault)
+        }
+        .tvSettingsPage(title: String(localized: "Themes"))
+    }
+    #endif
+
+    private var listBody: some View {
         @Bindable var settings = appModel.themeSettings
 
-        List {
+        return List {
             Section {
                 Toggle("Seasonal Themes", isOn: $settings.isEnabled)
             } footer: {
                 Text("Gives the app a touch of the season or holiday: its color, a symbol on the Home screen, and more.")
+            }
+
+            Section {
+                Button("Preview Themes", systemImage: "sparkles") { showsPreview = true }
+            } footer: {
+                Text("See the Home screen in each theme, and pick one to use.")
             }
 
             if settings.isEnabled {
@@ -67,6 +162,97 @@ struct ThemeSettingsView: View {
     }
 }
 
+/// The Home screen as it looks in each theme, to flip between and choose from. The real Home screen runs behind a strip of
+/// the themes; moving along the strip (or tapping, off Apple TV) shows the screen in that theme, and choosing one uses it.
+private struct ThemePreviewView: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.dismiss) private var dismiss
+
+    /// The theme on show, which the strip follows.
+    @FocusState private var focusedTheme: AppTheme?
+
+    private static let themes = AppTheme.holidays + AppTheme.seasons
+
+    var body: some View {
+        let settings = appModel.themeSettings
+
+        ZStack(alignment: .bottom) {
+            // The screen itself, as the example. Nothing on it can be used; it's only there to look at.
+            NavigationStack {
+                HomeView()
+            }
+            .disabled(true)
+            .accessibilityHidden(true)
+
+            strip(settings)
+        }
+        // Not past the safe areas: the Home screen lays itself out by them, so it shows as it does in the app.
+        .task {
+            // Starts on the theme in use, or the first.
+            let start = settings.activeTheme ?? Self.themes[0]
+            settings.previewTheme = start
+            focusedTheme = start
+        }
+        .onChange(of: focusedTheme) { _, theme in
+            if let theme { settings.previewTheme = theme }
+        }
+        // However it closes, the real theme comes back.
+        .onDisappear { settings.previewTheme = nil }
+    }
+
+    private func strip(_ settings: ThemeSettings) -> some View {
+        VStack(spacing: 14) {
+            Text(settings.previewTheme?.title ?? "")
+                .font(.title3.weight(.semibold))
+            ScrollView(.horizontal) {
+                HStack(spacing: 20) {
+                    ForEach(Self.themes) { theme in
+                        Button {
+                            #if os(tvOS)
+                            use(theme, settings)
+                            #else
+                            settings.previewTheme = theme
+                            #endif
+                        } label: {
+                            Label(theme.title, systemImage: theme.symbolName)
+                        }
+                        .buttonBorderShape(.capsule)
+                        .focused($focusedTheme, equals: theme)
+                    }
+                }
+                .padding(.horizontal, 60)
+                .padding(.vertical, 20)
+            }
+            .scrollClipDisabled()
+            #if os(tvOS)
+            Text("Select a theme to use it. Press Menu to go back without changing.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            #else
+            HStack(spacing: 16) {
+                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Use This Theme") {
+                    if let theme = settings.previewTheme { use(theme, settings) }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            #endif
+        }
+        .padding(.vertical, 24)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial)
+        .environment(\.colorScheme, .dark)
+    }
+
+    /// Makes `theme` the app's theme, and closes the preview.
+    private func use(_ theme: AppTheme, _ settings: ThemeSettings) {
+        settings.isEnabled = true
+        settings.isAutomatic = false
+        settings.manualTheme = theme
+        dismiss()
+    }
+}
+
 /// A theme in the schedule, with its dates (or that it's off), opening its settings.
 private struct ThemeScheduleRow: View {
     let theme: AppTheme
@@ -74,6 +260,19 @@ private struct ThemeScheduleRow: View {
 
     var body: some View {
         let settings = appModel.themeSettings
+        #if os(tvOS)
+        NavigationLink {
+            ThemeScheduleDetailView(theme: theme)
+        } label: {
+            TVSettingsRow(
+                title: LocalizedStringKey(theme.title),
+                value: settings.isScheduled(theme) ? LocalizedStringKey(ThemeDates.text(for: theme, settings: settings)) : "Off",
+                showsChevron: true,
+                systemImage: theme.symbolName
+            )
+        }
+        .buttonStyle(.card)
+        #else
         NavigationLink {
             ThemeScheduleDetailView(theme: theme)
         } label: {
@@ -87,6 +286,7 @@ private struct ThemeScheduleRow: View {
                 }
             }
         }
+        #endif
     }
 }
 
@@ -99,9 +299,149 @@ private struct ThemeScheduleDetailView: View {
     private static let maxDays = 60
 
     var body: some View {
+        #if os(tvOS)
+        tvBody(appModel.themeSettings)
+        #else
+        listBody
+        #endif
+    }
+
+    #if os(tvOS)
+    private func tvBody(_ settings: ThemeSettings) -> some View {
+        VStack(alignment: .leading, spacing: 44) {
+            TVToggleRow(title: "Include in Schedule", isOn: Binding(
+                get: { settings.isScheduled(theme) },
+                set: { settings.setScheduled($0, for: theme) }
+            ))
+
+            Group {
+                switch settings.window(for: theme) {
+                case .dates(let start, let end):
+                    tvSeasonDates(start: start, end: end, settings: settings)
+                case .around(let start, let daysAfter):
+                    tvHolidayDates(start: start, daysAfter: daysAfter, settings: settings)
+                }
+
+                if settings.hasCustomWindow(theme) {
+                    Button { settings.resetWindow(for: theme) } label: {
+                        TVSettingsRow(title: "Use Default Dates")
+                    }
+                    .buttonStyle(.card)
+                }
+            }
+            .disabled(!settings.isScheduled(theme))
+        }
+        .tvSettingsPage(title: theme.title)
+    }
+
+    /// A row that opens a page of choices, showing the one made.
+    private func choiceRow<Value: Hashable>(
+        _ title: LocalizedStringKey,
+        pageTitle: String,
+        valueText: String,
+        options: [TVChoiceOption<Value>],
+        selection: Binding<Value>
+    ) -> some View {
+        NavigationLink {
+            TVChoicePage(title: pageTitle, options: options, selection: selection)
+        } label: {
+            TVSettingsRow(title: title, value: LocalizedStringKey(valueText), showsChevron: true)
+        }
+        .buttonStyle(.card)
+    }
+
+    private func tvSeasonDates(start: MonthDay, end: MonthDay, settings: ThemeSettings) -> some View {
+        VStack(alignment: .leading, spacing: 44) {
+            VStack(alignment: .leading, spacing: 16) {
+                TVSettingsHeading(title: "Starts")
+                tvMonthDay(start, pageTitle: String(localized: "Starts")) { settings.setWindow(.dates(start: $0, end: end), for: theme) }
+            }
+            VStack(alignment: .leading, spacing: 16) {
+                TVSettingsHeading(title: "Ends")
+                tvMonthDay(end, pageTitle: String(localized: "Ends")) { settings.setWindow(.dates(start: start, end: $0), for: theme) }
+                TVSettingsCaption(text: LocalizedStringKey(ThemeDates.text(for: theme, settings: settings)))
+            }
+        }
+    }
+
+    /// A month row and a day row for `value`, which open their lists of choices.
+    @ViewBuilder
+    private func tvMonthDay(_ value: MonthDay, pageTitle: String, set: @escaping (MonthDay) -> Void) -> some View {
+        choiceRow(
+            "Month",
+            pageTitle: pageTitle,
+            valueText: Calendar.themes.monthSymbols[value.month - 1],
+            options: (1...12).map { TVChoiceOption(value: $0, title: Calendar.themes.monthSymbols[$0 - 1]) },
+            selection: Binding(
+                get: { value.month },
+                set: { month in set(MonthDay(month: month, day: min(value.day, Self.days(in: month)))) }
+            )
+        )
+        choiceRow(
+            "Day",
+            pageTitle: pageTitle,
+            valueText: value.day.formatted(.number),
+            options: (1...Self.days(in: value.month)).map { TVChoiceOption(value: $0, title: $0.formatted(.number)) },
+            selection: Binding(
+                get: { value.day },
+                set: { set(MonthDay(month: value.month, day: $0)) }
+            )
+        )
+    }
+
+    private func tvHolidayDates(start: HolidayStart, daysAfter: Int, settings: ThemeSettings) -> some View {
+        var startOptions: [TVChoiceOption<HolidayStart>] = []
+        if let preceding = theme.precedingHoliday {
+            startOptions.append(TVChoiceOption(value: .dayAfterEnd(of: preceding), title: String(localized: "Day After \(preceding.title)")))
+        }
+        startOptions += (0...Self.maxDays).map {
+            TVChoiceOption(value: .daysBefore($0), title: $0 == 0 ? String(localized: "On \(theme.title)") : Self.dayCount($0, before: true))
+        }
+        let endOptions = (0...Self.maxDays).map {
+            TVChoiceOption(value: $0, title: $0 == 0 ? String(localized: "On \(theme.title)") : Self.dayCount($0, before: false))
+        }
+
+        return VStack(alignment: .leading, spacing: 14) {
+            choiceRow(
+                "Starts",
+                pageTitle: String(localized: "Starts"),
+                valueText: startOptions.first { $0.value == start }?.title ?? "",
+                options: startOptions,
+                selection: Binding(
+                    get: { start },
+                    set: { settings.setWindow(.around(start: $0, daysAfter: daysAfter), for: theme) }
+                )
+            )
+            choiceRow(
+                "Ends",
+                pageTitle: String(localized: "Ends"),
+                valueText: endOptions.first { $0.value == daysAfter }?.title ?? "",
+                options: endOptions,
+                selection: Binding(
+                    get: { daysAfter },
+                    set: { settings.setWindow(.around(start: start, daysAfter: $0), for: theme) }
+                )
+            )
+            TVSettingsCaption(text: LocalizedStringKey(ThemeDates.text(for: theme, settings: settings)))
+            if case .dayAfterEnd(let preceding) = start {
+                TVSettingsCaption(text: "Starts once the \(preceding.title) theme ends, even if \(preceding.title) isn't in the schedule.")
+            }
+        }
+    }
+
+    /// "3 days before" or "1 day after", with the day counted in the right form for the language.
+    private static func dayCount(_ days: Int, before: Bool) -> String {
+        let text = before
+            ? AttributedString(localized: "^[\(days) day](inflect: true) before")
+            : AttributedString(localized: "^[\(days) day](inflect: true) after")
+        return String(text.characters)
+    }
+    #endif
+
+    private var listBody: some View {
         let settings = appModel.themeSettings
 
-        List {
+        return List {
             Section {
                 Toggle("Include in Schedule", isOn: Binding(
                     get: { settings.isScheduled(theme) },

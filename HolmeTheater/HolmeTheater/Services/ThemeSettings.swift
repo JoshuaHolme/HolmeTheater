@@ -41,8 +41,14 @@ final class ThemeSettings {
     /// each read, since views read it often and the schedule takes some date arithmetic.
     private(set) var scheduledTheme: AppTheme?
 
-    /// The theme showing now, or nil for the app's usual look.
-    private(set) var activeTheme: AppTheme?
+    /// The theme the settings call for, or nil for the app's usual look.
+    private(set) var appliedTheme: AppTheme?
+
+    /// A theme being tried out, which shows in place of the applied one until the preview ends. Nothing is saved.
+    var previewTheme: AppTheme?
+
+    /// The theme showing now, or nil for the app's usual look: the one being previewed, if any.
+    var activeTheme: AppTheme? { previewTheme ?? appliedTheme }
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let calendar = Calendar.themes
@@ -65,7 +71,7 @@ final class ThemeSettings {
         let active = stored.isEnabled ? (stored.isAutomatic ? scheduled : stored.manualTheme) : nil
         // Only on a change, so views that read them aren't redrawn for nothing.
         if scheduled != scheduledTheme { scheduledTheme = scheduled }
-        if active != activeTheme { activeTheme = active }
+        if active != appliedTheme { appliedTheme = active }
     }
 
     // MARK: Switches

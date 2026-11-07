@@ -34,7 +34,12 @@ struct SearchView: View {
                 resultsList
             }
         }
+        #if os(tvOS)
+        // tvOS draws the title large over the content, and the search field is already labelled "Search".
+        .navigationTitle("")
+        #else
         .navigationTitle("Search")
+        #endif
         .searchable(text: $query)
         .watchActionAlerts(watchActions)
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
@@ -221,9 +226,14 @@ struct GenreView: View {
 
     var body: some View {
         AsyncContent(load: { try await appModel.service.items(in: genre) }) { items in
-            PosterBrowser(items: items)
+            PosterBrowser(items: items, title: genre.name, offersGenreFilter: false)
         }
+        #if os(tvOS)
+        // The browser draws the title itself, level with the sort and filter buttons, as a library's page does.
+        .navigationTitle("")
+        #else
         .navigationTitle(genre.name)
+        #endif
     }
 }
 

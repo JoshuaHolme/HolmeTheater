@@ -124,6 +124,9 @@ struct PosterBrowser: View {
     /// (Elsewhere the navigation bar has the title.)
     var title: String?
 
+    /// Whether the filter menu can narrow by genre. Off on a genre's own page, where every item is of that genre.
+    var offersGenreFilter = true
+
     @State private var sort: PosterSort
     @State private var filter = PosterFilter()
 
@@ -133,9 +136,10 @@ struct PosterBrowser: View {
     @State private var genres: [String]
 
     /// - Parameter sort: The order the grid starts in. The viewer can change it from the sort menu.
-    init(items: [MediaItem], sort: PosterSort = .nameAscending, title: String? = nil) {
+    init(items: [MediaItem], sort: PosterSort = .nameAscending, title: String? = nil, offersGenreFilter: Bool = true) {
         self.items = items
         self.title = title
+        self.offersGenreFilter = offersGenreFilter
         _sort = State(initialValue: sort)
         _visibleItems = State(initialValue: sort.sorted(items))
         _genres = State(initialValue: Self.genres(in: items))
@@ -326,7 +330,7 @@ struct PosterBrowser: View {
                 }
             }
 
-            if !genres.isEmpty {
+            if offersGenreFilter, !genres.isEmpty {
                 Menu {
                     Picker("Genre", selection: $filter.genre) {
                         Text("All Genres").tag(String?.none)
