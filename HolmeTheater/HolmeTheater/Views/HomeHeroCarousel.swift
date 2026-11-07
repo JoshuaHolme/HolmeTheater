@@ -57,6 +57,26 @@ enum HeroLayout {
     }
 }
 
+#if os(tvOS)
+private extension View {
+    /// Moves down by up to `distance` as the page scrolls, over the stretch in which the carousel pulls away from the first
+    /// shelf (`HeroLayout.parallaxTravel`). Applied to something as big as the carousel.
+    ///
+    /// Inside the carousel, its position in the scroll view already includes the page's parallax, which moves it
+    /// `parallaxLead` more than the scrolling, so that's allowed for: the move is done only when the carousel has stopped
+    /// pulling away, at the artwork's bottom edge, and never gets ahead of the shelf rising to meet it.
+    ///
+    /// Linear in the scrolling, not eased: an ease would flatten out near the ends, so going back up the details would
+    /// reach their place before the shelf does. This way they and the shelf arrive together, in either direction.
+    func settles(by distance: CGFloat) -> some View {
+        visualEffect { [span = HeroLayout.parallaxTravel * (1 + HeroLayout.parallaxLead)] content, proxy in
+            let moved = max(0, -proxy.frame(in: .scrollView).minY)
+            return content.offset(y: min(moved / span, 1) * distance)
+        }
+    }
+}
+#endif
+
 /// A row of full-width hero images, one for each of the newest items on the server, that advances by itself.
 ///
 /// It moves to the next item after ``advanceInterval`` and loops back to the first after the last. Touching it, by
@@ -147,6 +167,9 @@ struct HomeHeroCarousel<Header: View>: View {
     /// The fade in progress, so a quick run of changes restarts it rather than piling up.
     @State private var fadeTask: Task<Void, Never>?
 
+    /// How far above the artwork's bottom edge the details and dots rest when settled, beyond their usual margins.
+    private static var settledBottomGap: CGFloat { 20 }
+
     private var width: CGFloat { screenSize.width }
 
     /// The carousel's height: tall and nearly poster-shaped on a narrow screen, and no more than most of the screen's
@@ -223,16 +246,31 @@ struct HomeHeroCarousel<Header: View>: View {
                 .padding(.trailing, safeArea.trailing)
         }
         #if os(tvOS)
+        // As the page scrolls and the first shelf comes away from the carousel, the text, buttons and dots settle down toward
+        // the artwork's bottom edge, which the shelf's rise over it had kept them clear of. They move with the scrolling,
+        // and reach the bottom as the artwork's extra movement ends.
         // The text and buttons aren't on the pages: they fade out and in as the hero changes, while the artwork slides.
-        .overlay(alignment: .bottomLeading) {
+        .overlay {
             let item = items[min(shownIndex, items.count - 1)]
             HeroDetails(item: item, playTarget: playTargets[item.id], safeArea: safeArea, play: play)
                 .opacity(contentOpacity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .settles(by: HeroLayout.bottomReserve - Self.settledBottomGap)
         }
-        .overlay(alignment: .bottomLeading) { tvControls }
+        .overlay {
+            tvControls
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .settles(by: HeroLayout.bottomReserve - Self.settledBottomGap)
+        }
         #endif
         .overlay(alignment: .bottom) {
+            #if os(tvOS)
             pageDots
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .settles(by: HeroLayout.dotsLift - Self.settledBottomGap)
+            #else
+            pageDots
+            #endif
         }
         // Full width, so only one page is ever in view and the page dots are centered on the screen. Without this
         // the carousel stops at the side safe areas.
