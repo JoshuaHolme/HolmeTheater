@@ -187,6 +187,9 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable, Codable {
     /// The ID of the season an episode belongs to, or `nil` for anything else.
     var seasonID: String? = nil
 
+    /// For an episode: its season's poster, ready to load, if the server may have one. `nil` for anything else.
+    var seasonPosterURL: URL? = nil
+
     /// For a show or season: how many episodes it has. `nil` for anything else, or if the server didn't say.
     var episodeCount: Int? = nil
 

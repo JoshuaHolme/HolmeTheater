@@ -1116,6 +1116,7 @@ actor JellyfinMediaService: MediaService {
             airDate: kind == .episode ? dto.premiereDate : nil,
             seriesID: dto.seriesID,
             seasonID: kind == .episode ? dto.seasonID : nil,
+            seasonPosterURL: kind == .episode ? seasonPosterURL(for: dto, client: client) : nil,
             episodeCount: episodeCount(of: dto, kind: kind),
             seasonCount: kind == .series ? dto.childCount : nil,
             unwatchedEpisodeCount: kind == .series || kind == .season ? dto.userData?.unplayedItemCount : nil,
@@ -1336,6 +1337,14 @@ actor JellyfinMediaService: MediaService {
         }
 
         return dto.type == .episode ? (seriesPoster ?? ownPoster) : (ownPoster ?? seriesPoster)
+    }
+
+    /// An episode's season's poster. The episode doesn't say whether its season has one (it carries only the show's
+    /// image tag), so this asks for it without a tag; if the season has none the request fails, and the page falls back
+    /// to the show's poster.
+    private static func seasonPosterURL(for dto: BaseItemDto, client: JellyfinClient) -> URL? {
+        guard let seasonID = dto.seasonID else { return nil }
+        return client.url(path: "/Items/\(seasonID)/Images/\(ImageType.primary.rawValue)?maxWidth=\(posterWidth)")
     }
 
     /// Widescreen artwork for list rows.

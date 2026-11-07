@@ -616,7 +616,7 @@ nonisolated final class DownloadStore: Sendable {
 
     /// Every image an item shows.
     static func artworkURLs(of item: MediaItem) -> [URL] {
-        let own = [item.posterURL, item.backdropURL, item.thumbnailURL, item.logoURL]
+        let own = [item.posterURL, item.seasonPosterURL, item.backdropURL, item.thumbnailURL, item.logoURL]
         let people = item.people.flatMap { [$0.imageURL, $0.largeImageURL] }
         let chapters = item.chapters.map(\.imageURL)
         return (own + people + chapters).compactMap { $0 }.filter { !$0.isFileURL }
@@ -633,6 +633,7 @@ nonisolated final class DownloadStore: Sendable {
         }
         var item = item
         item.posterURL = local(item.posterURL)
+        item.seasonPosterURL = local(item.seasonPosterURL)
         item.backdropURL = local(item.backdropURL)
         item.thumbnailURL = local(item.thumbnailURL)
         item.logoURL = local(item.logoURL)

@@ -504,15 +504,19 @@ struct ShowDetailView: View {
             // Where the hero is wide enough to leave room beside the details, the season's poster shows large and sharp
             // in the top corner, the same distance from the top and the side edge.
             .overlay(alignment: .topTrailing) {
-                if usesPosterArtwork, let posterURL = current.posterURL {
+                if usesPosterArtwork, let artworkURL = cornerArtworkURL {
                     GeometryReader { proxy in
                         if proxy.size.width > Self.sharpPosterMinWidth {
-                            CachedAsyncImage(url: posterURL) { phase in
+                            CachedAsyncImage(url: artworkURL) { phase in
                                 if case .success(let image) = phase {
                                     image.resizable().scaledToFit()
                                 }
                             }
-                            .frame(height: proxy.size.height * Self.sharpPosterFraction)
+                            // A season's tall poster is sized by its height, an episode's widescreen still by its width.
+                            .frame(
+                                width: isEpisode ? proxy.size.width * Self.sharpStillFraction : nil,
+                                height: isEpisode ? nil : proxy.size.height * Self.sharpPosterFraction
+                            )
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -591,8 +595,19 @@ struct ShowDetailView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Whether the page is built from the season's own poster, as a season's is, rather than a backdrop.
-    private var usesPosterArtwork: Bool { isSeason && current.posterURL != nil }
+    /// The poster the page's blurred background is made from: a season's own, or for an episode the poster of its
+    /// season (the show's, if the season's isn't known). Nil for a show or movie, which use their backdrop.
+    private var pageBackgroundURL: URL? {
+        if isSeason { return current.posterURL }
+        if isEpisode { return current.seasonPosterURL ?? current.posterURL }
+        return nil
+    }
+
+    /// Whether the page is built from a blurred poster, as a season's and an episode's are, rather than a backdrop.
+    private var usesPosterArtwork: Bool { pageBackgroundURL != nil }
+
+    /// The picture shown sharp in the hero's top corner: a season's poster, or an episode's own still.
+    private var cornerArtworkURL: URL? { isEpisode ? current.thumbnailURL : current.posterURL }
 
     /// How far a season's page background reaches below its content, more than any bottom safe area.
     private static let pageBackgroundOverhang: CGFloat = 200
@@ -602,9 +617,21 @@ struct ShowDetailView: View {
     private var seasonPageBackground: some View {
         Color.black
             .overlay {
-                CachedAsyncImage(url: current.posterURL) { phase in
-                    if case .success(let image) = phase {
+                CachedAsyncImage(url: pageBackgroundURL) { phase in
+                    switch phase {
+                    case .success(let image):
                         image.resizable().scaledToFill()
+                    case .failure:
+                        // The season has no poster of its own on the server: the show's stands in.
+                        if let fallback = current.posterURL, fallback != pageBackgroundURL {
+                            CachedAsyncImage(url: fallback) { phase in
+                                if case .success(let image) = phase {
+                                    image.resizable().scaledToFill()
+                                }
+                            }
+                        }
+                    default:
+                        EmptyView()
                     }
                 }
                 .scaleEffect(1.3)
@@ -631,6 +658,9 @@ struct ShowDetailView: View {
     /// How much of the hero's height a season's sharp poster fills.
     private static let sharpPosterFraction: CGFloat = 0.6
 
+    /// How much of the hero's width an episode's sharp still fills.
+    private static let sharpStillFraction: CGFloat = 0.33
+
     /// The space between a season's sharp poster and the hero's top and side edges.
     private static let sharpPosterInset: CGFloat = 48
 
@@ -639,7 +669,7 @@ struct ShowDetailView: View {
     private var heroImageURL: URL? {
         // A season's poster is the page's background, not the hero's image.
         if usesPosterArtwork { return nil }
-        return isEpisode ?current.thumbnailURL ?? current.backdropURL ?? current.posterURL : current.backdropURL ?? current.posterURL
+        return isEpisode ? current.thumbnailURL ?? current.backdropURL ?? current.posterURL : current.backdropURL ?? current.posterURL
     }
 
     /// e.g. "Jan 5, 2001 · 45m": the day an episode aired and how long it runs. Nil if neither is known.
