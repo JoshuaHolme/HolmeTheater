@@ -35,14 +35,13 @@ struct SeasonsSection: View {
             await ImageCache.shared.preload(children.prefix(6).compactMap(\.posterURL))
             return children
         }, reloadID: reloadID, pullsToRefresh: false) { children in
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: Layout.shelfHeadingGap) {
                 if children.count == 1, let season = children.first {
                     // A show with a single season is a mini series: its episodes stand in for the one season.
                     EpisodeShelf(season: season, reloadID: reloadID, omitting: [.show, .season], open: open, play: play)
                 } else {
                     ShelfHeadingLink(title: "\(children.count) Seasons") { showsSeasonList = true }
-                        .padding(.horizontal)
-
+                        .padding(.horizontal, Layout.contentInset)
                     seasonShelf(children)
                 }
             }
@@ -58,7 +57,7 @@ struct SeasonsSection: View {
                     seasonCard(season)
                 }
             }
-            .padding(.horizontal)
+            .padding(.horizontal, Layout.contentInset)
         }
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
@@ -103,6 +102,13 @@ struct ShelfHeadingLink: View {
     let action: () -> Void
 
     var body: some View {
+        #if os(tvOS)
+        // Plain text, as on the home screen: the row is the whole list, so there's no chevron to focus above it.
+        Text(title)
+            .font(Layout.shelfHeadingFont)
+            .foregroundStyle(.secondary)
+            .accessibilityAddTraits(.isHeader)
+        #else
         Button(action: action) {
             // The chevron stays beside the first line when the heading wraps.
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -116,6 +122,7 @@ struct ShelfHeadingLink: View {
         }
         .cardLinkStyle()
         .accessibilityAddTraits(.isHeader)
+        #endif
     }
 }
 
@@ -241,7 +248,7 @@ private struct SeasonCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Layout.captionGap) {
             ArtworkView(url: season.posterURL, aspectRatio: 2.0 / 3.0)
                 .overlay(alignment: .topTrailing) {
                     if season.showsWatchedBadge {
@@ -249,7 +256,13 @@ private struct SeasonCard: View {
                     }
                 }
                 .overlay(alignment: .topLeading) { DownloadedBadge(item: season) }
+                // The artwork is what lifts and shines on focus, as on the other posters.
+                .focusHighlight()
 
+            #if os(tvOS)
+            // The same caption as the other posters, so the row looks like them.
+            ItemCaption(item: season, reservedLines: 2, lines: [season.seasonTitle, season.seasonDetailLine].compactMap { $0 })
+            #else
             VStack(alignment: .leading, spacing: 2) {
                 Text(season.seasonTitle)
                     .font(.subheadline.weight(.semibold))
@@ -262,6 +275,7 @@ private struct SeasonCard: View {
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
                 }
             }
+            #endif
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)

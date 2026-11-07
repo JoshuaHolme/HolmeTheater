@@ -42,6 +42,11 @@ struct ShowDetailView: View {
     /// The show's special features. Empty until they arrive, or if there are none.
     @State private var specialFeatures: [MediaItem] = []
 
+    #if os(tvOS)
+    /// The height of the whole screen, safe areas included, which the hero fills on tvOS as the Home carousel does.
+    @State private var fullScreenHeight: CGFloat = 0
+    #endif
+
     /// The height of the details over the hero's bottom-left corner, without the padding around them.
     @State private var detailsHeight: CGFloat = 0
 
@@ -106,8 +111,21 @@ struct ShowDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            // On tvOS the same space between rows as on Home.
+            VStack(alignment: .leading, spacing: Self.rowSpacing) {
                 hero
+                    #if os(tvOS)
+                    // The first row rises over the artwork's bottom edge, as on Home, so its heading and the tops of its
+                    // cards show over the hero at rest.
+                    // Scrolled up, the hero leaves faster than the page, so the first row comes away from it and stands
+                    // on its own, as on Home. Read here, not in the effect, which runs outside the main actor.
+                    .visualEffect { [lead = Self.parallaxLead, travel = Self.parallaxTravel] content, proxy in
+                        let scrolled = max(0, -proxy.frame(in: .scrollView).minY)
+                        return content.offset(y: -min(scrolled, travel) * lead)
+                    }
+                    // A little further down, as Home's first shelf is, so its heading clears the artwork's edge.
+                    .padding(.bottom, 12 - HeroLayout.bottomReserve)
+                    #endif
 
                 // These pad their own headings and the ends of their rows, so the rows scroll edge to edge.
                 if isPlayableItem {
@@ -149,6 +167,10 @@ struct ShowDetailView: View {
             }
             .padding(.bottom)
         }
+        #if os(tvOS)
+        // Measured before the safe area is ignored, so the hero can be as tall as the whole screen, as Home's is.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height + $0.safeAreaInsets.top + $0.safeAreaInsets.bottom } action: { fullScreenHeight = $0 }
+        #endif
         // The hero runs under the status and navigation bars, up to the top edge of the screen.
         .ignoresSafeArea(edges: .top)
         .onGeometryChange(for: CGSize.self) { $0.size } action: { screenSize = $0 }
@@ -203,9 +225,9 @@ struct ShowDetailView: View {
 
     /// The backdrop, with the show's details stacked over its bottom-left corner.
     private var hero: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Self.detailsSpacing) {
             // A season has the show's logo (or its name, if there is none), then its own name beneath.
-            ShowLogo(item: current, fallbackTitle: isSeason || isEpisode ? (item.seriesTitle ?? item.title) : nil)
+            ShowLogo(item: current, fallbackTitle: isSeason || isEpisode ? (item.seriesTitle ?? item.title) : nil, maxSizeOverride: Self.logoSize)
 
             if isSeason {
                 Text(item.seasonTitle)
@@ -225,11 +247,32 @@ struct ShowDetailView: View {
 
             // As in the TV app, the short genre line is the bright one and the description recedes beneath it,
             // so the two read as different things without the genres fading into the artwork.
+            #if os(tvOS)
+            // As on Home: what it is and its first genres, with the content rating boxed beside them.
+            if detailsLine != nil || current.officialRating != nil {
+                HStack(spacing: 10) {
+                    if let line = detailsLine {
+                        Text(line)
+                            .font(.system(size: 30, weight: .medium))
+                            .lineLimit(shortTextLineLimit)
+                    }
+                    if let rating = current.officialRating {
+                        Text(rating)
+                            .font(.system(size: 22, weight: .semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(.white, lineWidth: 1.5) }
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+            #else
             if let details = detailsLine {
                 Text(details)
                     .font(.callout)
                     .lineLimit(shortTextLineLimit)
             }
+            #endif
 
             if let tagline = current.tagline {
                 Text(tagline)
@@ -239,7 +282,19 @@ struct ShowDetailView: View {
             }
 
             if let overview = current.overview {
+                #if os(tvOS)
+                // Big enough to read from the couch: three lines across most of the screen.
+                TruncatingOverview(
+                    text: overview,
+                    lineLimit: 3,
+                    isFocusable: overviewIsFocusable,
+                    tvFont: .system(size: 29),
+                    tvOpacity: 0.8,
+                    tvMaxWidth: 1300
+                ) { showsOverview = true }
+                #else
                 TruncatingOverview(text: overview, lineLimit: 3, isFocusable: overviewIsFocusable) { showsOverview = true }
+                #endif
             }
 
             // The run (and whether it's over) on one line, the ratings on the next.
@@ -275,10 +330,16 @@ struct ShowDetailView: View {
         .foregroundStyle(.white)
         // The details sit on a dark fade whatever the appearance, so their secondary colors are the light ones.
         .environment(\.colorScheme, .dark)
+        #if os(tvOS)
+        // A soft shadow keeps the text readable over bright artwork, as on Home.
+        .shadow(color: .black.opacity(0.55), radius: 8)
+        #endif
         // How tall the details are, so the fade behind them can reach up past their top.
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailsHeight = $0 }
-        .padding(.horizontal)
-        .padding(.bottom, 20)
+        // The same margin as Home's text and shelves, so they line up.
+        .padding(.horizontal, Layout.contentInset)
+        // Leaves room for the first row, which rises over the artwork's bottom edge on tvOS.
+        .padding(.bottom, 20 + HeroLayout.bottomReserve)
         // If the details make the hero taller than its usual height, some artwork still shows above them, clear
         // of the navigation bar.
         .padding(.top, Self.minArtworkAboveDetails)
@@ -293,7 +354,11 @@ struct ShowDetailView: View {
     /// short in portrait, and no more than `heroFraction` of the screen, which keeps it from filling a landscape
     /// screen. Taller only if the details need it.
     private var heroMinHeight: CGFloat {
-        min(screenSize.height * Self.heroFraction, screenSize.width / Self.heroAspectRatio)
+        #if os(tvOS)
+        // The whole screen, like Home's carousel.
+        if fullScreenHeight > 0 { return fullScreenHeight }
+        #endif
+        return min(screenSize.height * Self.heroFraction, screenSize.width / Self.heroAspectRatio)
     }
 
     /// The hero's narrowest shape, width divided by height.
@@ -305,6 +370,41 @@ struct ShowDetailView: View {
         return 1
         #else
         return 0.75
+        #endif
+    }
+
+    /// The logo's size cap. On tvOS it's the Home carousel's, smaller than the usual.
+    private static var logoSize: CGSize? {
+        #if os(tvOS)
+        CGSize(width: 440, height: 150)
+        #else
+        nil
+        #endif
+    }
+
+    /// Space between the lines of the hero's details.
+    private static var detailsSpacing: CGFloat { 12 }
+
+    #if os(tvOS)
+    /// How far the page scrolls to bring the first row into view. Home's first row is widescreen cards; here it's season
+    /// posters, which are taller by the difference in their heights, so the page scrolls that much further.
+    private static var parallaxTravel: CGFloat {
+        HeroLayout.parallaxTravel + (Layout.posterWidth * 1.5 - Layout.wideCardWidth * 9 / 16)
+    }
+
+    /// How much faster than the page the hero leaves, scaled down over that longer scroll so the hero takes back the same
+    /// total distance as Home's (what the row rises over the artwork, plus the gap) and doesn't rush away.
+    private static var parallaxLead: CGFloat {
+        HeroLayout.parallaxLead * HeroLayout.parallaxTravel / parallaxTravel
+    }
+    #endif
+
+    /// Space between the hero and the rows beneath it, and between one row and the next.
+    private static var rowSpacing: CGFloat {
+        #if os(tvOS)
+        Layout.shelfSpacing
+        #else
+        24
         #endif
     }
 
@@ -327,7 +427,12 @@ struct ShowDetailView: View {
     /// slides away behind the details; pulling down past the top, it stretches to fill the gap above it.
     private var backdrop: some View {
         // Read here rather than inside the effects, which run outside the main actor.
+        // On tvOS the whole hero moves faster than the page instead (see the body), as Home's does, so the artwork stays put in it.
+        #if os(tvOS)
+        let lag: CGFloat = 0
+        #else
         let lag = 1 - Self.parallaxSpeed
+        #endif
 
         return Color.black
             .overlay {
@@ -357,6 +462,16 @@ struct ShowDetailView: View {
                     )
                 }
             }
+            #if os(tvOS)
+            // Darker on the side the text is on, fading out toward the other, as on Home.
+            .overlay {
+                LinearGradient(
+                    colors: [.black.opacity(0.6), .black.opacity(0.25), .clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+            #endif
             // Pulled down past the top, the backdrop grows from its bottom edge to cover the gap the overscroll
             // opens above it. After the clip, so the growth isn't clipped away.
             .visualEffect { content, proxy in
@@ -388,7 +503,7 @@ struct ShowDetailView: View {
         var start = Self.usualScrimStart
         if heroHeight > 0, detailsHeight > 0 {
             // The details, their bottom padding, and a little lead-in above them.
-            let covered = detailsHeight + 20 + Self.scrimLead
+            let covered = detailsHeight + 20 + HeroLayout.bottomReserve + Self.scrimLead
             start = min(start, max(0, 1 - covered / heroHeight))
         }
         return Self.scrimProfile.map { step in
@@ -457,7 +572,12 @@ struct ShowDetailView: View {
     private var ratingsLine: String? {
         let score = current.communityRating.map { "★ " + $0.formatted(.number.precision(.fractionLength(1))) }
         let critics = current.criticRating.map { String(localized: "\(Int($0.rounded()))% Critics") }
+        #if os(tvOS)
+        // The content rating is boxed beside the genres instead, as on Home.
+        let parts = [score, critics].compactMap { $0 }
+        #else
         let parts = [current.officialRating, score, critics].compactMap { $0 }
+        #endif
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -477,6 +597,15 @@ struct ShowDetailView: View {
         }
         // Moving focus up from anywhere along the page lands on these buttons.
         .tvFocusSection()
+    }
+
+    /// The icons in the hero's round buttons: the size of Home's More Info icon on tvOS.
+    private static var heroIconFont: Font {
+        #if os(tvOS)
+        .system(size: 30, weight: .semibold)
+        #else
+        .headline
+        #endif
     }
 
     /// Space between the hero's buttons.
@@ -504,7 +633,7 @@ struct ShowDetailView: View {
         if let change = watchedChange {
             Button(action: change.perform) {
                 Image(systemName: change.wantsWatched ? "checkmark.circle" : "checkmark.circle.fill")
-                    .font(.headline)
+                    .font(Self.heroIconFont)
                     .foregroundStyle(change.wantsWatched ? .white : .green)
             }
             .heroCircleButton()
@@ -571,7 +700,7 @@ struct ShowDetailView: View {
             toggleFavorite()
         } label: {
             Image(systemName: isFavorite ? "heart.fill" : "heart")
-                .font(.headline)
+                .font(Self.heroIconFont)
                 .foregroundStyle(isFavorite ? .red : .white)
         }
         .heroCircleButton()
@@ -605,7 +734,11 @@ struct ShowDetailView: View {
                 playingItem = episode
             } label: {
                 Label(isPlayableItem || compact ? ownPlayTitle(for: episode) : playTitle(for: episode), systemImage: "play.fill")
+                    #if os(tvOS)
+                    .font(.callout.weight(.semibold))
+                    #else
                     .font(.headline)
+                    #endif
                     #if !os(tvOS)
                     // Dark on white, like the TV app's Play button; the hero's text is white otherwise.
                     .foregroundStyle(.black)
@@ -615,6 +748,8 @@ struct ShowDetailView: View {
             // The same bordered style as the buttons beside it, so all of them take the theme's color when focused (the
             // prominent style draws light gray instead). Play is what's focused first.
             .buttonStyle(.bordered)
+            // A pill, as on Home.
+            .buttonBorderShape(.capsule)
             .prefersDefaultFocus(true, in: focusNamespace)
             .focused($focusedControl, equals: .play)
             #else

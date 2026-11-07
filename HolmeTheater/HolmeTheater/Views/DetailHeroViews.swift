@@ -71,6 +71,12 @@ struct TruncatingOverview: View {
     /// focus to its Play button, so focus doesn't flash on the description on the way there.
     var isFocusable = true
 
+    /// How the description looks on tvOS, where it's a button rather than text with a MORE button. The defaults are the
+    /// usual body text; the show page uses the Home carousel's smaller, dimmer text and wider column.
+    var tvFont: Font = .body
+    var tvOpacity: Double = 0.75
+    var tvMaxWidth: CGFloat = 900
+
     /// Called when MORE is tapped.
     let onMore: () -> Void
 
@@ -90,19 +96,22 @@ struct TruncatingOverview: View {
 
     var body: some View {
         #if os(tvOS)
-        // The whole description is the button, as in the Apple TV app: selecting it shows all of it. A small MORE
-        // button over the last line would be a fiddly thing to aim at with the remote.
-        Button(action: onMore) {
-            Text(text)
-                .font(.body)
-                .foregroundStyle(foreground.opacity(0.75))
-                .lineLimit(lineLimit)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: 900, alignment: .leading)
+        if isTruncated {
+            // The whole description is the button, as in the Apple TV app: selecting it shows all of it. The card style gives
+            // it the system's focus platter, and the padding gives that platter room around the text. The negative padding
+            // outside takes the room back, so the text sits where it does when it isn't a button.
+            Button(action: onMore) {
+                tvText.padding(Self.tvPlatterInset)
+            }
+            .buttonStyle(.card)
+            .padding(-Self.tvPlatterInset)
+            // Held off the remote while the page moves focus to its Play button.
+            .disabled(!isFocusable)
+            .accessibilityHint("Shows the full description")
+        } else {
+            // All of it fits, so there's nothing more to show and nothing to select.
+            tvText
         }
-        .buttonStyle(.plain)
-        .focusable(isFocusable)
-        .accessibilityHint("Shows the full description")
         #else
         Text(text)
             .font(.callout)
@@ -123,15 +132,54 @@ struct TruncatingOverview: View {
         #endif
     }
 
+    #if os(tvOS)
+    /// How far the focus platter reaches past the text.
+    private static var tvPlatterInset: CGFloat { 20 }
+
+    /// The description as text, cut off at `lineLimit` lines. If it's cut off, its last line fades out into MORE, which is a
+    /// label here and not a button of its own: the whole description is the button.
+    private var tvText: some View {
+        Text(text)
+            .font(tvFont)
+            .foregroundStyle(foreground.opacity(tvOpacity))
+            .lineLimit(lineLimit)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: tvMaxWidth, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { shownHeight = $0 }
+            .background(alignment: .topLeading) { measurements }
+            .mask {
+                if isTruncated { truncationMask } else { Rectangle() }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if isTruncated {
+                    Text("MORE")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(foreground)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { moreWidth = $0 }
+                        .frame(height: lineHeight)
+                }
+            }
+    }
+    #endif
+
+    /// The font the text is set in, which the hidden copies that measure it have to match.
+    private var bodyFont: Font {
+        #if os(tvOS)
+        tvFont
+        #else
+        .callout
+        #endif
+    }
+
     /// Invisible copies of the text that measure how tall all of it is, and how tall one line is.
     private var measurements: some View {
         ZStack(alignment: .topLeading) {
             Text(text)
-                .font(.callout)
+                .font(bodyFont)
                 .fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
             Text(verbatim: " ")
-                .font(.callout)
+                .font(bodyFont)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { lineHeight = $0 }
         }
         .hidden()

@@ -18,6 +18,15 @@ struct CastAndCrewShelf: View {
         #endif
     }
 
+    /// Space between portraits. On tvOS there's room for a focused portrait to lift without touching its neighbors.
+    private static var cardSpacing: CGFloat {
+        #if os(tvOS)
+        Layout.cardSpacing
+        #else
+        16
+        #endif
+    }
+
     /// The width of one person's column as shown: wider at larger text sizes (up to 1.75 times) so names and
     /// roles aren't broken into a few letters a line.
     @ScaledMetric(relativeTo: .footnote) private var scaledWidth: CGFloat = CastAndCrewShelf.cardWidth
@@ -32,21 +41,29 @@ struct CastAndCrewShelf: View {
 
     var body: some View {
         if !people.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: Layout.shelfHeadingGap) {
                 ShelfHeadingLink(title: "Cast and Crew") { showsFullCast = true }
-                    .padding(.horizontal)
+                    .padding(.horizontal, Layout.contentInset)
 
                 ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: 16) {
+                    LazyHStack(alignment: .top, spacing: Self.cardSpacing) {
                         ForEach(people) { person in
+                            #if os(tvOS)
+                            TVPersonButton(person: person, size: cardWidth, open: { openedPerson = person }, viewPhoto: { photoPerson = person })
+                            #else
                             PersonCard(person: person, size: cardWidth)
                                 .frame(width: cardWidth)
                                 .personPeek(person, open: { openedPerson = person }, viewPhoto: { photoPerson = person })
+                            #endif
                         }
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, Layout.contentInset)
                 }
                 .scrollIndicators(.hidden)
+                #if os(tvOS)
+                // Lets a focused portrait lift and grow past the edge of the scroll view.
+                .scrollClipDisabled()
+                #endif
                 // Presented from here rather than from a card, because cards sit in a lazy stack, where SwiftUI
                 // ignores destinations.
                 .navigationDestination(item: $openedPerson) { PersonDetailView(person: $0) }
@@ -269,3 +286,48 @@ struct PersonCard: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+#if os(tvOS)
+/// A person in the Cast and Crew row on tvOS, built the way the system's own lockups are: a borderless button whose label is
+/// the portrait and then the name and role as separate views, not wrapped in a stack. The style lifts and tilts the portrait
+/// and moves the text out of its way as it grows, and `buttonBorderShape(.circle)` gives that effect a round shape in place
+/// of the square platter.
+struct TVPersonButton: View {
+    let person: MediaPerson
+
+    /// The portrait's width and height, which is also the width of the text under it.
+    let size: CGFloat
+
+    let open: () -> Void
+    let viewPhoto: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            PersonPortrait(person: person, size: size)
+                .hoverEffect(.highlight)
+
+            Text(person.name)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(2)
+                // Wraps to a second line rather than being cut off: the button's layout doesn't give the text spare height.
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: size)
+
+            if let subtitle = person.subtitle {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: size)
+            }
+        }
+        .buttonStyle(.borderless)
+        .buttonBorderShape(.circle)
+        .multilineTextAlignment(.center)
+        .contextMenu {
+            ItemActionButtons(entries: person.menuEntries(open: open, viewPhoto: viewPhoto))
+        }
+    }
+}
+#endif
