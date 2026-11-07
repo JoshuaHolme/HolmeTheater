@@ -62,9 +62,14 @@ struct ItemNavigation {
     /// Plays an item full-screen.
     let play: (MediaItem) -> Void
 
-    init(open: @escaping (MediaItem) -> Void, play: @escaping (MediaItem) -> Void) {
+    /// Whether selecting a playable item plays it on tvOS, where selecting a card otherwise opens it. For a list of
+    /// episodes inside their season, where the point is to watch one.
+    let playsOnTap: Bool
+
+    init(open: @escaping (MediaItem) -> Void, play: @escaping (MediaItem) -> Void, playsOnTap: Bool = false) {
         openDetail = open
         self.play = play
+        self.playsOnTap = playsOnTap
     }
 
     /// Opens an item's detail screen. A special feature has none, so it plays instead.
@@ -80,8 +85,13 @@ struct ItemNavigation {
     /// The detail screen is otherwise reached through "Go to …" or a peek.
     func tap(_ item: MediaItem) {
         #if os(tvOS)
-        // As in the Apple TV app, selecting a card opens it; Play is on the detail screen and in the menu.
-        open(item)
+        // As in the Apple TV app, selecting a card opens it; Play is on the detail screen and in the menu. Unless the
+        // list asks for playing, in which case the detail screen is "Go to …" in the menu.
+        if playsOnTap, item.isPlayable {
+            play(item)
+        } else {
+            open(item)
+        }
         #else
         if item.isPlayable {
             play(item)
@@ -254,6 +264,7 @@ struct WatchActions {
         // A special feature has no screen of its own to go to; it only plays.
         var actions = actions(for: item, goTo: item.kind == .extra ? nil : { navigation.open(item) })
         if item.isPlayable { actions?.play = { navigation.play(item) } }
+        actions?.tapPlays = navigation.playsOnTap && item.isPlayable
         // A show with a single season has no season page, so its episodes offer only the episode and the show. The
         // count is fetched if it isn't known yet, and the entry waits for it.
         if item.kind == .episode, !omitting.contains(.season), let seasonID = item.seasonID, let seriesID = item.seriesID {

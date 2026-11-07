@@ -162,7 +162,8 @@ struct EpisodeShelf: View {
                     isWide: true,
                     omitting: omitting,
                     onChange: { reloadCount += 1 },
-                    navigation: ItemNavigation(open: open, play: play)
+                    // Inside the season, selecting an episode plays it; its page is "Go to Episode" in the menu.
+                    navigation: ItemNavigation(open: open, play: play, playsOnTap: true)
                 )
             }
         }

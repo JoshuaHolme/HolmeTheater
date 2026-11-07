@@ -972,6 +972,9 @@ struct ItemRowActions {
     /// Opens the item's detail screen: the menu's first entry, "Go to Movie", "Go to Episode", and so on.
     var goTo: (() -> Void)?
 
+    /// Whether selecting the item plays it (on tvOS, where it otherwise opens), so the menu offers "Go to …" and not Play.
+    var tapPlays = false
+
     /// Opens the season an episode belongs to, and the show an episode or season belongs to. Nil where they
     /// don't apply. They sit after `goTo` in the menu: episode, season, show.
     var goToSeason: (() -> Void)?
@@ -1088,8 +1091,11 @@ extension ItemRowActions {
     func menuEntries(for item: MediaItem) -> [ItemMenuEntry] {
         var entries: [ItemMenuEntry] = []
         #if os(tvOS)
-        // Selecting a card already opens the item, so the menu leads with Play instead of "Go to …".
-        if let play {
+        // Selecting a card already opens the item, so the menu leads with Play instead of "Go to …". Where selecting
+        // plays it, it's the other way round.
+        if tapPlays, let goTo {
+            entries.append(ItemMenuEntry(id: .goTo, title: item.goToMenuTitle, systemImage: "info.circle", perform: goTo))
+        } else if let play {
             entries.append(ItemMenuEntry(id: .play, title: item.playButtonTitle(forShow: false), systemImage: "play.fill", perform: play))
         }
         #else

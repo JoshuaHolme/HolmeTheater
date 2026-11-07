@@ -124,7 +124,8 @@ struct ShowDetailView: View {
                     // cards show over the hero at rest.
                     // Scrolled up, the hero leaves faster than the page, so the first row comes away from it and stands
                     // on its own, as on Home. Read here, not in the effect, which runs outside the main actor.
-                    .visualEffect { [lead = Self.parallaxLead, travel = Self.parallaxTravel] content, proxy in
+                    // A season's hero doesn't leave early: its artwork is the whole page's, so it scrolls with the page.
+                    .visualEffect { [lead = usesPosterArtwork ? 0 : Self.parallaxLead, travel = Self.parallaxTravel] content, proxy in
                         let scrolled = max(0, -proxy.frame(in: .scrollView).minY)
                         return content.offset(y: -min(scrolled, travel) * lead)
                     }
@@ -171,6 +172,10 @@ struct ShowDetailView: View {
                 }
             }
             .padding(.bottom)
+            // A season's blurred poster fills the whole page behind its sections, and scrolls with them.
+            .background(alignment: .top) {
+                if usesPosterArtwork { seasonPageBackground }
+            }
         }
         #if os(tvOS)
         // Measured before the safe area is ignored, so the hero can be as tall as the whole screen, as Home's is.
@@ -475,7 +480,11 @@ struct ShowDetailView: View {
         let lag = 1 - Self.parallaxSpeed
         #endif
 
-        return Color.black
+        // A season's hero has no artwork or fades of its own: its blurred poster is the whole page's background (see
+        // `seasonPageBackground`), so there's no edge where the hero ends.
+        let isClear = usesPosterArtwork
+
+        return Color.black.opacity(isClear ? 0 : 1)
             .overlay {
                 CachedAsyncImage(url: heroImageURL) { phase in
                     if case .success(let image) = phase {
@@ -492,6 +501,28 @@ struct ShowDetailView: View {
                 }
             }
             .clipped()
+            // Where the hero is wide enough to leave room beside the details, the season's poster shows large and sharp
+            // in the top corner, the same distance from the top and the side edge.
+            .overlay(alignment: .topTrailing) {
+                if usesPosterArtwork, let posterURL = current.posterURL {
+                    GeometryReader { proxy in
+                        if proxy.size.width > Self.sharpPosterMinWidth {
+                            CachedAsyncImage(url: posterURL) { phase in
+                                if case .success(let image) = phase {
+                                    image.resizable().scaledToFit()
+                                }
+                            }
+                            .frame(height: proxy.size.height * Self.sharpPosterFraction)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                            .padding(.trailing, Self.sharpPosterInset)
+                            // Clear of the navigation bar where there is one, then the same inset as the side.
+                            .padding(.top, Self.minArtworkAboveDetails + Self.sharpPosterInset)
+                        }
+                    }
+                }
+            }
             .overlay {
                 // Eased rather than linear: it starts gently, so the artwork's top half is untouched, then deepens
                 // behind the details. Easing also avoids the visible edge a straight ramp leaves where it begins.
@@ -502,6 +533,7 @@ struct ShowDetailView: View {
                         endPoint: .bottom
                     )
                 }
+                .opacity(isClear ? 0 : 1)
             }
             #if os(tvOS)
             // Darker on the side the text is on, fading out toward the other, as on Home.
@@ -511,6 +543,7 @@ struct ShowDetailView: View {
                     startPoint: .leading,
                     endPoint: .trailing
                 )
+                .opacity(isClear ? 0 : 1)
             }
             #endif
             // Pulled down past the top, the backdrop grows from its bottom edge to cover the gap the overscroll
@@ -558,9 +591,55 @@ struct ShowDetailView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// The hero's image: an episode's own still, otherwise the backdrop (or poster, if there is none).
+    /// Whether the page is built from the season's own poster, as a season's is, rather than a backdrop.
+    private var usesPosterArtwork: Bool { isSeason && current.posterURL != nil }
+
+    /// How far a season's page background reaches below its content, more than any bottom safe area.
+    private static let pageBackgroundOverhang: CGFloat = 200
+
+    /// A season's poster, blurred and darkened to fill the whole page, hero and rows alike. It's part of the scrolling
+    /// content, so it moves with the page as the sections go by. Scaled up so the blur's soft edges fall outside it.
+    private var seasonPageBackground: some View {
+        Color.black
+            .overlay {
+                CachedAsyncImage(url: current.posterURL) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                    }
+                }
+                .scaleEffect(1.3)
+                .blur(radius: 50)
+            }
+            .overlay {
+                // Darker down the page, where the rows' headings and cards are.
+                LinearGradient(colors: [.black.opacity(0.3), .black.opacity(0.7)], startPoint: .top, endPoint: .bottom)
+            }
+            .clipped()
+            // Edge to edge, past the side safe areas, as the hero's artwork is.
+            .ignoresSafeArea(edges: .horizontal)
+            // Taller than the content, so it reaches the bottom of the screen when the last row is scrolled into view.
+            // The scroll view keeps the bottom safe area outside its content, where a background can't ignore it, so it
+            // overhangs by more than that.
+            .padding(.bottom, -Self.pageBackgroundOverhang)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    /// How wide the hero has to be for a season's poster to show sharp beside its details.
+    private static let sharpPosterMinWidth: CGFloat = 700
+
+    /// How much of the hero's height a season's sharp poster fills.
+    private static let sharpPosterFraction: CGFloat = 0.6
+
+    /// The space between a season's sharp poster and the hero's top and side edges.
+    private static let sharpPosterInset: CGFloat = 48
+
+    /// The hero's image: a season's own poster, an episode's own still, otherwise the backdrop (or poster, if there
+    /// is none).
     private var heroImageURL: URL? {
-        isEpisode ? current.thumbnailURL ?? current.backdropURL ?? current.posterURL : current.backdropURL ?? current.posterURL
+        // A season's poster is the page's background, not the hero's image.
+        if usesPosterArtwork { return nil }
+        return isEpisode ?current.thumbnailURL ?? current.backdropURL ?? current.posterURL : current.backdropURL ?? current.posterURL
     }
 
     /// e.g. "Jan 5, 2001 · 45m": the day an episode aired and how long it runs. Nil if neither is known.
@@ -637,6 +716,11 @@ struct ShowDetailView: View {
                 .heroCircleButton()
             #endif
         }
+        #if os(tvOS)
+        // As wide as the screen, not just the buttons, so a row below reaches them from any card, not only those
+        // directly under them. Otherwise moving up from one further along finds nothing above it.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        #endif
         // Moving focus up from anywhere along the page lands on these buttons.
         .tvFocusSection()
     }
