@@ -71,6 +71,16 @@ struct HomeView: View {
         #endif
     }
 
+    /// How far down the screen the theme's string of lights hangs from. On Apple TV, where the screen has no bar or heading of
+    /// its own, they run along the very top; elsewhere they hang just below the status bar.
+    private func effectsTopInset(_ safeArea: EdgeInsets) -> CGFloat {
+        #if os(tvOS)
+        16
+        #else
+        safeArea.top
+        #endif
+    }
+
     /// One shelf on the home screen.
     private struct Shelf: Identifiable {
         let id: String
@@ -93,6 +103,17 @@ struct HomeView: View {
         // Outside the scroll view, so it reports the real safe area, which the scroll view below runs past.
         GeometryReader { proxy in
             let safeArea = proxy.safeAreaInsets
+            // The theme's layers are siblings of the scroll view rather than its background and overlay: the scroll view's
+            // frame can be wider than the screen (its carousel runs past the safe areas), and then the string of lights, laid
+            // out by the layer's width, came out differently once the screen had loaded.
+            ZStack {
+            if let theme {
+                ThemeWash(color: theme.accent)
+                // The soft, near pieces, behind the posters and everything else on the screen...
+                if appModel.themeSettings.showsEffects {
+                    ThemeParticles(effect: theme.effect, topInset: effectsTopInset(safeArea), layer: .back)
+                }
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     if !showsHero && showsHeader {
@@ -159,22 +180,12 @@ struct HomeView: View {
             }
             // The carousel runs under the status bar, up to the top edge of the screen.
             .ignoresSafeArea(edges: .top)
-            .background {
-                if let theme {
-                    ThemeWash(color: theme.accent)
-                    // The soft, near pieces, behind the posters and everything else on the screen...
-                    if appModel.themeSettings.showsEffects {
-                        ThemeParticles(effect: theme.effect, topInset: safeArea.top, layer: .back)
-                    }
-                }
-            }
-            // ...and the sharp ones in front, so the two layers give it some depth.
-            .overlay {
-                if let theme, appModel.themeSettings.showsEffects {
-                    ThemeParticles(effect: theme.effect, topInset: safeArea.top, layer: .front)
-                }
-            }
             .pullToRefresh { await refresher.refresh() }
+            // ...and the sharp ones in front, so the two layers give it some depth.
+            if let theme, appModel.themeSettings.showsEffects {
+                ThemeParticles(effect: theme.effect, topInset: effectsTopInset(safeArea), layer: .front)
+            }
+            }
         }
         #if os(tvOS)
         // The holiday's greeting, which the heading would carry on other platforms, pinned to the top right corner of the screen,

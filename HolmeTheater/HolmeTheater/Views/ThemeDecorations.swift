@@ -378,6 +378,9 @@ struct ThemeParticles: View {
                 }
             }
             .ignoresSafeArea()
+            // Where its left edge is on the screen, which the string of lights is laid out from, so it's in the same place
+            // however far the area runs past the screen's edge on either side.
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minX } action: { simulation.originX = $0 }
             .allowsHitTesting(false)
             .accessibilityHidden(true)
             .onAppear { isVisible = true }
@@ -465,6 +468,9 @@ extension ThemeEffect {
 final class ParticleSimulation {
     /// Which layer's pieces this makes; set by the view that owns it.
     var layer: ThemeParticles.Layer = .front
+
+    /// How far the drawing area's left edge is from the screen's, so the lights can be laid out from the screen's.
+    var originX: CGFloat = 0
 
     /// How many of `effect`'s pieces this layer has: a third of them behind, the rest in front.
     private func count(for effect: ThemeEffect) -> Int {
@@ -668,20 +674,23 @@ final class ParticleSimulation {
             Color(red: 0.95, green: 0.25, blue: 0.25), Color(red: 0.25, green: 0.80, blue: 0.40),
             Color(red: 1, green: 0.80, blue: 0.30), Color(red: 0.35, green: 0.55, blue: 1)
         ]
-        let swags = max(2, Int((size.width / 150).rounded()))
-        let span = size.width / CGFloat(swags)
+        // The swags are a fixed width, laid out from the screen's left edge, not the drawing area's: the area can run past the
+        // screen on either side, by a different amount before and after the page has loaded. A bulb's place, color and twinkle
+        // come from where it is on the screen, so the string looks the same whatever the area is.
+        let span: CGFloat = 156
         let anchorY = top - 12
         let sag: CGFloat = 18
         let bulbsPerSwag = max(4, Int(span / 26))
+        let firstSwag = Int((originX / span).rounded(.down)) - 1
+        let lastSwag = Int(((originX + size.width) / span).rounded(.up)) + 1
 
         var wire = Path()
-        wire.move(to: CGPoint(x: 0, y: anchorY))
-        var bulb = 0
-        for swag in 0..<swags {
-            let start = CGPoint(x: CGFloat(swag) * span, y: anchorY)
+        for swag in firstSwag...lastSwag {
+            let start = CGPoint(x: CGFloat(swag) * span - originX, y: anchorY)
             let end = CGPoint(x: start.x + span, y: anchorY)
             // A quadratic's control point sits twice as deep as the curve dips.
             let control = CGPoint(x: start.x + span / 2, y: anchorY + sag * 2)
+            if swag == firstSwag { wire.move(to: start) }
             wire.addQuadCurve(to: end, control: control)
 
             for step in 1...bulbsPerSwag {
@@ -690,7 +699,8 @@ final class ParticleSimulation {
                     x: (1 - t) * (1 - t) * start.x + 2 * (1 - t) * t * control.x + t * t * end.x,
                     y: (1 - t) * (1 - t) * start.y + 2 * (1 - t) * t * control.y + t * t * end.y
                 )
-                let color = colors[bulb % colors.count]
+                let bulb = swag * bulbsPerSwag + (step - 1)
+                let color = colors[((bulb % colors.count) + colors.count) % colors.count]
                 let glow = 0.55 + 0.45 * sin(time * 1.6 + Double(bulb) * 1.7)
                 var ctx = context
                 ctx.translateBy(x: point.x, y: point.y + 4)
@@ -698,7 +708,6 @@ final class ParticleSimulation {
                          with: .radialGradient(Gradient(colors: [color.opacity(0.45 * glow), color.opacity(0)]), center: .zero, startRadius: 0, endRadius: 9))
                 ctx.opacity = 0.6 + 0.4 * glow
                 ctx.fill(Path(ellipseIn: CGRect(x: -2.5, y: -3, width: 5, height: 7)), with: .color(color))
-                bulb += 1
             }
         }
         context.stroke(wire, with: .color(Color(red: 0.15, green: 0.30, blue: 0.18).opacity(0.8)), lineWidth: 1.2)
