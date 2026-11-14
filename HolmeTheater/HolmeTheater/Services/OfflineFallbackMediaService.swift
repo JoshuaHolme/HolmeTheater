@@ -173,6 +173,42 @@ nonisolated struct OfflineFallbackMediaService: MediaService {
         try await base.setFavorite(isFavorite, itemID: itemID)
     }
 
+    // Collections too live on the server.
+
+    func collections() async throws -> [MediaItem] { try await base.collections() }
+
+    func createCollection(named name: String, itemIDs: [String]) async throws -> MediaItem {
+        try await base.createCollection(named: name, itemIDs: itemIDs)
+    }
+
+    func addItems(withIDs itemIDs: [String], toCollection collectionID: String) async throws {
+        try await base.addItems(withIDs: itemIDs, toCollection: collectionID)
+    }
+
+    func removeItems(withIDs itemIDs: [String], fromCollection collectionID: String) async throws {
+        try await base.removeItems(withIDs: itemIDs, fromCollection: collectionID)
+    }
+
+    // Playlists live on the server, so there's nothing downloaded to answer from when it can't be reached.
+
+    func playlists() async throws -> [MediaItem] { try await base.playlists() }
+
+    func createPlaylist(named name: String, itemIDs: [String]) async throws -> MediaItem {
+        try await base.createPlaylist(named: name, itemIDs: itemIDs)
+    }
+
+    func addItems(withIDs itemIDs: [String], toPlaylist playlistID: String) async throws {
+        try await base.addItems(withIDs: itemIDs, toPlaylist: playlistID)
+    }
+
+    func removeEntries(withIDs entryIDs: [String], fromPlaylist playlistID: String) async throws {
+        try await base.removeEntries(withIDs: entryIDs, fromPlaylist: playlistID)
+    }
+
+    func moveEntry(withID entryID: String, inPlaylist playlistID: String, to index: Int) async throws {
+        try await base.moveEntry(withID: entryID, inPlaylist: playlistID, to: index)
+    }
+
     func nextEpisode(in series: MediaItem) async throws -> MediaItem? {
         try await serving {
             try await base.nextEpisode(in: series)

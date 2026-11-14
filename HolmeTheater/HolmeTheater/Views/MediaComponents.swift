@@ -165,6 +165,8 @@ extension MediaItem {
         case .series: String(localized: "Go to Show")
         case .season: String(localized: "Go to Season")
         case .extra: String(localized: "Go to Feature")
+        case .collection: String(localized: "Go to Collection")
+        case .playlist: String(localized: "Go to Playlist")
         case .other: String(localized: "Go to Item")
         }
     }
@@ -218,6 +220,8 @@ extension MediaItem {
             [seriesTitle, title].compactMap { $0 }
         case .movie, .series:
             [title, year.map(String.init)].compactMap { $0 }
+        case .collection, .playlist:
+            [title]
         case .extra:
             [title, extraLabel, runtime.map { Duration.seconds($0).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow)) }].compactMap { $0 }
         case .other:
@@ -834,7 +838,7 @@ struct MediaShelf: View {
     }
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: destination, state: $watchState) { effect in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, canManageCollections: appModel.canManageCollections, destination: destination, state: $watchState) { effect in
             effects.append(effect)
             onChange()
         }
@@ -1008,6 +1012,12 @@ struct ItemRowActions {
     /// for anything that can't be downloaded. They're built with the item's download state, so they follow it.
     var downloadEntries: [ItemMenuEntry] = []
 
+    /// Opens the sheet for adding the item to a playlist. Nil for anything a playlist can't hold, which hides the entry.
+    var addToPlaylist: (() -> Void)?
+
+    /// Opens the sheet for adding the item to a collection. Nil for anything a collection can't hold.
+    var addToCollection: (() -> Void)?
+
     /// Plays the item. Offered first in the menu on tvOS, where selecting a card opens its detail screen rather
     /// than playing it. Nil for anything that can't be played.
     var play: (() -> Void)?
@@ -1084,6 +1094,8 @@ struct ItemMenuEntry: Identifiable {
         case pauseDownload
         case resumeDownload
         case removeDownload
+        case addToPlaylist
+        case addToCollection
         case viewPhoto
         case openLink
         case copyLink
@@ -1119,6 +1131,12 @@ extension ItemRowActions {
         }
         if let goToShow {
             entries.append(ItemMenuEntry(id: .goToShow, title: String(localized: "Go to Show"), systemImage: "tv", perform: goToShow))
+        }
+        if let addToPlaylist {
+            entries.append(ItemMenuEntry(id: .addToPlaylist, title: String(localized: "Add to Playlist"), systemImage: "text.badge.plus", perform: addToPlaylist))
+        }
+        if let addToCollection {
+            entries.append(ItemMenuEntry(id: .addToCollection, title: String(localized: "Add to Collection"), systemImage: "square.stack", perform: addToCollection))
         }
         return entries + watchEntries(for: item) + downloadEntries
     }

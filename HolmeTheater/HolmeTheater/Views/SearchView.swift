@@ -50,7 +50,7 @@ struct SearchView: View {
     }
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: nil, state: $watchState) { effect in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, canManageCollections: appModel.canManageCollections, destination: nil, state: $watchState) { effect in
             results = results.applying(effect)
         }
     }
@@ -147,6 +147,8 @@ private struct SearchResultRow: View {
         case .season: parts.append(String(localized: "Season"))
         case .episode: parts.append(String(localized: "Episode"))
         case .extra: parts.append(String(localized: "Extra"))
+        case .collection: parts.append(String(localized: "Collection"))
+        case .playlist: parts.append(String(localized: "Playlist"))
         case .other: break
         }
         if let genre = item.genres.first { parts.append(genre) }

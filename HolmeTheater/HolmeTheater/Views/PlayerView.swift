@@ -10,6 +10,10 @@ import SwiftUI
 struct PlayerView: View {
     let item: MediaItem
 
+    /// What to play after `item`, in order, when it's one of a list such as a playlist: `item` first, then the items that
+    /// follow it. Empty for an item that plays on its own, which is followed by the next episode of its show.
+    var queue: [MediaItem] = []
+
     /// Called after the player closes, once the server has been told where playback stopped, so the presenter
     /// can refresh and show the latest progress.
     var onStop: () -> Void = {}
@@ -24,6 +28,8 @@ struct PlayerView: View {
     @State private var followingItem: MediaItem?
     /// The load of the following episode, so closing the player can cancel it.
     @State private var followingLoad: Task<Void, Never>?
+    /// Where `playing` is in ``queue``.
+    @State private var queueIndex = 0
 
     /// What's playing: the item this view was opened with, or the episode that followed it.
     private var playing: MediaItem { followingItem ?? item }
@@ -110,7 +116,13 @@ struct PlayerView: View {
             let info = try await appModel.service.playbackInfo(for: playing, options: PlaybackOptions())
             // Dismissed while the server was thinking.
             guard !Task.isCancelled else { return }
-            let session = PlaybackSession(item: playing, info: info, service: appModel.service, settings: appModel.playbackSettings)
+            let session = PlaybackSession(
+                item: playing,
+                info: info,
+                service: appModel.service,
+                settings: appModel.playbackSettings,
+                queue: queue.isEmpty ? nil : .init(next: queue.indices.contains(queueIndex + 1) ? queue[queueIndex + 1] : nil)
+            )
             session.originID = item.id
             session.onStop = onStop
             appModel.playback = session
@@ -137,6 +149,7 @@ struct PlayerView: View {
         }
         session = nil
         errorMessage = nil
+        if !queue.isEmpty { queueIndex += 1 }
         followingItem = next
         followingLoad = Task { await load() }
     }
@@ -274,13 +287,26 @@ final class PlaybackSession {
     @ObservationIgnored private var keepAwake: NSKeyValueObservation?
     #endif
 
-    /// - Parameter settings: How playback behaves. The default is one for previews, which doesn't touch the real settings.
+    /// Where playback goes next when it's part of a list, such as a playlist, rather than one show's episodes.
+    struct Queue {
+        /// What plays after this item, or nil if it's the last.
+        let next: MediaItem?
+    }
+
+    /// The list this playback is part of, or nil if it's on its own and followed by its show's next episode.
+    @ObservationIgnored private let queue: Queue?
+
+    /// - Parameters:
+    ///   - settings: How playback behaves. The default is one for previews, which doesn't touch the real settings.
+    ///   - queue: The list this is playing from, which decides what follows it.
     init(
         item: MediaItem,
         info: PlaybackInfo,
         service: any MediaService,
-        settings: PlaybackSettings = PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard)
+        settings: PlaybackSettings = PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard),
+        queue: Queue? = nil
     ) {
+        self.queue = queue
         self.item = item
         self.info = info
         self.service = service
@@ -361,6 +387,8 @@ final class PlaybackSession {
 
     /// The episode after this one: the next in its season, else the first of the next season that has any.
     private func findNextEpisode() async -> MediaItem? {
+        // In a list, what follows is the next entry, whatever it is, not the next episode of this one's show.
+        if let queue { return queue.next }
         guard item.kind == .episode, let seriesID = item.seriesID,
               let series = try? await service.item(id: seriesID),
               let top = try? await service.children(of: series) else { return nil }

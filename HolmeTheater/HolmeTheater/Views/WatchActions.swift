@@ -115,6 +115,12 @@ struct WatchActionState {
 
     /// A question about a download, waiting for an answer: whether to download a whole show or season, or to remove one.
     var downloadPrompt: DownloadPrompt?
+
+    /// A movie or episode the user chose to add to a playlist; the playlist sheet shows while it's set.
+    var playlistItem: MediaItem?
+
+    /// A movie or show the user chose to add to a collection; the collection sheet shows while it's set.
+    var collectionItem: MediaItem?
 }
 
 /// How many seasons each show has, learned as screens load. A show with a single season is treated as a mini
@@ -163,6 +169,9 @@ struct WatchActions {
     /// Where downloads are managed. With it, items' menus offer to download them.
     var downloads: DownloadManager? = nil
 
+    /// Whether the user may change collections. Without it, items' menus don't offer to add them to one.
+    var canManageCollections = false
+
     /// The shelf the items are on, which decides which changes take an item off it. Nil anywhere else.
     let destination: ShelfDestination?
 
@@ -179,6 +188,18 @@ struct WatchActions {
         if !downloadEntries.isEmpty {
             actions = actions ?? ItemRowActions()
             actions?.downloadEntries = downloadEntries
+        }
+        // A playlist holds movies and episodes.
+        if item.kind == .movie || item.kind == .episode {
+            actions = actions ?? ItemRowActions()
+            let state = state
+            actions?.addToPlaylist = { state.wrappedValue.playlistItem = item }
+        }
+        // A collection holds movies and shows.
+        if canManageCollections, item.kind == .movie || item.kind == .series {
+            actions = actions ?? ItemRowActions()
+            let state = state
+            actions?.addToCollection = { state.wrappedValue.collectionItem = item }
         }
         return actions
     }
@@ -430,6 +451,8 @@ extension View {
         .confirmShowRemoval(state.pendingRemoval) { actions.perform($0) }
         .confirmBulkWatchChange(state.pendingBulkChange) { actions.perform($0) }
         .downloadPrompts(state.downloadPrompt)
+        .sheet(item: state.playlistItem) { AddToListSheet(items: [$0], kind: .playlist) }
+        .sheet(item: state.collectionItem) { AddToListSheet(items: [$0], kind: .collection) }
     }
 
     /// Asks the user to confirm a pending show or season change, warning what it does to the watch history.

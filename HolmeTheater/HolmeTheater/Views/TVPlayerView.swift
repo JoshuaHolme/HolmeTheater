@@ -540,7 +540,11 @@ struct TVPlayerController: UIViewControllerRepresentable {
             var audioCount: Int
             var isSwitching: Bool
             var autoPlaysNext: Bool
+            var playbackRate: Float
         }
+
+        /// The speeds the Speed menu offers, as in the iOS player.
+        private static let playbackRates: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
         init(session: PlaybackSession, service: any MediaService, playNext: @escaping (MediaItem) -> Void, openItem: @escaping (MediaItem) -> Void, close: @escaping () -> Void) {
             self.session = session
@@ -822,7 +826,8 @@ struct TVPlayerController: UIViewControllerRepresentable {
                 subtitleCount: session.info.subtitleTracks.count,
                 audioCount: session.info.audioTracks.count,
                 isSwitching: session.isSwitching,
-                autoPlaysNext: session.autoPlaysNext
+                autoPlaysNext: session.autoPlaysNext,
+                playbackRate: session.player.defaultRate
             )
         }
 
@@ -863,7 +868,7 @@ struct TVPlayerController: UIViewControllerRepresentable {
                     self?.showTimingPanel()
                 }
 
-                menus.append(UIMenu(title: String(localized: "Subtitles"), image: UIImage(systemName: session.subtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill"), children: [languages, timing]))
+                menus.append(UIMenu(title: String(localized: "Subtitles"), image: UIImage(systemName: session.subtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill"), children: [timing, languages]))
             }
 
             // The system's own menu offers the file's tracks too, but only this one switches the stream when it has to.
@@ -889,6 +894,22 @@ struct TVPlayerController: UIViewControllerRepresentable {
                 }
                 menus.append(UIMenu(title: String(localized: "Quality"), image: UIImage(systemName: "sparkles.tv"), children: [auto] + choices))
             }
+
+            // The player's own speed control isn't always there, so the bar has one of its own. It sets the player's default rate,
+            // which is what the system's control reads, so the two agree if both show.
+            let player = session.player
+            let rate = player.defaultRate
+            let speeds = Self.playbackRates.map { speed in
+                UIAction(
+                    title: speed == 1 ? String(localized: "Normal") : "\(speed.formatted())×",
+                    state: rate == speed ? .on : .off
+                ) { [weak self] _ in
+                    player.defaultRate = speed
+                    if player.timeControlStatus != .paused { player.rate = speed }
+                    self?.updateMenus()
+                }
+            }
+            menus.append(UIMenu(title: String(localized: "Speed"), image: UIImage(systemName: "gauge.with.dots.needle.67percent"), children: speeds))
 
             // Autoplay: On or Off, which is the setting on the Account screen too. Always there, whatever's playing: it's a
             // preference, and a button that appears only once something has been looked up (the next episode comes from the

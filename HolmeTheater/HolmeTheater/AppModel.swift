@@ -28,6 +28,10 @@ final class AppModel {
         if case .signedIn(let session) = state { session } else { nil }
     }
 
+    /// Whether the signed-in user may create collections and change what's in them. False until the server has said, so
+    /// the controls appear once the profile loads rather than failing when used.
+    var canManageCollections: Bool { session?.canManageCollections == true }
+
     /// Identifies the signed-in account and its server, for caches that must not show one account's data to another.
     /// Empty when signed out.
     var cacheScope: String {

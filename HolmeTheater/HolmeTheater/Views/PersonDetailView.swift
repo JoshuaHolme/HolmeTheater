@@ -39,7 +39,7 @@ struct PersonDetailView: View {
     @State private var openedItem: MediaItem?
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: nil, state: $watchState) { _ in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, canManageCollections: appModel.canManageCollections, destination: nil, state: $watchState) { _ in
             reloadCount += 1
         }
     }

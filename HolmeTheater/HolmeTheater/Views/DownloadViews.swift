@@ -111,7 +111,7 @@ enum DownloadPrompt: Identifiable {
     /// whether to download a whole show or season, which can be a lot of space.
     static func start(_ item: MediaItem, downloads: DownloadManager) -> DownloadPrompt? {
         if ExperimentalDownloads.needsNotice { return .experimental(item) }
-        if item.kind == .season || item.kind == .series { return .download(item) }
+        if item.isDownloadGroup { return .download(item) }
         Task { await downloads.download(item) }
         return nil
     }
@@ -152,6 +152,12 @@ enum ExperimentalDownloads {
     }
 }
 
+extension MediaItem {
+    /// Whether downloading it means downloading several movies or episodes, so it's asked about first: a show, a season, a
+    /// collection or a playlist.
+    var isDownloadGroup: Bool { kind == .season || kind == .series || kind == .collection || kind == .playlist }
+}
+
 /// The toolbar button for downloading a movie, episode, season or show, and for seeing and managing what's been done.
 ///
 /// Owns no alerts; set `prompt` and attach ``SwiftUICore/View/downloadPrompts(_:)`` to the screen, since an alert
@@ -168,7 +174,13 @@ struct DownloadToolbarButton: View {
     #endif
 
     private var downloads: DownloadManager { appModel.downloads }
-    private var isContainer: Bool { item.kind == .season || item.kind == .series }
+    private var isContainer: Bool { item.isDownloadGroup }
+
+    /// What the button says before anything is downloaded.
+    private var noneTitle: LocalizedStringKey {
+        if item.kind == .collection || item.kind == .playlist { return "Download All" }
+        return isContainer ? "Download All Episodes" : "Download"
+    }
 
     var body: some View {
         #if os(tvOS)
@@ -211,11 +223,11 @@ struct DownloadToolbarButton: View {
         switch downloads.stage(of: item) {
         case .none:
             Button(action: start) {
-                label(isContainer ? "Download All Episodes" : "Download") {
+                label(noneTitle) {
                     Image(systemName: "arrow.down.circle")
                 }
             }
-            .accessibilityLabel(isContainer ? "Download All Episodes" : "Download")
+            .accessibilityLabel(noneTitle)
 
         case .downloading:
             Menu {
@@ -353,7 +365,7 @@ private struct DownloadPromptsModifier: ViewModifier {
                     Button("I Understand, Continue") {
                         ExperimentalDownloads.acknowledge()
                         // On to what was asked for: the download itself, or the question about a whole show or season.
-                        if item.kind == .season || item.kind == .series {
+                        if item.isDownloadGroup {
                             prompt = .download(item)
                         } else {
                             Task { await downloads.download(item) }
@@ -366,11 +378,15 @@ private struct DownloadPromptsModifier: ViewModifier {
                 case .experimental:
                     Text(ExperimentalDownloads.limitations(isPermanent: downloads.store.isPermanent).map { "• \($0)" }.joined(separator: "\n\n"))
                 case .download(let item):
-                    if let count = item.episodeCount {
+                    if item.kind == .collection || item.kind == .playlist {
+                        Text("Every movie and episode in \(item.title) will be saved to this device.")
+                    } else if let count = item.episodeCount {
                         Text("\(count) episodes of \(item.kind == .season ? item.seasonTitle : item.title) will be saved to this device.")
                     } else {
                         Text("Every episode of \(item.title) will be saved to this device.")
                     }
+                case .remove(let item) where item.kind == .collection || item.kind == .playlist:
+                    Text("The saved videos and details of everything in \(item.title) will be deleted from this device, including any you downloaded separately. They stay on your server.")
                 case .remove(let item):
                     Text("The saved video and details of \(item.kind == .episode || item.kind == .movie ? item.title : "these episodes") will be deleted from this device. They stay on your server.")
                 }

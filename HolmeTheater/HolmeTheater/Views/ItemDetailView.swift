@@ -12,6 +12,10 @@ struct ItemDetailView: View {
     var body: some View {
         if item.kind == .series || item.kind == .season || item.kind == .episode || item.kind == .movie {
             ShowDetailView(item: item)
+        } else if item.kind == .collection {
+            CollectionDetailView(collection: item)
+        } else if item.kind == .playlist {
+            PlaylistDetailView(playlist: item)
         } else {
             StandardItemDetailView(item: item)
         }

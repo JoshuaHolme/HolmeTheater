@@ -194,7 +194,8 @@ actor JellyfinMediaService: MediaService {
             userID: session.userID,
             username: user.name ?? session.username,
             accessToken: session.accessToken,
-            avatarURL: Self.avatarURL(userID: session.userID, tag: user.primaryImageTag, client: client)
+            avatarURL: Self.avatarURL(userID: session.userID, tag: user.primaryImageTag, client: client),
+            canManageCollections: Self.canManageCollections(user.policy)
         )
         self.session = updated
         return updated
@@ -624,9 +625,103 @@ actor JellyfinMediaService: MediaService {
                 enableUserData: true
             ))
             return try await mapItems(send(request, with: client), client: client)
+        case .collection:
+            // A collection's members, which can be movies or shows. Sorted by release, as a film series is watched.
+            let request = Paths.getItems(parameters: .init(
+                userID: session.userID,
+                sortOrder: [.ascending],
+                parentID: item.id,
+                fields: Self.itemFields,
+                sortBy: [.premiereDate, .sortName],
+                enableUserData: true
+            ))
+            return try await mapItems(send(request, with: client), client: client)
+        case .playlist:
+            // In the playlist's own order. Each entry carries the ID that removing or moving it needs.
+            let request = Paths.getPlaylistItems(
+                playlistID: item.id,
+                parameters: .init(userID: session.userID, fields: Self.itemFields, enableUserData: true)
+            )
+            return try await mapItems(send(request, with: client), client: client)
         case .movie, .episode, .extra, .other:
             return []
         }
+    }
+
+    // MARK: - Collections
+
+    func collections() async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            isRecursive: true,
+            sortOrder: [.ascending],
+            fields: Self.itemFields,
+            includeItemTypes: [.boxSet],
+            sortBy: [.sortName],
+            enableUserData: true
+        ))
+        return try await mapItems(send(request, with: client), client: client)
+    }
+
+    func createCollection(named name: String, itemIDs: [String]) async throws -> MediaItem {
+        let (client, _) = try signedIn()
+        let created = try await send(Paths.createCollection(parameters: .init(name: name, ids: itemIDs)), with: client)
+        guard let id = created.id else { throw MediaServiceError.underlying(String(localized: "The server didn't create the collection.")) }
+        return try await item(id: id)
+    }
+
+    func addItems(withIDs itemIDs: [String], toCollection collectionID: String) async throws {
+        let (client, _) = try signedIn()
+        try await send(Paths.addToCollection(collectionID: collectionID, ids: itemIDs), with: client)
+    }
+
+    func removeItems(withIDs itemIDs: [String], fromCollection collectionID: String) async throws {
+        let (client, _) = try signedIn()
+        try await send(Paths.removeFromCollection(collectionID: collectionID, ids: itemIDs), with: client)
+    }
+
+    // MARK: - Playlists
+
+    func playlists() async throws -> [MediaItem] {
+        let (client, session) = try signedIn()
+        let request = Paths.getItems(parameters: .init(
+            userID: session.userID,
+            isRecursive: true,
+            sortOrder: [.ascending],
+            fields: Self.itemFields,
+            includeItemTypes: [.playlist],
+            sortBy: [.sortName],
+            enableUserData: true
+        ))
+        return try await mapItems(send(request, with: client), client: client)
+    }
+
+    func createPlaylist(named name: String, itemIDs: [String]) async throws -> MediaItem {
+        let (client, session) = try signedIn()
+        let body = CreatePlaylistDto(ids: itemIDs, name: name, userID: session.userID)
+        let created = try await send(Paths.createPlaylist(body), with: client)
+        guard let id = created.id else { throw MediaServiceError.underlying(String(localized: "The server didn't create the playlist.")) }
+        return try await item(id: id)
+    }
+
+    func addItems(withIDs itemIDs: [String], toPlaylist playlistID: String) async throws {
+        let (client, session) = try signedIn()
+        let request = Paths.addItemToPlaylist(
+            playlistID: playlistID,
+            parameters: .init(ids: itemIDs, userID: session.userID)
+        )
+        try await send(request, with: client)
+    }
+
+    func removeEntries(withIDs entryIDs: [String], fromPlaylist playlistID: String) async throws {
+        let (client, _) = try signedIn()
+        try await send(Paths.removeItemFromPlaylist(playlistID: playlistID, entryIDs: entryIDs), with: client)
+    }
+
+    func moveEntry(withID entryID: String, inPlaylist playlistID: String, to index: Int) async throws {
+        let (client, _) = try signedIn()
+        try await send(Paths.moveItem(playlistID: playlistID, itemID: entryID, newIndex: index), with: client)
     }
 
     func nextEpisode(in series: MediaItem) async throws -> MediaItem? {
@@ -988,10 +1083,18 @@ actor JellyfinMediaService: MediaService {
             userID: userID,
             username: result.user?.name ?? "",
             accessToken: token,
-            avatarURL: Self.avatarURL(userID: userID, tag: result.user?.primaryImageTag, client: client)
+            avatarURL: Self.avatarURL(userID: userID, tag: result.user?.primaryImageTag, client: client),
+            canManageCollections: Self.canManageCollections(result.user?.policy)
         )
         self.session = session
         return session
+    }
+
+    /// Whether a user's policy lets them manage collections, which the server allows administrators and anyone granted it.
+    /// Nil if the server sent no policy, so nothing is assumed either way.
+    private static func canManageCollections(_ policy: UserPolicy?) -> Bool? {
+        guard let policy else { return nil }
+        return policy.isAdministrator == true || policy.enableCollectionManagement
     }
 
     /// The URL of a user's profile picture, or nil if they haven't set one.
@@ -1008,6 +1111,15 @@ actor JellyfinMediaService: MediaService {
     private func send<T: Decodable & Sendable>(_ request: Request<T>, with client: JellyfinClient) async throws -> T {
         do {
             return try await client.send(request).value
+        } catch {
+            throw Self.mapError(error)
+        }
+    }
+
+    /// Sends a request that has no response body, converting SDK errors to `MediaServiceError`.
+    private func send(_ request: Request<Void>, with client: JellyfinClient) async throws {
+        do {
+            _ = try await client.send(request)
         } catch {
             throw Self.mapError(error)
         }
@@ -1089,6 +1201,8 @@ actor JellyfinMediaService: MediaService {
             case .series: .series
             case .season: .season
             case .episode: .episode
+            case .boxSet: .collection
+            case .playlist: .playlist
             default: .other
             }
         }
@@ -1144,7 +1258,8 @@ actor JellyfinMediaService: MediaService {
             dateAdded: dto.dateCreated,
             releaseDate: dto.premiereDate,
             sortName: dto.sortName,
-            lastPlayedDate: dto.userData?.lastPlayedDate
+            lastPlayedDate: dto.userData?.lastPlayedDate,
+            playlistEntryID: dto.playlistItemID
         )
     }
 

@@ -782,6 +782,8 @@ struct ShowDetailView: View {
             // There's no navigation bar on tvOS, so the favorite and watched buttons sit here. On iOS they're in
             // the toolbar (see `toolbarButtons`).
             favoriteButton
+            addToPlaylistButton
+            addToCollectionButton
             watchedButton
             DownloadToolbarButton(item: current, prompt: $watchState.downloadPrompt, expandsOnFocus: true)
                 .heroCircleButton()
@@ -866,6 +868,20 @@ struct ShowDetailView: View {
             .tint(isFavorite ? .red : nil)
             .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
 
+            if isPlayableItem || canJoinCollection {
+                Menu {
+                    if isPlayableItem {
+                        Button("Add to Playlist", systemImage: "text.badge.plus") { watchState.playlistItem = current }
+                    }
+                    if canJoinCollection {
+                        Button("Add to Collection", systemImage: "square.stack") { watchState.collectionItem = current }
+                    }
+                } label: {
+                    Image(systemName: "text.badge.plus")
+                }
+                .accessibilityLabel("Add To")
+            }
+
             // The whole show or season, or the episode or movie itself.
             DownloadToolbarButton(item: current, prompt: $watchState.downloadPrompt)
 
@@ -914,6 +930,38 @@ struct ShowDetailView: View {
             iconColor: isFavorite ? .red : .white,
             action: toggleFavorite
         )
+    }
+
+    /// Whether to offer adding this to a collection: it's a movie or a show, not an episode or season, and the user is
+    /// allowed to change collections.
+    private var canJoinCollection: Bool { (isMovie || item.kind == .series) && appModel.canManageCollections }
+
+    /// Opens the sheet for adding a movie or episode to a playlist. Hidden for a show or season, which a playlist doesn't hold.
+    @ViewBuilder
+    private var addToPlaylistButton: some View {
+        if isPlayableItem {
+            FocusExpandingIconButton(
+                "Add to Playlist",
+                systemImage: "text.badge.plus",
+                font: Self.heroIconFont,
+                iconColor: .white,
+                action: { watchState.playlistItem = current }
+            )
+        }
+    }
+
+    /// Opens the sheet for adding a movie or show to a collection.
+    @ViewBuilder
+    private var addToCollectionButton: some View {
+        if canJoinCollection {
+            FocusExpandingIconButton(
+                "Add to Collection",
+                systemImage: "square.stack",
+                font: Self.heroIconFont,
+                iconColor: .white,
+                action: { watchState.collectionItem = current }
+            )
+        }
     }
 
     /// Whether the show is a favorite, counting a change the server hasn't confirmed yet.
@@ -1104,7 +1152,7 @@ struct ShowDetailView: View {
 
     /// Reloads the screen after a season is marked watched or unwatched, which changes the next episode too.
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: nil, state: $watchState) { _ in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, canManageCollections: appModel.canManageCollections, destination: nil, state: $watchState) { _ in
             reloadCount += 1
         }
     }

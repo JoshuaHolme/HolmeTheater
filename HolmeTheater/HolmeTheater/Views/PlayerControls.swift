@@ -1051,6 +1051,13 @@ struct PlayerControlsView: View {
 
     private var subtitlesMenu: some View {
         Menu {
+            // For a file whose subtitles don't line up with the speech.
+            if session.subtitleIndex != nil, !session.info.subtitlesBurnedIn {
+                Button("Adjust Timing…", systemImage: "clock.arrow.2.circlepath") {
+                    model.showsTiming = true
+                }
+            }
+
             Picker("Subtitles", selection: Binding(
                 get: { session.subtitleIndex },
                 set: { index in Task { await session.selectSubtitle(index) } }
@@ -1059,13 +1066,6 @@ struct PlayerControlsView: View {
                 ForEach(session.info.subtitleTracks) { Text($0.title).tag(Optional($0.index)) }
             }
             .pickerStyle(.inline)
-
-            // For a file whose subtitles don't line up with the speech.
-            if session.subtitleIndex != nil, !session.info.subtitlesBurnedIn {
-                Button("Adjust Timing…", systemImage: "clock.arrow.2.circlepath") {
-                    model.showsTiming = true
-                }
-            }
         } label: {
             menuGlyph(session.subtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill")
         }

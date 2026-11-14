@@ -52,6 +52,12 @@ nonisolated struct UserSession: Codable, Hashable, Sendable {
     ///
     /// Optional with a default so sessions saved before this property existed still decode.
     var avatarURL: URL? = nil
+
+    /// Whether the user may create collections and change what's in them: an administrator, or someone the server has given
+    /// that permission. `nil` until the server has said, as for sessions saved before this property existed.
+    ///
+    /// Optional with a default so those sessions still decode. Playlists need no permission.
+    var canManageCollections: Bool? = nil
 }
 
 // Keep the access token out of logs and debugger output: printing a session shows everything but the token.
@@ -136,7 +142,11 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable, Codable {
         /// A bonus video attached to a movie or show: behind the scenes, a deleted scene, an interview. It can
         /// be played.
         case extra
-        /// Anything the app doesn't specifically handle (music, photos, collections, …).
+        /// A server collection (a "box set"): a group of movies or shows, such as a film series.
+        case collection
+        /// A playlist: an ordered list of movies and episodes that the user can edit and play through.
+        case playlist
+        /// Anything the app doesn't specifically handle (music, photos, …).
         case other
     }
 
@@ -267,6 +277,10 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable, Codable {
 
     /// When the user last played the item, or nil if they never have.
     var lastPlayedDate: Date? = nil
+
+    /// For an item listed in a playlist: this entry's ID in the playlist, which is what removing it needs. The same item can
+    /// be in a playlist more than once, so this differs from ``id``. `nil` for anything not fetched as part of a playlist.
+    var playlistEntryID: String? = nil
 }
 
 /// A chapter of a movie or episode, as the server lists it.
@@ -525,6 +539,12 @@ nonisolated enum MediaServiceError: LocalizedError, Sendable {
     /// The item doesn't exist on the server (any more), or the user can't see it.
     case itemNotFound
 
+    /// This service can't make or change playlists.
+    case playlistsNotSupported
+
+    /// This service can't make or change collections.
+    case collectionsNotSupported
+
     /// Anything else; the associated message is already user-presentable.
     case underlying(String)
 
@@ -538,6 +558,8 @@ nonisolated enum MediaServiceError: LocalizedError, Sendable {
         case .sessionExpired: String(localized: "Your session has expired. Sign in again.")
         case .itemNotPlayable: String(localized: "This item can't be played.")
         case .itemNotFound: String(localized: "This item is no longer available.")
+        case .playlistsNotSupported: String(localized: "Playlists can't be changed right now.")
+        case .collectionsNotSupported: String(localized: "Collections can't be changed right now.")
         case .underlying(let message): message
         }
     }

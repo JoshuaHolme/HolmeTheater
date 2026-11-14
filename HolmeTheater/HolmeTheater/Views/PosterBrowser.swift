@@ -127,6 +127,13 @@ struct PosterBrowser: View {
     /// Whether the filter menu can narrow by genre. Off on a genre's own page, where every item is of that genre.
     var offersGenreFilter = true
 
+    /// A hero for the top of the page, edge to edge above the grid, built for the size of the scroll view. Nil for none. A page
+    /// with a hero runs under the navigation bar, and the hero names it.
+    var hero: ((CGSize) -> AnyView)?
+
+    /// The size of the scroll view, for the hero.
+    @State private var viewport: CGSize = .zero
+
     @State private var sort: PosterSort
     @State private var filter = PosterFilter()
 
@@ -136,10 +143,17 @@ struct PosterBrowser: View {
     @State private var genres: [String]
 
     /// - Parameter sort: The order the grid starts in. The viewer can change it from the sort menu.
-    init(items: [MediaItem], sort: PosterSort = .nameAscending, title: String? = nil, offersGenreFilter: Bool = true) {
+    init(
+        items: [MediaItem],
+        sort: PosterSort = .nameAscending,
+        title: String? = nil,
+        offersGenreFilter: Bool = true,
+        hero: ((CGSize) -> AnyView)? = nil
+    ) {
         self.items = items
         self.title = title
         self.offersGenreFilter = offersGenreFilter
+        self.hero = hero
         _sort = State(initialValue: sort)
         _visibleItems = State(initialValue: sort.sorted(items))
         _genres = State(initialValue: Self.genres(in: items))
@@ -175,6 +189,10 @@ struct PosterBrowser: View {
             let visible = visibleItems
             ScrollViewReader { proxy in
                 ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                    if let hero {
+                        hero(viewport)
+                    }
                     VStack(alignment: .leading, spacing: Self.headerGap) {
                         #if os(tvOS)
                         header
@@ -205,7 +223,18 @@ struct PosterBrowser: View {
                         }
                     }
                     .padding()
+                    }
                 }
+                .onGeometryChange(for: CGSize.self) { proxy in
+                    #if os(tvOS)
+                    // Measured before the safe area is ignored, so the hero can be as tall as the whole screen.
+                    CGSize(width: proxy.size.width, height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
+                    #else
+                    proxy.size
+                    #endif
+                } action: { viewport = $0 }
+                // The hero runs under the status and navigation bars, up to the top edge of the screen.
+                .ignoresSafeArea(edges: hero == nil ? [] : .top)
                 #if !os(tvOS)
                 .overlay(alignment: .trailing) {
                     if sort.isByName && !visible.isEmpty {

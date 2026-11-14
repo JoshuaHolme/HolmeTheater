@@ -76,6 +76,11 @@ final class DownloadManager {
     private(set) var pausedIDs: Set<String> = []
     private(set) var recordCounts: [String: Int] = [:]
 
+    /// What each collection and playlist holds, by its ID, as far as the screens that have shown them know. Downloads are
+    /// kept per movie and episode, so a collection's or playlist's state is worked out from its members'. Not saved: a
+    /// screen registers its members (see ``register(_:asMembersOf:)``) each time it loads them.
+    private(set) var groupMembers: [String: [MediaItem]] = [:]
+
     /// Set when something couldn't be started, to show in an alert. The owner clears it.
     var errorMessage: String?
 
@@ -265,6 +270,9 @@ final class DownloadManager {
     /// call this aren't redrawn while a download runs.
     func isDownloaded(_ item: MediaItem) -> Bool {
         switch item.kind {
+        case .collection, .playlist:
+            guard let members = groupMembers[item.id], !members.isEmpty else { return false }
+            return members.allSatisfy(isDownloaded)
         case .movie, .episode:
             return completedIDs.contains(item.id)
         case .season, .series:
@@ -276,19 +284,38 @@ final class DownloadManager {
         }
     }
 
+    /// Tells the manager what a collection or playlist holds, so it can say how its downloads are doing.
+    func register(_ members: [MediaItem], asMembersOf group: MediaItem) {
+        guard group.kind == .collection || group.kind == .playlist else { return }
+        // A playlist can hold something twice, which is still one download.
+        var seen = Set<String>()
+        groupMembers[group.id] = members.filter { seen.insert($0.id).inserted }
+    }
+
     /// The downloads an item stands for: itself, or the episodes of a show or season.
     private func records(under item: MediaItem) -> [DownloadRecord] {
         switch item.kind {
-        case .movie, .episode: records.filter { $0.id == item.id }
-        case .season: records.filter { $0.item.seasonID == item.id }
-        case .series: records.filter { $0.item.seriesID == item.id }
-        case .extra, .other: []
+        case .movie, .episode: return records.filter { $0.id == item.id }
+        case .season: return records.filter { $0.item.seasonID == item.id }
+        case .series: return records.filter { $0.item.seriesID == item.id }
+        case .collection, .playlist:
+            // The members' own downloads, each counted once even if the same movie is in two of them.
+            var seen = Set<String>()
+            return (groupMembers[item.id] ?? []).flatMap(records(under:)).filter { seen.insert($0.id).inserted }
+        case .extra, .other: return []
         }
     }
 
     /// Where an item's downloads are, for what its menus offer. Reads only what changes when that does, not with progress,
     /// unlike ``status(of:)``, which the download button's ring needs.
     func stage(of item: MediaItem) -> DownloadStage {
+        if item.kind == .collection || item.kind == .playlist {
+            let stages = (groupMembers[item.id] ?? []).map(stage(of:))
+            if stages.contains(.downloading) { return .downloading }
+            if stages.contains(.paused) { return .paused }
+            if !stages.isEmpty, stages.allSatisfy({ $0 == .downloaded }) { return .downloaded }
+            return stages.contains { $0 != .none } ? .partial : .none
+        }
         guard [.movie, .episode, .season, .series].contains(item.kind), (recordCounts[item.id] ?? 0) > 0 else { return .none }
         if movingIDs.contains(item.id) { return .downloading }
         if pausedIDs.contains(item.id) { return .paused }
@@ -303,6 +330,9 @@ final class DownloadManager {
     /// Whether a show or season has episodes that aren't downloading or downloaded yet, so it can offer to download the
     /// rest. False if the server hasn't said how many it has.
     func hasEpisodesToDownload(_ item: MediaItem) -> Bool {
+        if item.kind == .collection || item.kind == .playlist {
+            return (groupMembers[item.id] ?? []).contains { stage(of: $0) == .none || hasEpisodesToDownload($0) }
+        }
         guard item.kind == .season || item.kind == .series, let total = item.episodeCount else { return false }
         return (recordCounts[item.id] ?? 0) < total
     }
@@ -321,6 +351,8 @@ final class DownloadManager {
         switch item.kind {
         case .season, .series:
             return relevant.count >= (item.episodeCount ?? .max) ? .downloaded : .partial
+        case .collection, .playlist:
+            return isDownloaded(item) ? .downloaded : .partial
         default:
             return .downloaded
         }
@@ -378,6 +410,18 @@ final class DownloadManager {
                 episodes += try await service.children(of: season).filter { $0.kind == .episode }
             }
             return episodes
+        case .collection, .playlist:
+            // Everything in it, which for a collection can be whole shows. Remembered, so its state can be shown.
+            let members = try await service.children(of: item)
+            register(members, asMembersOf: item)
+            var seen = Set<String>()
+            var playable: [MediaItem] = []
+            for member in members {
+                for entry in try await playableItems(of: member) where seen.insert(entry.id).inserted {
+                    playable.append(entry)
+                }
+            }
+            return playable
         case .extra, .other:
             return []
         }
