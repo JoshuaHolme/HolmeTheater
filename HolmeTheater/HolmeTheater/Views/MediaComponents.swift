@@ -1285,7 +1285,7 @@ struct ShelfGridCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Layout.captionGap) {
             ArtworkView(url: item.gridArtworkURL, aspectRatio: 16.0 / 9.0)
                 .overlay(alignment: .bottom) { statusBar }
                 .overlay(alignment: .topTrailing) {
@@ -1296,6 +1296,8 @@ struct ShelfGridCard: View {
                 .overlay(alignment: .topLeading) { DownloadedBadge(item: item) }
                 // The status bar's gradient is square; clip it to the image's rounded corners.
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                // On tvOS, the artwork with its overlays is what lifts when the card is focused.
+                .focusHighlight()
                 // The image and the caption each get a peek layer, so the whole card responds. The image's
                 // leaves the "more" button's corner alone, and the caption's isn't a second accessibility element.
                 .peekAndPop(peek, passthrough: menuCorner)

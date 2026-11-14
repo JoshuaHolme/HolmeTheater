@@ -93,7 +93,10 @@ struct ShelfListView: View {
                 ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
             }
         }
+        #if !os(tvOS)
         .navigationTitle(destination.title)
+        #endif
+        .themeWash()
         .watchActionAlerts(watchActions)
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
         // Back from a detail screen, where the user may have played the item or changed its watch state.
@@ -153,7 +156,16 @@ struct ShelfListView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVStack(spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                #if os(tvOS)
+                // Like the library pages: the title at the leading edge, in the page rather than the navigation bar.
+                Text(destination.title)
+                    .font(.largeTitle.bold())
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 32)
+                #endif
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: Layout.cardSpacing, alignment: .top)], spacing: Layout.cardSpacing) {
                     ForEach(items) { item in
                         let actions = watchActions.actions(for: item, navigation: navigation, omitting: omittedLinks)
@@ -178,9 +190,8 @@ struct ShelfListView: View {
         #if os(tvOS)
         Button { navigation.tap(item) } label: {
             content()
-                .padding(12)
         }
-        .buttonStyle(.card)
+        .cardLinkStyle()
         .contextMenu {
             ItemActionButtons(entries: actions?.menuEntries(for: item) ?? [])
         }

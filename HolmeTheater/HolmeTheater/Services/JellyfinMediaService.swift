@@ -429,8 +429,8 @@ actor JellyfinMediaService: MediaService {
             return cache.items
         }
 
-        // The server can't filter by month and day, only by date range, so it's asked for every movie and show and
-        // they're filtered here. Only the little that cards need is requested, since there can be thousands.
+        // The server can't filter by month and day, only by date range, so it's asked for every movie and episode and
+        // they're filtered here. Shows and seasons are left out; only the episodes released on the day count. Only the little that cards need is requested, since there can be thousands.
         let parentIDs: [String?] = libraryIDs ?? [nil]
         let items = try await Self.fetchEach(parentIDs) { parentID in
             let request = Paths.getItems(parameters: .init(
@@ -438,7 +438,7 @@ actor JellyfinMediaService: MediaService {
                 isRecursive: true,
                 parentID: parentID,
                 fields: [.primaryImageAspectRatio, .childCount, .recursiveItemCount],
-                includeItemTypes: [.movie, .series],
+                includeItemTypes: [.movie, .episode],
                 enableUserData: true
             ))
             return try await self.mapItems(self.send(request, with: client), client: client)
