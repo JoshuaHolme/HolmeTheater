@@ -37,6 +37,7 @@ struct LibrariesView: View {
                 .padding()
             }
         }
+        .themeWash()
         #if os(tvOS)
         // tvOS draws the title large over the content, and the cards already name each library.
         .navigationTitle("")

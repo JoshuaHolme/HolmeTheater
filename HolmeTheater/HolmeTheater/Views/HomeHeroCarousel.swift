@@ -84,6 +84,8 @@ private extension View {
 ///
 /// It runs edge to edge, under the status bar and past the side safe areas, with the page's heading over its top.
 struct HomeHeroCarousel<Header: View>: View {
+    @Environment(AppModel.self) private var appModel
+
     let items: [MediaItem]
 
     /// What each item's Play button plays, by the item's ID: a movie itself, or the episode a show is up to. An item
@@ -172,6 +174,12 @@ struct HomeHeroCarousel<Header: View>: View {
 
     private var width: CGFloat { screenSize.width }
 
+    /// The theme's color, while a theme is showing.
+    private var accent: Color? { appModel.themeSettings.activeTheme?.accent }
+
+    /// The color of the page dot that's filling: white, or the theme's color lightened so it still shows on the dark pill.
+    private var dotColor: Color { accent.map { $0.mix(with: .white, by: 0.25) } ?? .white }
+
     /// The carousel's height: tall and nearly poster-shaped on a narrow screen, and no more than most of the screen's
     /// height on a wide one. Like the artwork, it runs up under the status bar.
     private var height: CGFloat {
@@ -219,6 +227,7 @@ struct HomeHeroCarousel<Header: View>: View {
                     item: item,
                     playTarget: playTargets[item.id],
                     safeArea: safeArea,
+                    accent: accent,
                     open: { if !isSwiping { open($0) } },
                     play: { if !isSwiping { play($0) } }
                 )
@@ -238,6 +247,15 @@ struct HomeHeroCarousel<Header: View>: View {
         .contentShape(Rectangle())
         #if !os(tvOS)
         .gesture(HorizontalPan(onChanged: swipeChanged, onEnded: swipeEnded))
+        #endif
+        #if os(tvOS)
+        // The soft pieces of the theme's effects pass over the artwork here, behind the hero's text and buttons, as they pass
+        // behind the shelves below (the artwork would otherwise hide them).
+        .overlay {
+            if let theme = appModel.themeSettings.activeTheme, appModel.themeSettings.showsEffects {
+                ThemeParticles(effect: theme.effect, topInset: safeArea.top, layer: .back)
+            }
+        }
         #endif
         .overlay(alignment: .topLeading) {
             header()
@@ -522,7 +540,7 @@ struct HomeHeroCarousel<Header: View>: View {
                                 // Scaled rather than resized, so the countdown's 15 seconds of animation never causes a layout
                                 // pass; it's only a transform.
                                 Rectangle()
-                                    .fill(Color.white)
+                                    .fill(dotColor)
                                     .frame(width: Self.selectedDotWidth)
                                     .scaleEffect(x: progress, anchor: .leading)
                             }
@@ -571,7 +589,7 @@ private struct HeroPage: View, Equatable {
     /// because they only reach state through the carousel's `@State`, which is the same storage however often they're
     /// remade. A closure that captured a changing value would need to be part of this comparison.
     static func == (lhs: HeroPage, rhs: HeroPage) -> Bool {
-        lhs.item == rhs.item && lhs.playTarget == rhs.playTarget && lhs.safeArea == rhs.safeArea
+        lhs.item == rhs.item && lhs.playTarget == rhs.playTarget && lhs.safeArea == rhs.safeArea && lhs.accent == rhs.accent
     }
 
     let item: MediaItem
@@ -580,6 +598,10 @@ private struct HeroPage: View, Equatable {
     let playTarget: MediaItem?
 
     let safeArea: EdgeInsets
+
+    /// The theme's color while one is showing, which the fade over the artwork leans toward.
+    let accent: Color?
+
     let open: (MediaItem) -> Void
     let play: (MediaItem) -> Void
 
@@ -601,8 +623,8 @@ private struct HeroPage: View, Equatable {
                         .init(color: .black.opacity(0.4), location: 0),
                         .init(color: .black.opacity(0), location: 0.2),
                         .init(color: .black.opacity(0), location: 0.5),
-                        .init(color: .black.opacity(0.55), location: 0.75),
-                        .init(color: .black.opacity(0.85), location: 1)
+                        .init(color: Color.themedBlack(accent).opacity(0.55), location: 0.75),
+                        .init(color: Color.themedBlack(accent).opacity(0.85), location: 1)
                     ],
                     startPoint: .top,
                     endPoint: .bottom

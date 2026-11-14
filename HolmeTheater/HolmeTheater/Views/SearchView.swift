@@ -34,6 +34,7 @@ struct SearchView: View {
                 resultsList
             }
         }
+        .themeWash()
         #if os(tvOS)
         // tvOS draws the title large over the content, and the search field is already labelled "Search".
         .navigationTitle("")

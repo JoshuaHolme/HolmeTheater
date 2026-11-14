@@ -103,6 +103,9 @@ struct ShowDetailView: View {
     /// two lines would cut off most of it.
     private var shortTextLineLimit: Int? { dynamicTypeSize.isAccessibilitySize ? nil : 2 }
 
+    /// The theme's color, while a theme is showing.
+    private var themeAccent: Color? { appModel.themeSettings.activeTheme?.accent }
+
     private var isSeason: Bool { item.kind == .season }
     private var isEpisode: Bool { item.kind == .episode }
     private var isMovie: Bool { item.kind == .movie }
@@ -183,6 +186,7 @@ struct ShowDetailView: View {
         #endif
         // The hero runs under the status and navigation bars, up to the top edge of the screen.
         .ignoresSafeArea(edges: .top)
+        .themeWash(0.5)
         .onGeometryChange(for: CGSize.self) { $0.size } action: { screenSize = $0 }
         #if os(tvOS)
         // tvOS draws the title over the content, doubling the logo or title the hero already shows.
@@ -633,8 +637,10 @@ struct ShowDetailView: View {
             let covered = detailsHeight + 20 + HeroLayout.bottomReserve + Self.scrimLead
             start = min(start, max(0, 1 - covered / heroHeight))
         }
+        // Leaning a little toward the theme's color, if one is showing, rather than going to pure black.
+        let base = Color.themedBlack(themeAccent)
         return Self.scrimProfile.map { step in
-            Gradient.Stop(color: .black.opacity(step.opacity), location: start + (1 - start) * step.position)
+            Gradient.Stop(color: base.opacity(step.opacity), location: start + (1 - start) * step.position)
         }
     }
 

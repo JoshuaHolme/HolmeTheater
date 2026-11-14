@@ -160,15 +160,42 @@ struct HomeView: View {
             // The carousel runs under the status bar, up to the top edge of the screen.
             .ignoresSafeArea(edges: .top)
             .background {
-                if let theme { ThemeWash(color: theme.accent) }
+                if let theme {
+                    ThemeWash(color: theme.accent)
+                    // The soft, near pieces, behind the posters and everything else on the screen...
+                    if appModel.themeSettings.showsEffects {
+                        ThemeParticles(effect: theme.effect, topInset: safeArea.top, layer: .back)
+                    }
+                }
             }
+            // ...and the sharp ones in front, so the two layers give it some depth.
             .overlay {
                 if let theme, appModel.themeSettings.showsEffects {
-                    ThemeParticles(effect: theme.effect, topInset: safeArea.top)
+                    ThemeParticles(effect: theme.effect, topInset: safeArea.top, layer: .front)
                 }
             }
             .pullToRefresh { await refresher.refresh() }
         }
+        #if os(tvOS)
+        // The holiday's greeting, which the heading would carry on other platforms, pinned to the top right corner of the screen,
+        // level with the tab bar's label at the other corner. On the page itself, not inside its scroll view, whose width runs
+        // past the screen's edge.
+        .overlay {
+            if let theme, let greeting = theme.greeting(on: appModel.themeSettings.today) {
+                // A clear layer that fills the whole screen, safe areas included (a view of fixed size can't grow into them, so
+                // its own margins would be measured from the edge inside them), with the badge in its corner.
+                Color.clear
+                    .overlay(alignment: .topTrailing) {
+                        ThemeBadge(theme: theme, greeting: greeting)
+                            // The same distance from the top and the right edges.
+                            .padding(.top, 50)
+                            .padding(.trailing, 50)
+                    }
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
+        }
+        #endif
         // The title is set so pushed screens can show "Home" on their back button. The bar itself only holds the profile
         // button (added where the tab is made): the heading below already names the screen.
         #if os(tvOS)

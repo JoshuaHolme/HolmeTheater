@@ -216,6 +216,7 @@ struct PosterBrowser: View {
                 }
                 #endif
             }
+            .themeWash()
             #if !os(tvOS)
             .toolbar { toolbar }
             #endif

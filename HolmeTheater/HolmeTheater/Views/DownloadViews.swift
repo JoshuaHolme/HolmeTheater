@@ -263,7 +263,7 @@ private struct DownloadProgressRing: View {
             Circle().stroke(.secondary.opacity(0.4), lineWidth: Self.lineWidth)
             Circle()
                 .trim(from: 0, to: max(0.03, progress))
-                .stroke(.blue, style: StrokeStyle(lineWidth: Self.lineWidth, lineCap: .round))
+                .stroke(.tint, style: StrokeStyle(lineWidth: Self.lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             Image(systemName: "arrow.down")
                 .font(.system(size: Self.arrowSize, weight: .bold))
@@ -374,6 +374,7 @@ struct DownloadsView: View {
 
     var body: some View {
         content
+            .themeWash()
             // The system may have removed files since this was last open.
             .onAppear { downloads.verifyFiles() }
             .navigationDestination(for: DownloadedShowRoute.self) { DownloadedShowView(seriesID: $0.seriesID, play: { playingItem = $0 }) }

@@ -13,6 +13,7 @@ struct AccountView: View {
 
     var body: some View {
         content
+            .themeWash()
             #if os(tvOS)
             // The page lays itself out, like the Settings app's account pages, with no title of its own.
             .navigationTitle("")
@@ -198,6 +199,9 @@ struct TVSettingsRow: View {
     /// An SF Symbol before the name.
     var systemImage: String?
 
+    /// Whether the value is in the tint (an "On"), rather than the dim color.
+    var highlightsValue = false
+
     var body: some View {
         HStack(spacing: 16) {
             if let systemImage {
@@ -210,7 +214,7 @@ struct TVSettingsRow: View {
             Spacer(minLength: 16)
             if let value {
                 Text(value)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(highlightsValue ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             }
             if showsChevron {
                 Image(systemName: "chevron.right")
@@ -273,7 +277,7 @@ struct TVToggleRow: View {
 
     var body: some View {
         Button { isOn.toggle() } label: {
-            TVSettingsRow(title: title, value: isOn ? "On" : "Off")
+            TVSettingsRow(title: title, value: isOn ? "On" : "Off", highlightsValue: isOn)
         }
         .buttonStyle(.card)
     }
@@ -322,6 +326,7 @@ extension View {
         }
         .scrollClipDisabled()
         .navigationTitle("")
+        .themeWash()
     }
 }
 #endif

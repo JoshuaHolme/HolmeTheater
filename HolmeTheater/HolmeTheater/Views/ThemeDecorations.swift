@@ -102,6 +102,54 @@ struct ThemeWash: View {
     }
 }
 
+/// A faint wash of the theme's color behind a page, so the theme doesn't stop at the Home screen. Much lighter than Home's.
+private struct ThemeWashModifier: ViewModifier {
+    let strength: Double
+    @Environment(AppModel.self) private var appModel
+
+    func body(content: Content) -> some View {
+        content.background {
+            if let theme = appModel.themeSettings.activeTheme {
+                ThemeWash(color: theme.accent).opacity(strength)
+            }
+        }
+    }
+}
+
+extension View {
+    /// Puts a faint wash of the theme's color behind the page, if a theme is showing.
+    func themeWash(_ strength: Double = 0.45) -> some View {
+        modifier(ThemeWashModifier(strength: strength))
+    }
+}
+
+extension Color {
+    /// Black with a little of `accent` in it, for the fades over artwork, so they lean toward the theme rather than going
+    /// to pure black.
+    static func themedBlack(_ accent: Color?) -> Color {
+        guard let accent else { return .black }
+        return Color.black.mix(with: accent, by: 0.14)
+    }
+}
+
+/// A holiday's greeting in a small glass pill, for Apple TV, whose Home screen has no heading to carry it.
+struct ThemeBadge: View {
+    let theme: AppTheme
+    let greeting: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ThemeGlyph(theme: theme)
+            Text(greeting)
+                .font(.callout.weight(.semibold))
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .glassEffect(.regular, in: .capsule)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 // MARK: - Pieces
 
 /// A piece, drawn at ``ThemeParticles/pieceSize`` points across. The particles scale it to their own size.
@@ -288,9 +336,16 @@ private struct Butterfly: View {
 ///
 /// Doesn't take touches, and draws nothing with Reduce Motion on.
 struct ThemeParticles: View {
+    /// Which of the pieces this draws. The soft, near ones go behind the screen's content and the sharp ones in front,
+    /// each layer being its own screen-sized view.
+    enum Layer {
+        case back, front
+    }
+
     let effect: ThemeEffect
     /// How far down the screen the content starts, so the lights hang just below the bars.
     var topInset: CGFloat = 0
+    var layer: Layer = .front
 
     @State private var simulation = ParticleSimulation()
     @State private var isVisible = false
@@ -304,17 +359,21 @@ struct ThemeParticles: View {
         if !reduceMotion {
             TimelineView(.animation(minimumInterval: 1.0 / 30, paused: scenePhase != .active || !isVisible)) { timeline in
                 Canvas { context, size in
+                    simulation.layer = layer
                     simulation.step(to: timeline.date, size: size, effect: effect)
                     simulation.draw(in: context, topInset: topInset)
                 } symbols: {
                     // Each piece is drawn once here and reused for every particle that shows it: sharp, and softened
                     // for the ones passing in front, so nothing is blurred frame by frame. Padded so the blur isn't cut off.
                     ForEach(effect.pieces.indices, id: \.self) { index in
-                        PieceView(piece: effect.pieces[index]).tag(index)
-                        PieceView(piece: effect.pieces[index])
-                            .padding(6)
-                            .blur(radius: 2)
-                            .tag(effect.pieces.count + index)
+                        if layer == .front {
+                            PieceView(piece: effect.pieces[index]).tag(index)
+                        } else {
+                            PieceView(piece: effect.pieces[index])
+                                .padding(6)
+                                .blur(radius: 2)
+                                .tag(effect.pieces.count + index)
+                        }
                     }
                 }
             }
@@ -331,10 +390,10 @@ extension ThemeEffect.Motion {
     /// How many are on screen at once.
     fileprivate var count: Int {
         switch self {
-        case .flutter: 14
-        case .fall: 24
-        case .drift: 16
-        case .confetti: 22
+        case .flutter: 20
+        case .fall: 34
+        case .drift: 28
+        case .confetti: 32
         case .fly: 7
         }
     }
@@ -344,7 +403,7 @@ extension ThemeEffect.Motion {
         switch self {
         case .flutter: 13...18
         case .fall: 8...13
-        case .drift: 12...16
+        case .drift: 13...18
         case .confetti: 7...10
         case .fly: 20...28
         }
@@ -387,14 +446,32 @@ extension ThemeEffect.Motion {
         switch self {
         case .flutter: 0.65
         case .fall, .fly: 0.7
-        case .drift, .confetti: 0.75
+        case .confetti: 0.75
+        case .drift: 0.9
         }
+    }
+}
+
+extension ThemeEffect {
+    /// How many pieces are on screen at once, across both layers. A few more bats than butterflies, which are bigger and
+    /// busier.
+    fileprivate var particleCount: Int {
+        motion == .fly && pieces.contains { $0.art == .bat } ? 16 : motion.count
     }
 }
 
 /// Moves and draws the particles. Lives in the view's state and is stepped from the view's timeline; nothing in it is
 /// observed, so stepping it never invalidates a view.
 final class ParticleSimulation {
+    /// Which layer's pieces this makes; set by the view that owns it.
+    var layer: ThemeParticles.Layer = .front
+
+    /// How many of `effect`'s pieces this layer has: a third of them behind, the rest in front.
+    private func count(for effect: ThemeEffect) -> Int {
+        let behind = max(3, effect.particleCount / 3)
+        return layer == .back ? behind : effect.particleCount - behind
+    }
+
     fileprivate enum Depth {
         /// Small, dim and slow, behind.
         case far
@@ -402,11 +479,11 @@ final class ParticleSimulation {
         /// Bigger, soft and quick, in front.
         case near
 
-        static func random() -> Depth {
-            switch Double.random(in: 0..<1) {
-            case ..<0.4: .far
-            case ..<0.85: .mid
-            default: .near
+        /// The back layer has only the soft, near ones, and the front layer only the sharp ones.
+        static func random(for layer: ThemeParticles.Layer) -> Depth {
+            switch layer {
+            case .back: .near
+            case .front: Double.random(in: 0..<1) < 0.47 ? .far : .mid
             }
         }
 
@@ -463,7 +540,7 @@ final class ParticleSimulation {
         if effect != self.effect || abs(size.width - self.size.width) > 1 || abs(size.height - self.size.height) > 1 {
             self.effect = effect
             self.size = size
-            particles = (0..<effect.motion.count).map { _ in spawn(effect: effect, anywhere: true) }
+            particles = (0..<count(for: effect)).map { _ in spawn(effect: effect, anywhere: true) }
         }
         // After a pause the timeline picks up where it was, rather than jumping.
         let dt = min(max(date.timeIntervalSince(lastDate ?? date), 0), 1.0 / 15)
@@ -497,7 +574,7 @@ final class ParticleSimulation {
     /// A new particle, anywhere on screen to begin with, or else just off the edge it comes in from.
     private func spawn(effect: ThemeEffect, anywhere: Bool) -> Particle {
         let motion = effect.motion
-        let depth = Depth.random()
+        let depth = Depth.random(for: layer)
         let position: CGPoint
         let velocity: CGVector
         if motion == .fly {
@@ -581,7 +658,8 @@ final class ParticleSimulation {
             ctx.draw(symbol, at: .zero, anchor: .center)
         }
 
-        if effect.hasLights { drawLights(in: context, top: topInset) }
+        // The lights hang in front, over the top of the screen.
+        if effect.hasLights, layer == .front { drawLights(in: context, top: topInset) }
     }
 
     /// Bulbs in four colors, twinkling, on a wire that swags across the top of the screen.
