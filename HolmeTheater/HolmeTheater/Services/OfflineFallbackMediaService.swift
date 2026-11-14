@@ -4,34 +4,40 @@
 
 import Foundation
 import Network
+import Synchronization
 
 /// Whether the device has a network at all, so offline screens can go straight to what's saved instead of waiting
 /// for a request to time out.
-nonisolated final class NetworkMonitor: @unchecked Sendable {
+nonisolated final class NetworkMonitor: Sendable {
     static let shared = NetworkMonitor()
 
     private let monitor = NWPathMonitor()
-    private let lock = NSLock()
-    private var online = true
+
+    private struct State {
+        var online = true
+        var reconnectHandler: (@Sendable () -> Void)?
+    }
+
+    private let state = Mutex(State())
 
     /// False only when the system says there's no route out. A server that's down still counts as online.
-    var isOnline: Bool { lock.withLock { online } }
+    var isOnline: Bool { state.withLock { $0.online } }
 
     /// Called when the network comes back after being gone. Set once, by the download manager.
     var onReconnect: (@Sendable () -> Void)? {
-        get { lock.withLock { reconnectHandler } }
-        set { lock.withLock { reconnectHandler = newValue } }
+        get { state.withLock { $0.reconnectHandler } }
+        set { state.withLock { $0.reconnectHandler = newValue } }
     }
-    private var reconnectHandler: (@Sendable () -> Void)?
 
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
-            let wasOnline = lock.withLock { () -> Bool in
-                defer { online = path.status == .satisfied }
-                return online
+            let isOnline = path.status == .satisfied
+            let reconnected = state.withLock { state -> (@Sendable () -> Void)? in
+                defer { state.online = isOnline }
+                return !state.online && isOnline ? state.reconnectHandler : nil
             }
-            if !wasOnline, path.status == .satisfied { onReconnect?() }
+            reconnected?()
         }
         monitor.start(queue: DispatchQueue(label: "NetworkMonitor", qos: .utility))
     }
@@ -76,6 +82,8 @@ nonisolated struct OfflineFallbackMediaService: MediaService {
     func restore(_ session: UserSession) async { await base.restore(session) }
 
     func signOut() async { await base.signOut() }
+
+    func authorizedRequest(for url: URL) async -> URLRequest { await base.authorizedRequest(for: url) }
 
     func refreshProfile() async throws -> UserSession { try await base.refreshProfile() }
 

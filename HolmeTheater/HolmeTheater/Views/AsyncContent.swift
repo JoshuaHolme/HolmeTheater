@@ -147,6 +147,9 @@ final class ContentRefresher {
 extension View {
     /// Lets the user pull down a scroll view in this view to run `action`, with the system's spinner showing until it
     /// finishes. Does nothing on tvOS, where there's no pulling.
+    ///
+    /// - Parameter enabled: Fixed for the life of the view. The two cases are different views, so changing it would
+    ///   reset the state of everything inside.
     @ViewBuilder
     func pullToRefresh(enabled: Bool = true, _ action: @escaping @MainActor @Sendable () async -> Void) -> some View {
         #if os(tvOS)

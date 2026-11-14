@@ -96,6 +96,7 @@ final class AppModel {
         self.themeSettings = ThemeSettings(defaults: UserDefaults(suiteName: "ThemeSettingsPreviews") ?? .standard)
         self.playbackSettings = PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard)
         self.keychain = KeychainStore(service: (Bundle.main.bundleIdentifier ?? "JellyfinClient") + ".previews")
+        playbackSettings.scope = cacheScope
     }
 
     /// Call once at launch to pick up a saved session.
@@ -182,8 +183,12 @@ final class AppModel {
     func signOut(removingDownloads: Bool = true) async {
         playback?.stop()
         playback = nil
-        await service.signOut()
+        // The saved token goes first, so it's gone even if the app is closed before the rest finishes. The service forgets
+        // the session at once and revokes it on the server without waiting.
         keychain.delete(account: Self.sessionAccount)
+        await service.signOut()
+        // Counts learned for this account's shows.
+        SeasonCountCache.shared.removeAll()
         // So the next person on a shared device doesn't see the previous user's artwork or profile picture.
         ImageCache.shared.removeAll()
         // Responses kept by the shared session, which earlier versions fetched subtitles with: their URLs carry the
@@ -192,6 +197,7 @@ final class AppModel {
         // Likewise their downloaded videos and details. Other accounts' downloads on the device stay.
         if removingDownloads {
             downloads.removeAllForAccount()
+            playbackSettings.removeSubtitleOffsets()
         } else {
             // The downloads stay, but not the access token that paused ones keep to carry on with.
             downloads.discardResumeData()
@@ -208,6 +214,7 @@ final class AppModel {
     private func transition(to newState: SessionState) {
         state = newState
         downloads.accountChanged(scope: cacheScope, accessToken: session?.accessToken)
+        playbackSettings.scope = cacheScope
     }
 
     /// Saves the session so the next launch is already signed in. A failure only costs that convenience,

@@ -351,15 +351,22 @@ nonisolated struct PictureSubtitleCue: Sendable {
     /// Colours by number, as premultiplied RGBA packed big-endian. All 256, the ones the track doesn't set transparent.
     fileprivate let palette: [UInt32]
 
+    /// The most pixels a picture may have: a 4096 × 4096 square, 64 MB decoded. Every size and position in a track is the
+    /// file's to say, up to 65,535, so without a limit a damaged or hostile one could ask for gigabytes.
+    private static let maxPixels = 4096 * 4096
+
     /// Draws the picture: everything in it, cut down to the part of the canvas it covers.
     func image() -> PictureSubtitle? {
         let rects = placements.map(\.rect)
-        guard let bounds = rects.first.map({ rects.dropFirst().reduce($0) { $0.union($1) } }),
-              bounds.width > 0, bounds.height > 0 else { return nil }
+        guard let union = rects.first.map({ rects.dropFirst().reduce($0) { $0.union($1) } }) else { return nil }
+        // Anything off the canvas wouldn't be seen anyway.
+        let bounds = union.intersection(CGRect(origin: .zero, size: canvas))
+        guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return nil }
         let width = Int(bounds.width), height = Int(bounds.height)
+        guard width * height <= Self.maxPixels else { return nil }
         var pixels = [UInt32](repeating: 0, count: width * height)
         for placement in placements {
-            placement.draw(into: &pixels, width: width, origin: (Int(bounds.minX), Int(bounds.minY)), palette: palette)
+            placement.draw(into: &pixels, size: (width, height), origin: (Int(bounds.minX), Int(bounds.minY)), palette: palette)
         }
 
         let data = pixels.withUnsafeBytes { Data($0) }
@@ -449,9 +456,11 @@ nonisolated enum PGS {
 
         var rect: CGRect { CGRect(x: x, y: y, width: crop.width, height: crop.height) }
 
-        /// Decodes the picture into `pixels`, a buffer `width` wide whose top-left corner is at `origin` on the canvas.
-        func draw(into pixels: inout [UInt32], width: Int, origin: (x: Int, y: Int), palette: [UInt32]) {
+        /// Decodes the picture into `pixels`, a buffer of `size` whose top-left corner is at `origin` on the canvas. What
+        /// falls outside the buffer is left out.
+        func draw(into pixels: inout [UInt32], size: (width: Int, height: Int), origin: (x: Int, y: Int), palette: [UInt32]) {
             let rle = object.rle
+            let width = size.width
             let offsetX = x - crop.x - origin.x, offsetY = y - crop.y - origin.y
             let (cropMaxX, cropMaxY) = (crop.x + crop.width, crop.y + crop.height)
             var i = 0, column = 0, row = 0
@@ -485,10 +494,13 @@ nonisolated enum PGS {
                 }
 
                 let pixel = palette[Int(colour)]
-                if pixel != 0, row >= crop.y, row < cropMaxY {
-                    let start = max(column, crop.x), end = min(column + run, cropMaxX, object.width)
+                let targetRow = row + offsetY
+                if pixel != 0, row >= crop.y, row < cropMaxY, targetRow >= 0, targetRow < size.height {
+                    // Within the crop, the picture and the buffer.
+                    let start = max(column, crop.x, -offsetX)
+                    let end = min(column + run, cropMaxX, object.width, width - offsetX)
                     if start < end {
-                        let base = (row + offsetY) * width + offsetX
+                        let base = targetRow * width + offsetX
                         for column in start..<end { pixels[base + column] = pixel }
                     }
                 }

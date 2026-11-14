@@ -369,9 +369,12 @@ final class DownloadManager {
     /// Downloads a movie or episode, or every episode of a show or season. Anything already downloaded or on its way is
     /// left alone, and a failed or paused one starts again.
     func download(_ item: MediaItem) async {
+        let scope = scope
         guard !scope.isEmpty else { return }
         do {
             let playable = try await playableItems(of: item)
+            // Signed out or switched accounts while the list came: it isn't the new account's to download.
+            guard scope == self.scope else { return }
             var added = 0
             for entry in playable {
                 if let existing = store.record(id: entry.id) {
@@ -390,6 +393,7 @@ final class DownloadManager {
             pump()
             if added == 0 { updateActivity(force: true) }
         } catch {
+            guard scope == self.scope else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -498,10 +502,10 @@ final class DownloadManager {
             for case let task as URLSessionDownloadTask in tasks where task.taskDescription.map(descriptions.contains) == true {
                 // What's arrived so far is kept, so resuming carries on instead of starting again. Not if the download
                 // was removed before this arrived, which the store checks.
-                let requestURL = task.originalRequest?.url
+                let request = task.originalRequest
                 task.cancel { data in
                     guard let data else { return }
-                    store.saveResumeData(data, key: key, requestURL: requestURL)
+                    store.saveResumeData(data, key: key, request: request)
                 }
             }
         }
@@ -628,8 +632,11 @@ final class DownloadManager {
             let subtitleFiles = await saveSubtitles(of: info, in: directory)
             try Task.checkCancellation()
 
-            // The URLs hold the access token, which has no business on disk. The video's and subtitles' saved files
-            // stand in for them when it plays (see `DownloadStore.localPlayback`).
+            // The token goes in a header rather than the URL, out of the server's logs.
+            let request = await service.authorizedRequest(for: info.url)
+
+            // The URLs aren't needed once the files are saved: those stand in for them when it plays (see
+            // `DownloadStore.localPlayback`).
             var stored = info
             stored.url = URL(filePath: "/")
             stored.subtitleTracks = info.subtitleTracks.map { track in
@@ -649,7 +656,7 @@ final class DownloadManager {
                 record.subtitleFiles = subtitleFiles
                 record.errorMessage = nil
             }
-            begin(session.downloadTask(with: info.url), key: key)
+            begin(session.downloadTask(with: request), key: key)
         } catch {
             // Paused, removed or the account changed, and whoever did it has already set the state. A cancelled request
             // doesn't always say so (the service reports it as the server being unreachable), so the error isn't trusted.
@@ -722,7 +729,7 @@ final class DownloadManager {
         var files: [Int: String] = [:]
         for track in info.subtitleTracks {
             guard let url = track.url,
-                  let (data, response) = try? await detailsSession.data(from: url),
+                  let (data, response) = try? await detailsSession.data(for: service.authorizedRequest(for: url)),
                   (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
             let fileExtension = switch track.format {
             case .pgs: "sup"
@@ -1070,7 +1077,7 @@ nonisolated final class DownloadSessionDelegate: NSObject, URLSessionDownloadDel
 
         // Wherever the transfer got to is kept, so trying again carries on from there.
         if let data = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
-            store.saveResumeData(data, key: key, requestURL: task.originalRequest?.url)
+            store.saveResumeData(data, key: key, request: task.originalRequest)
         }
 
         // Pausing marks the record first, and removing deletes it first, so a cancellation of a download that's still

@@ -60,8 +60,15 @@ nonisolated protocol MediaService: Sendable {
     /// - Parameter session: A session saved from an earlier sign-in, e.g. loaded from the keychain.
     func restore(_ session: UserSession) async
 
-    /// Revokes the session's access token on the server (best effort) and forgets it locally.
+    /// Forgets the session locally at once, then revokes its access token on the server (best effort) without waiting.
     func signOut() async
+
+    /// A request for a file on the server (subtitles, a download) that the app fetches with its own `URLSession`, carrying
+    /// the access token in a header rather than in the URL, where server and proxy logs would record it.
+    ///
+    /// - Parameter url: A URL from this service. One that isn't on the signed-in server, or a file URL, gets no token.
+    /// - Returns: The request to send.
+    func authorizedRequest(for url: URL) async -> URLRequest
 
     /// Re-reads the signed-in user's profile (display name and profile picture) from the server,
     /// so changes made elsewhere show up without signing in again.
@@ -370,6 +377,9 @@ nonisolated protocol MediaService: Sendable {
 }
 
 extension MediaService {
+    /// Services with no server of their own have no token to send.
+    func authorizedRequest(for url: URL) async -> URLRequest { URLRequest(url: url) }
+
     /// Services with no server of their own have nothing to send it to.
     func syncProgress(itemID: String, position: TimeInterval, isPlayed: Bool, date: Date) async throws {}
 

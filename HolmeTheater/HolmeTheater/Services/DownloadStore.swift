@@ -382,7 +382,7 @@ nonisolated final class DownloadStore: Sendable {
             for id in ids {
                 state.index.records[Self.key(scope: state.scope, id: id)] = nil
                 // Moved aside rather than deleted, which for a whole series can take seconds. Still under the lock, so
-                // nothing that checks the record is there first (``saveResumeData(_:key:requestURL:)``) can write into
+                // nothing that checks the record is there first (``saveResumeData(_:key:request:)``) can write into
                 // the folder after it has gone.
                 let directory = itemDirectory(scope: state.scope, id: id)
                 guard FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) else { continue }
@@ -403,7 +403,9 @@ nonisolated final class DownloadStore: Sendable {
     /// Where removed downloads' folders wait to be deleted, out of the way.
     private static func trashDirectory(in root: URL) -> URL { root.appending(path: "Removed", directoryHint: .isDirectory) }
 
-    /// Drops shows, seasons, people and artwork that no download uses.
+    /// Drops shows, seasons and people that no download uses, and forgets their artwork. The files themselves are deleted
+    /// in the background (see ``removeUnreferencedArtworkFiles()``): listing and deleting them could hold up the main
+    /// thread, and everything else waiting on the lock.
     private func pruneUnreferenced(_ state: inout State) {
         let items = state.index.records.values.map(\.item)
         let seriesIDs = Set(items.compactMap(\.seriesID))
@@ -413,16 +415,33 @@ nonisolated final class DownloadStore: Sendable {
         let personIDs = Set(items.flatMap(\.people).map(\.personID))
         state.index.people = state.index.people.filter { personIDs.contains($0.key) }
 
-        var keep = Set<String>()
-        for item in items + Array(state.index.containers.values) {
-            for url in Self.artworkURLs(of: item) { keep.insert(Self.artworkName(for: url)) }
+        state.artwork.formIntersection(Self.referencedArtwork(in: state.index))
+        Task.detached(priority: .utility) { [self] in removeUnreferencedArtworkFiles() }
+    }
+
+    /// The file names of every image the index's downloads, shows and seasons show.
+    private static func referencedArtwork(in index: DownloadIndex) -> Set<String> {
+        var names = Set<String>()
+        for item in index.records.values.map(\.item) + Array(index.containers.values) {
+            for url in artworkURLs(of: item) { names.insert(artworkName(for: url)) }
         }
-        // The folder itself, rather than the list of what's saved, so a file that slipped past the list goes too.
+        return names
+    }
+
+    /// Deletes the saved images nothing uses any more. Goes by the folder itself, rather than the list of what's saved, so
+    /// a file that slipped past the list goes too.
+    private func removeUnreferencedArtworkFiles() {
+        // Listed without the lock, which is the slow part.
         let files = (try? FileManager.default.contentsOfDirectory(at: artworkDirectory, includingPropertiesForKeys: nil)) ?? []
-        for file in files where !keep.contains(file.lastPathComponent) {
-            try? FileManager.default.removeItem(at: file)
+        guard !files.isEmpty else { return }
+        state.withLock { state in
+            // Worked out again now, under the lock that ``saveArtwork(_:for:)`` saves with, so an image saved for a
+            // download since the removal isn't taken for an unused one.
+            let keep = Self.referencedArtwork(in: state.index).union(state.artwork)
+            for file in files where !keep.contains(file.lastPathComponent) {
+                try? FileManager.default.removeItem(at: file)
+            }
         }
-        state.artwork.formIntersection(keep)
     }
 
     // MARK: - Shows, seasons and people
@@ -521,9 +540,16 @@ nonisolated final class DownloadStore: Sendable {
     /// token down again.
     static func tokenFingerprint(_ token: String) -> String { hashed(token, length: 16) }
 
-    /// The fingerprint of the token in a request URL's `ApiKey`, or nil if it has none.
-    private static func tokenFingerprint(in url: URL?) -> String? {
-        guard let url,
+    /// The fingerprint of the token a request was made with: in its `Authorization` header, or, for a transfer started
+    /// before the token moved out of the URL, its `ApiKey`. Nil if it has neither.
+    private static func tokenFingerprint(in request: URLRequest?) -> String? {
+        guard let request else { return nil }
+        if let header = request.value(forHTTPHeaderField: "Authorization"),
+           let start = header.range(of: "Token=\"")?.upperBound,
+           let end = header[start...].firstIndex(of: "\"") {
+            return tokenFingerprint(String(header[start..<end]))
+        }
+        guard let url = request.url,
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
               let token = items.first(where: { $0.name.caseInsensitiveCompare("ApiKey") == .orderedSame })?.value
         else { return nil }
@@ -537,9 +563,9 @@ nonisolated final class DownloadStore: Sendable {
     ///
     /// The data repeats the transfer's request, access token and all. It's only usable with that token, so it's tagged
     /// with its fingerprint, and ``removeResumeData()`` deletes it all when the session ends.
-    func saveResumeData(_ data: Data, key: String, requestURL: URL?) {
-        // Without a token in the URL, no session's fingerprint matches, and the data is only ever thrown away.
-        let fingerprint = Self.tokenFingerprint(in: requestURL) ?? ""
+    func saveResumeData(_ data: Data, key: String, request: URLRequest?) {
+        // Without a token in the request, no session's fingerprint matches, and the data is only ever thrown away.
+        let fingerprint = Self.tokenFingerprint(in: request) ?? ""
         state.withLock { state in
             guard state.index.records[key] != nil else { return }
             let directory = itemDirectory(key: key, in: state)
@@ -607,11 +633,15 @@ nonisolated final class DownloadStore: Sendable {
         return state.withLock { $0.artwork.contains(name) }
     }
 
+    /// Saves an image. Called off the main thread, while a download is prepared.
     func saveArtwork(_ data: Data, for url: URL) {
         let name = Self.artworkName(for: url)
         try? FileManager.default.createDirectory(at: artworkDirectory, withIntermediateDirectories: true)
-        guard (try? data.write(to: artworkFile(named: name), options: .atomic)) != nil else { return }
-        state.withLock { _ = $0.artwork.insert(name) }
+        // Written and listed under one lock, so ``removeUnreferencedArtworkFiles()`` never finds the file without its name.
+        state.withLock { state in
+            guard (try? data.write(to: artworkFile(named: name), options: .atomic)) != nil else { return }
+            state.artwork.insert(name)
+        }
     }
 
     /// Every image an item shows.

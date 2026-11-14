@@ -805,7 +805,8 @@ struct TVPlayerController: UIViewControllerRepresentable {
 
         /// Presents `host` once the menu that was tapped has finished closing; presenting while it's still going is ignored.
         private func present(_ host: UIViewController, triesLeft: Int) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(0.2))
                 guard let self, let controller = self.controller else { return }
                 if controller.presentedViewController == nil {
                     controller.present(host, animated: true)

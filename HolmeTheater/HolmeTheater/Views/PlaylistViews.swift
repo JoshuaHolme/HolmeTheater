@@ -33,18 +33,16 @@ struct CollectionDetailView: View {
             if items.isEmpty {
                 ContentUnavailableView("Empty Collection", systemImage: "square.stack", description: Text("There's nothing in this collection yet."))
             } else {
-                PosterBrowser(items: items, hero: { viewport in
-                    AnyView(
-                        ListHero(
-                            item: collection,
-                            style: .artwork(collection.heroArtworkURL(among: items)),
-                            detailsLine: detailsLine(for: items),
-                            viewport: viewport
-                        ) {
-                            heroButtons
-                        }
-                    )
-                })
+                PosterBrowser(items: items) { viewport in
+                    ListHero(
+                        item: collection,
+                        style: .artwork(collection.heroArtworkURL(among: items)),
+                        detailsLine: detailsLine(for: items),
+                        viewport: viewport
+                    ) {
+                        heroButtons
+                    }
+                }
             }
         }
         .themeWash()

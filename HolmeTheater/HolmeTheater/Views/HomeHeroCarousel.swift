@@ -361,7 +361,7 @@ struct HomeHeroCarousel<Header: View>: View {
                         // SwiftUI may not have noticed yet that focus has left Play, and setting the same value again
                         // would do nothing. Clear it first, so the next setting is a change.
                         heroFocus = nil
-                        DispatchQueue.main.async { heroFocus = .play }
+                        Task { heroFocus = .play }
                     } else {
                         heroFocus = .play
                     }
@@ -956,7 +956,7 @@ private struct BackStandIn: UIViewRepresentable {
             let movedLeft = context.focusHeading.contains(.left)
             guard movedLeft else {
                 // From the sidebar or a shelf, say: not where focus should rest. Straight to Play.
-                DispatchQueue.main.async { [shared] in shared.onReturnFocus() }
+                Task { [shared] in shared.onReturnFocus() }
                 return
             }
 
@@ -971,7 +971,8 @@ private struct BackStandIn: UIViewRepresentable {
             // Once the moves stop, focus goes back to Play.
             shared.idleToken += 1
             let token = shared.idleToken
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleDelay) { [shared] in
+            Task { [shared] in
+                try? await Task.sleep(for: .seconds(Self.idleDelay))
                 guard shared.idleToken == token, shared.holdsFocus() else { return }
                 shared.onReturnFocus()
             }

@@ -18,8 +18,6 @@ struct QuickConnectAuthorizeView: View {
     /// How many digits the server's codes have.
     private static let codeLength = 6
 
-    private var digits: String { code }
-
     var body: some View {
         content
             #if os(tvOS)
@@ -75,7 +73,7 @@ struct QuickConnectAuthorizeView: View {
                 // The same bordered pill as the other buttons that act on the page.
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
-                .disabled(digits.count < Self.codeLength || isWorking)
+                .disabled(code.count < Self.codeLength || isWorking)
             }
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
@@ -106,7 +104,7 @@ struct QuickConnectAuthorizeView: View {
                 } label: {
                     if isWorking { ProgressView() } else { Text("Authorize") }
                 }
-                .disabled(digits.count < Self.codeLength || isWorking)
+                .disabled(code.count < Self.codeLength || isWorking)
             }
         }
     }
@@ -115,7 +113,7 @@ struct QuickConnectAuthorizeView: View {
         isWorking = true
         defer { isWorking = false }
         do {
-            try await appModel.service.authorizeQuickConnect(code: digits)
+            try await appModel.service.authorizeQuickConnect(code: code)
             // Back to the tab the user was on, where the message shows.
             dismissAccount()
             appModel.toastMessage = String(localized: "Quick Connect approved")

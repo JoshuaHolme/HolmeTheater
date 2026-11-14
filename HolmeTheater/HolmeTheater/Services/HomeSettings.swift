@@ -74,6 +74,7 @@ final class HomeSettings {
     private var stored: Stored {
         didSet {
             guard stored != oldValue else { return }
+            revision += 1
             if let data = try? JSONEncoder().encode(stored) {
                 defaults.set(data, forKey: Self.key)
             }
@@ -93,8 +94,9 @@ final class HomeSettings {
         stored = loaded
     }
 
-    /// Changes whenever any setting does.
-    var revision: Int { stored.hashValue }
+    /// Goes up whenever any setting changes. A count rather than a hash of the settings, which two different settings
+    /// could share.
+    private(set) var revision = 0
 
     // MARK: Sections
 

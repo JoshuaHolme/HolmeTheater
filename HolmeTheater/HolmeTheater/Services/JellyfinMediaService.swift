@@ -16,21 +16,21 @@ import JellyfinAPI
 /// is touched from several concurrent UI tasks.
 actor JellyfinMediaService: MediaService {
     /// Jellyfin expresses durations in 100-nanosecond "ticks".
-    private static let ticksPerSecond = 10_000_000.0
+    static let ticksPerSecond = 10_000_000.0
 
     /// Maximum artwork widths requested from the server, in pixels.
     ///
     /// Posters are shown at about 130 pt wide (220 pt on tvOS), so 450 px is sharp on a 3× phone screen.
     /// Asking for more only costs memory (a decoded image takes width × height × 4 bytes) and bandwidth.
-    private static let posterWidth = 450
-    private static let backdropWidth = 1280
-    private static let logoWidth = 800
+    static let posterWidth = 450
+    static let backdropWidth = 1280
+    static let logoWidth = 800
 
     /// How many similar titles to ask for.
     private static let similarLimit = 20
 
     /// How wide a person's portrait is asked for when it fills the screen.
-    private static let largePortraitWidth = 1200
+    static let largePortraitWidth = 1200
 
     private let identity: ClientIdentity
 
@@ -49,6 +49,7 @@ actor JellyfinMediaService: MediaService {
             // What was cached belongs to the account (and server) it was fetched for; another one starts empty.
             if session?.userID != oldValue?.userID || session?.server.url != oldValue?.server.url {
                 onThisDayCache = nil
+                mergedPrefixes = [:]
             }
         }
     }
@@ -177,12 +178,38 @@ actor JellyfinMediaService: MediaService {
     }
 
     func signOut() async {
-        // Revoke the token server-side, but clear local state even if that fails (e.g. offline).
-        try? await client?.signOut()
+        // Local state goes first, so signing out never waits on the server: one that's down but still routable can take a
+        // minute to time out. The token is revoked server-side afterwards, best effort, with the client that holds it.
+        let revoking = client
         connectGeneration += 1
         client = nil
         server = nil
         session = nil
+        Task { try? await revoking?.signOut() }
+    }
+
+    func authorizedRequest(for url: URL) async -> URLRequest {
+        var request = URLRequest(url: url)
+        // Only for the server itself, so a URL anywhere else never sees the token.
+        guard let client, let token = client.accessToken, !url.isFileURL,
+              Self.isSameOrigin(url, client.configuration.url) else { return request }
+        request.setValue("MediaBrowser Token=\"\(token)\"", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Whether two URLs have the same scheme, host and port.
+    private static func isSameOrigin(_ a: URL, _ b: URL) -> Bool {
+        a.scheme?.lowercased() == b.scheme?.lowercased()
+            && a.host()?.lowercased() == b.host()?.lowercased()
+            && (a.port ?? defaultPort(a)) == (b.port ?? defaultPort(b))
+    }
+
+    private static func defaultPort(_ url: URL) -> Int? {
+        switch url.scheme?.lowercased() {
+        case "https": 443
+        case "http": 80
+        default: nil
+        }
     }
 
     func refreshProfile() async throws -> UserSession {
@@ -251,7 +278,11 @@ actor JellyfinMediaService: MediaService {
     /// than one, each is asked for enough to cover the page, and the results are merged: taking from each library in
     /// turn, so one library's items can't crowd the others off the page, then, with `byLastPlayed`, by when each was last
     /// played, newest first, which is the order the server would have given them in.
+    ///
+    /// What each library sent is kept (see ``mergedPrefixes``), so a later page asks each only for what it hasn't sent
+    /// yet, rather than everything up to that page again. A first page starts over, which is also how a refresh asks.
     private func page(
+        _ list: String,
         from libraryIDs: [String]?,
         offset: Int,
         limit: Int,
@@ -261,7 +292,21 @@ actor JellyfinMediaService: MediaService {
         guard let libraryIDs else { return try await fetch(nil, offset, limit) }
         if libraryIDs.count == 1 { return try await fetch(libraryIDs[0], offset, limit) }
 
-        let lists = try await Self.fetchEach(libraryIDs) { id in try await fetch(id, 0, offset + limit) }
+        func key(_ id: String) -> String { "\(list)|\(id)" }
+        if offset == 0 {
+            for id in libraryIDs { mergedPrefixes[key(id)] = nil }
+        }
+        let needed = offset + limit
+        let starts = libraryIDs.map { ($0, mergedPrefixes[key($0)] ?? MergedPrefix()) }
+        let prefixes = try await Self.fetchEach(starts) { start in
+            let (id, prefix) = start
+            guard prefix.items.count < needed, !prefix.isComplete else { return prefix }
+            let wanted = needed - prefix.items.count
+            let more = try await fetch(id, prefix.items.count, wanted)
+            return MergedPrefix(items: prefix.items + more, isComplete: more.count < wanted)
+        }
+        for (id, prefix) in zip(libraryIDs, prefixes) { mergedPrefixes[key(id)] = prefix }
+        let lists = prefixes.map { Array($0.items.prefix(needed)) }
 
         var seen = Set<MediaItem.ID>()
         var merged: [MediaItem] = []
@@ -286,6 +331,16 @@ actor JellyfinMediaService: MediaService {
         return Array(merged.dropFirst(offset).prefix(limit))
     }
 
+    /// The start of one library's list, as far as it has been fetched for a page merged from several.
+    private nonisolated struct MergedPrefix: Sendable {
+        var items: [MediaItem] = []
+        /// Whether the library sent fewer than it was asked for, so there's no more to ask it for.
+        var isComplete = false
+    }
+
+    /// What each library has sent for a list merged from several, by the list's name and the library's ID.
+    private var mergedPrefixes: [String: MergedPrefix] = [:]
+
     /// Runs `fetch` for every library at once, rather than one after another, and returns the results in the libraries'
     /// order.
     private static func fetchEach<ID: Sendable, Result: Sendable>(
@@ -304,7 +359,7 @@ actor JellyfinMediaService: MediaService {
 
     func resumeItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
-        return try await page(from: libraryIDs, offset: offset, limit: limit, byLastPlayed: true) { parentID, offset, limit in
+        return try await page("resume", from: libraryIDs, offset: offset, limit: limit, byLastPlayed: true) { parentID, offset, limit in
             let request = Paths.getResumeItems(parameters: .init(
                 userID: session.userID,
                 startIndex: offset,
@@ -320,7 +375,7 @@ actor JellyfinMediaService: MediaService {
 
     func nextUpItems(offset: Int, limit: Int, libraryIDs: [String]?) async throws -> [MediaItem] {
         let (client, session) = try signedIn()
-        return try await page(from: libraryIDs, offset: offset, limit: limit) { parentID, offset, limit in
+        return try await page("nextUp", from: libraryIDs, offset: offset, limit: limit) { parentID, offset, limit in
             let request = Paths.getNextUp(parameters: .init(
                 userID: session.userID,
                 startIndex: offset,
@@ -446,10 +501,11 @@ actor JellyfinMediaService: MediaService {
         }.flatMap { $0 }
 
         // Premiere dates are calendar dates stored at midnight UTC, so they're read as UTC, not in the user's zone.
+        let calendar = Calendar.utc
         let matches = items
             .filter { item in
                 guard let date = item.releaseDate else { return false }
-                let components = Calendar.utc.dateComponents([.month, .day], from: date)
+                let components = calendar.dateComponents([.month, .day], from: date)
                 return components.month == month && components.day == day
             }
             .sorted { ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast) }
@@ -845,9 +901,8 @@ actor JellyfinMediaService: MediaService {
                     subtitlePath = stream.deliveryURL ?? "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.pgssub"
                     format = .pgs
                 }
-                let subtitleURL = subtitlePath
-                    .flatMap { client.url(path: $0) }
-                    .map { Self.addingAccessToken(client.accessToken, to: $0) }
+                // No token in the URL: the app fetches these itself, with it in a header (see `authorizedRequest(for:)`).
+                let subtitleURL = subtitlePath.flatMap { client.url(path: $0) }
                 return MediaTrack(index: index, title: title, isExternal: stream.isExternal == true, url: subtitleURL,
                                   format: format, isForced: type == .subtitle ? stream.isForced : nil)
             }
@@ -878,7 +933,10 @@ actor JellyfinMediaService: MediaService {
     }
 
     func downloadInfo(for item: MediaItem) async throws -> PlaybackInfo {
-        let info = try await playbackInfo(for: item, options: PlaybackOptions())
+        var info = try await playbackInfo(for: item, options: PlaybackOptions())
+        // A download is fetched by the app's own session, which sends the token in a header (see
+        // `authorizedRequest(for:)`), so it stays out of the URL and the server's logs.
+        info.url = Self.removingAccessToken(from: info.url)
         // The original file, as it is on the server.
         if info.method == .directPlay { return info }
 
@@ -899,7 +957,7 @@ actor JellyfinMediaService: MediaService {
         guard let path = components.string, let url = client.url(path: path) else { throw MediaServiceError.itemNotPlayable }
 
         var result = info
-        result.url = Self.addingAccessToken(client.accessToken, to: url)
+        result.url = url
         // The converted file's size isn't known until it's done. Its length at the original's bitrate is a ceiling it
         // usually stays under, which is enough to show roughly how far along it is.
         if let runtime = item.runtime, let bitrate = info.sourceBitrate {
@@ -1178,342 +1236,21 @@ actor JellyfinMediaService: MediaService {
         return components.url ?? url
     }
 
+    /// The URL without the `ApiKey` that ``addingAccessToken(_:to:)`` put in it.
+    private static func removingAccessToken(from url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = components.percentEncodedQueryItems else { return url }
+        let kept = items.filter { $0.name.caseInsensitiveCompare("ApiKey") != .orderedSame }
+        components.percentEncodedQueryItems = kept.isEmpty ? nil : kept
+        return components.url ?? url
+    }
+
     private static func playMethod(for method: PlaybackMethod) -> PlayMethod {
         switch method {
         case .directPlay: .directPlay
         case .directStream: .directStream
         case .transcode: .transcode
         }
-    }
-
-    /// Maps an SDK item DTO to a `MediaItem`, or nil if it lacks the ID or name every item needs.
-    /// - Parameter isExtra: Whether the item came from a list of extras. Those are also recognized by their
-    ///   `extraType`, but a server may leave that out.
-    private static func makeItem(from dto: BaseItemDto, client: JellyfinClient, isExtra: Bool = false) -> MediaItem? {
-        guard let id = dto.id, let title = dto.name else { return nil }
-
-        let kind: MediaItem.Kind
-        if isExtra || dto.extraType != nil {
-            kind = .extra
-        } else {
-            kind = switch dto.type {
-            case .movie: .movie
-            case .series: .series
-            case .season: .season
-            case .episode: .episode
-            case .boxSet: .collection
-            case .playlist: .playlist
-            default: .other
-            }
-        }
-
-        let runtime = dto.runTimeTicks.map { Double($0) / ticksPerSecond }
-
-        // Only report progress for items actually started; the server also gives a percentage for finished ones.
-        var playedFraction: Double?
-        if let position = dto.userData?.playbackPositionTicks, position > 0,
-           let percentage = dto.userData?.playedPercentage {
-            playedFraction = min(max(percentage / 100, 0), 1)
-        }
-
-        return MediaItem(
-            id: id,
-            title: title,
-            kind: kind,
-            overview: dto.overview,
-            year: dto.productionYear,
-            runtime: runtime,
-            posterURL: posterURL(for: dto, id: id, client: client),
-            backdropURL: backdropURL(for: dto, id: id, client: client),
-            thumbnailURL: thumbnailURL(for: dto, id: id, isExtra: kind == .extra, client: client),
-            playedFraction: playedFraction,
-            isPlayed: dto.userData?.isPlayed ?? false,
-            seriesTitle: dto.seriesName,
-            seasonNumber: dto.parentIndexNumber,
-            episodeNumber: dto.indexNumber,
-            extraLabel: kind == .extra ? extraLabel(for: dto.extraType) : nil,
-            airDate: kind == .episode ? dto.premiereDate : nil,
-            seriesID: dto.seriesID,
-            seasonID: kind == .episode ? dto.seasonID : nil,
-            seasonPosterURL: kind == .episode ? seasonPosterURL(for: dto, client: client) : nil,
-            episodeCount: episodeCount(of: dto, kind: kind),
-            seasonCount: kind == .series ? dto.childCount : nil,
-            unwatchedEpisodeCount: kind == .series || kind == .season ? dto.userData?.unplayedItemCount : nil,
-            logoURL: logoURL(for: dto, id: id, client: client),
-            genres: dto.genres ?? [],
-            // A show's first studio is its original network. A movie's is its first listed studio, which the app
-            // shows in the same place, as the "network" line under the title.
-            network: kind == .series || kind == .movie ? dto.studios?.first?.name : nil,
-            officialRating: dto.officialRating,
-            communityRating: dto.communityRating.map(Double.init),
-            criticRating: dto.criticRating.map(Double.init),
-            technicalLine: technicalLine(of: dto),
-            status: dto.status,
-            endYear: dto.endDate.map { Calendar.utc.component(.year, from: $0) },
-            tagline: dto.taglines?.first(where: { !$0.isEmpty }),
-            trailerURL: dto.remoteTrailers?.lazy.compactMap { $0.url.flatMap(webURL(from:)) }.first,
-            isFavorite: dto.userData?.isFavorite ?? false,
-            people: people(of: dto, client: client),
-            chapters: chapters(of: dto, id: id, client: client),
-            dateAdded: dto.dateCreated,
-            releaseDate: dto.premiereDate,
-            sortName: dto.sortName,
-            lastPlayedDate: dto.userData?.lastPlayedDate,
-            playlistEntryID: dto.playlistItemID
-        )
-    }
-
-    /// The item's chapters, with a still for each that has one.
-    private static func chapters(of dto: BaseItemDto, id: String, client: JellyfinClient) -> [MediaChapter] {
-        (dto.chapters ?? []).enumerated().map { index, chapter in
-            MediaChapter(
-                name: chapter.name ?? "",
-                start: Double(chapter.startPositionTicks ?? 0) / ticksPerSecond,
-                imageURL: chapter.imageTag.flatMap {
-                    client.url(path: "/Items/\(id)/Images/Chapter/\(index)?maxWidth=\(backdropWidth / 4)&tag=\($0)")
-                }
-            )
-        }
-    }
-
-    /// The item's own logo, falling back to its parent's (a series' logo, for its seasons and episodes).
-    private static func logoURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
-        if let tag = dto.imageTags?[ImageType.logo.rawValue] {
-            return imageURL(itemID: id, type: .logo, tag: tag, width: logoWidth, client: client)
-        }
-        if let parentID = dto.parentLogoItemID, let tag = dto.parentLogoImageTag {
-            return imageURL(itemID: parentID, type: .logo, tag: tag, width: logoWidth, client: client)
-        }
-        return nil
-    }
-
-    /// The item's cast and crew, leaving out kinds of credit the app doesn't show (e.g. music credits) and repeats.
-    private static func people(of dto: BaseItemDto, client: JellyfinClient) -> [MediaPerson] {
-        var seen = Set<String>()
-        return (dto.people ?? []).compactMap { person in
-            guard let personID = person.id, let name = person.name else { return nil }
-            let role: MediaPerson.Role
-            switch person.type {
-            case .actor, .guestStar: role = .actor
-            case .director: role = .director
-            case .writer: role = .writer
-            case .producer: role = .producer
-            case .creator: role = .creator
-            case .composer: role = .composer
-            default: return nil
-            }
-            let image = person.primaryImageTag.flatMap {
-                imageURL(itemID: personID, type: .primary, tag: $0, width: posterWidth, client: client)
-            }
-            let largeImage = person.primaryImageTag.flatMap {
-                imageURL(itemID: personID, type: .primary, tag: $0, width: largePortraitWidth, client: client)
-            }
-            let result = MediaPerson(
-                personID: personID,
-                role: role,
-                name: name,
-                character: role == .actor ? person.role.flatMap { $0.isEmpty ? nil : $0 } : nil,
-                imageURL: image,
-                largeImageURL: largeImage
-            )
-            return seen.insert(result.id).inserted ? result : nil
-        }
-    }
-
-    /// The URL for a link the server supplied, only if it's a web page. The server is trusted to describe media, not
-    /// to choose what the app opens, so a `tel:`, custom-scheme or `file:` link is dropped.
-    private static func webURL(from string: String) -> URL? {
-        guard let url = URL(string: string), let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
-              url.host() != nil else { return nil }
-        return url
-    }
-
-    /// Whether a provider ID is only letters and digits, as IMDb's (`tt0903747`) and TMDb's are, so it can't change
-    /// the path or host of the link it's put into.
-    private static func isPlainID(_ id: String) -> Bool {
-        !id.isEmpty && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
-    }
-
-    /// e.g. "Behind the Scenes" for an extra's type, or nil if the server doesn't say.
-    private static func extraLabel(for type: ExtraType?) -> String? {
-        switch type {
-        case .behindTheScenes: String(localized: "Behind the Scenes")
-        case .deletedScene: String(localized: "Deleted Scene")
-        case .interview: String(localized: "Interview")
-        case .featurette: String(localized: "Featurette")
-        case .trailer: String(localized: "Trailer")
-        case .clip: String(localized: "Clip")
-        case .scene: String(localized: "Scene")
-        case .short: String(localized: "Short")
-        case .sample: String(localized: "Sample")
-        case .themeVideo: String(localized: "Theme Video")
-        case .themeSong, .unknown, nil: nil
-        }
-    }
-
-    /// e.g. "4K · Dolby Vision · Dolby Atmos 7.1": the resolution, dynamic range (if not plain SDR) and main audio
-    /// of the item's video file. Nil if the item has no streams listed.
-    private static func technicalLine(of dto: BaseItemDto) -> String? {
-        let streams = dto.mediaStreams ?? dto.mediaSources?.first?.mediaStreams ?? []
-        let video = streams.first { $0.type == .video }
-        // The default audio track, else the first.
-        let audio = streams.first { $0.type == .audio && $0.isDefault == true } ?? streams.first { $0.type == .audio }
-
-        let parts = [video.flatMap(resolutionLabel(of:)), video.flatMap(dynamicRangeLabel(of:)), audio.flatMap(audioLabel(of:))]
-        let line = parts.compactMap { $0 }
-        return line.isEmpty ? nil : line.joined(separator: " · ")
-    }
-
-    /// "4K", "1080p" and so on. It goes by width, because a widescreen film's picture is shorter than its format.
-    private static func resolutionLabel(of video: MediaStream) -> String? {
-        guard let width = video.width else { return nil }
-        switch width {
-        case 3500...: return "4K"
-        case 2400...: return "1440p"
-        case 1800...: return "1080p"
-        case 1200...: return "720p"
-        default: return String(localized: "SD")
-        }
-    }
-
-    /// "Dolby Vision", "HDR10+", "HDR10" or "HLG"; nil for ordinary (SDR) video.
-    private static func dynamicRangeLabel(of video: MediaStream) -> String? {
-        switch video.videoRangeType {
-        case .dovi, .doviWithHDR10, .doviWithHLG, .doviWithEL, .doviWithHDR10Plus, .doviWithELHDR10Plus: "Dolby Vision"
-        case .hdr10Plus: "HDR10+"
-        case .hdr10: "HDR10"
-        case .hlg: "HLG"
-        default: nil
-        }
-    }
-
-    /// e.g. "Dolby Atmos 7.1", "Dolby Digital Plus 5.1" or "AAC 2.0".
-    private static func audioLabel(of audio: MediaStream) -> String? {
-        let profile = audio.profile?.lowercased() ?? ""
-        let format: String? = switch audio.codec?.lowercased() {
-        case "truehd": "Dolby TrueHD"
-        case "eac3": "Dolby Digital Plus"
-        case "ac3": "Dolby Digital"
-        case "dts": profile.contains("ma") ? "DTS-HD MA" : profile.contains("hra") ? "DTS-HD HRA" : "DTS"
-        case "aac": "AAC"
-        case "flac": "FLAC"
-        case "opus": "Opus"
-        case "mp3": "MP3"
-        case "pcm_s16le", "pcm_s24le", "pcm_s32le": "PCM"
-        case .some(let other): other.uppercased()
-        case nil: nil
-        }
-
-        // An object-based mix is named for what it is, whatever the file's codec.
-        let name: String? = switch audio.audioSpatialFormat {
-        case .dolbyAtmos: "Dolby Atmos"
-        case .dtsx: "DTS:X"
-        default: format
-        }
-
-        let layout: String? = audio.channels.map { channels in
-            switch channels {
-            case 1: "1.0"
-            case 2: "2.0"
-            case 6: "5.1"
-            case 8: "7.1"
-            default: "\(channels)ch"
-            }
-        }
-
-        let parts = [name, layout].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " ")
-    }
-
-    /// How many episodes a series or season has, or nil for anything else.
-    private static func episodeCount(of dto: BaseItemDto, kind: MediaItem.Kind) -> Int? {
-        switch kind {
-        // A series' child count is its seasons, so only its recursive count is its episodes.
-        case .series: dto.recursiveItemCount
-        case .season: dto.recursiveItemCount ?? dto.childCount
-        default: nil
-        }
-    }
-
-    /// An image URL on the server. The `tag` makes the URL change when the image does, so caches stay correct.
-    private static func imageURL(itemID: String, type: ImageType, tag: String, width: Int, client: JellyfinClient) -> URL? {
-        client.url(path: "/Items/\(itemID)/Images/\(type.rawValue)?maxWidth=\(width)&tag=\(tag)")
-    }
-
-    /// The portrait poster.
-    ///
-    /// An episode uses its show's poster, because its own image is a widescreen still that looks wrong in a
-    /// poster slot (see `thumbnailURL(for:id:client:)`). Everything else uses its own poster, falling back to
-    /// its series' poster if it has none.
-    private static func posterURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
-        var ownPoster: URL?
-        if let tag = dto.imageTags?[ImageType.primary.rawValue] {
-            ownPoster = imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
-        }
-
-        var seriesPoster: URL?
-        if let seriesID = dto.seriesID, let tag = dto.seriesPrimaryImageTag {
-            seriesPoster = imageURL(itemID: seriesID, type: .primary, tag: tag, width: posterWidth, client: client)
-        }
-
-        return dto.type == .episode ? (seriesPoster ?? ownPoster) : (ownPoster ?? seriesPoster)
-    }
-
-    /// An episode's season's poster. The episode doesn't say whether its season has one (it carries only the show's
-    /// image tag), so this asks for it without a tag; if the season has none the request fails, and the page falls back
-    /// to the show's poster.
-    private static func seasonPosterURL(for dto: BaseItemDto, client: JellyfinClient) -> URL? {
-        guard let seasonID = dto.seasonID else { return nil }
-        return client.url(path: "/Items/\(seasonID)/Images/\(ImageType.primary.rawValue)?maxWidth=\(posterWidth)")
-    }
-
-    /// Widescreen artwork for list rows.
-    ///
-    /// An episode uses its own still (its primary image). A movie uses its thumb image, falling back to its
-    /// backdrop. Everything else has none.
-    private static func thumbnailURL(for dto: BaseItemDto, id: String, isExtra: Bool, client: JellyfinClient) -> URL? {
-        // An extra's own image is a widescreen frame, so it's used as it is, falling back to a thumb or backdrop.
-        if isExtra {
-            if let tag = dto.imageTags?[ImageType.primary.rawValue] {
-                return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
-            }
-            if let tag = dto.imageTags?[ImageType.thumb.rawValue] {
-                return imageURL(itemID: id, type: .thumb, tag: tag, width: posterWidth, client: client)
-            }
-            return backdropURL(for: dto, id: id, client: client)
-        }
-        switch dto.type {
-        case .episode:
-            guard let tag = dto.imageTags?[ImageType.primary.rawValue] else { return nil }
-            return imageURL(itemID: id, type: .primary, tag: tag, width: posterWidth, client: client)
-        case .movie:
-            if let tag = dto.imageTags?[ImageType.thumb.rawValue] {
-                return imageURL(itemID: id, type: .thumb, tag: tag, width: posterWidth, client: client)
-            }
-            return backdropURL(for: dto, id: id, client: client)
-        default:
-            return nil
-        }
-    }
-
-    /// The item's own backdrop, falling back to its parent's.
-    private static func backdropURL(for dto: BaseItemDto, id: String, client: JellyfinClient) -> URL? {
-        if let tag = dto.backdropImageTags?.first {
-            return imageURL(itemID: id, type: .backdrop, tag: tag, width: backdropWidth, client: client)
-        }
-        if let parentID = dto.parentBackdropItemID, let tag = dto.parentBackdropImageTags?.first {
-            return imageURL(itemID: parentID, type: .backdrop, tag: tag, width: backdropWidth, client: client)
-        }
-        return nil
-    }
-}
-
-private extension Calendar {
-    /// A Gregorian calendar in UTC, for dates the server stores as plain calendar dates.
-    nonisolated static var utc: Calendar {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC") ?? .gmt
-        return calendar
     }
 }
 

@@ -5,6 +5,7 @@
 import CryptoKit
 import Foundation
 import OSLog
+import Synchronization
 #if canImport(UIKit)
 import UIKit
 /// The platform's native image type.
@@ -26,7 +27,7 @@ typealias PlatformImage = NSImage
 ///
 /// Jellyfin image URLs include a tag that changes whenever the image does, so a cached file for a URL is never
 /// stale and nothing needs to be invalidated.
-nonisolated final class ImageCache: @unchecked Sendable {
+nonisolated final class ImageCache: Sendable {
     static let shared = ImageCache()
 
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "ImageCache")
@@ -41,30 +42,30 @@ nonisolated final class ImageCache: @unchecked Sendable {
     /// Trim again after this many bytes have been written since the last trim.
     private static let trimInterval = 50 * 1024 * 1024
 
-    private let memory = NSCache<NSURL, PlatformImage>()
+    private let memory = SharedCache<NSURL, PlatformImage>(totalCostLimit: maxMemoryBytes)
 
     /// Has no cache of its own, because this type does the caching.
     private let session = URLSession(configuration: .ephemeral)
     private let directory: URL
 
-    /// Guards the four properties below, and anything that puts an image in the cache.
-    private let lock = NSLock()
+    /// What changes, behind one lock. Anything that puts an image in the cache holds it too.
+    private struct State {
+        /// Decodes in progress, so several views asking for the same URL share one.
+        var decodes: [URL: Task<PlatformImage?, Never>] = [:]
 
-    /// Decodes in progress, so several views asking for the same URL share one.
-    private var decodes: [URL: Task<PlatformImage?, Never>] = [:]
+        /// Downloads in progress, so a view and a prefetch asking for the same URL share one request.
+        var downloads: [URL: Task<Data?, Never>] = [:]
 
-    /// Downloads in progress, so a view and a prefetch asking for the same URL share one request.
-    private var downloads: [URL: Task<Data?, Never>] = [:]
+        var bytesWrittenSinceTrim = 0
 
-    private var bytesWrittenSinceTrim = 0
+        /// Goes up with every ``removeAll()``. Work started before then mustn't put what it loaded in the cache, or the
+        /// previous user's artwork would be back as soon as it finished.
+        var generation = 0
+    }
 
-    /// Goes up with every ``removeAll()``. Work started before then mustn't put what it loaded in the cache, or the
-    /// previous user's artwork would be back as soon as it finished.
-    private var generation = 0
+    private let state = Mutex(State())
 
     private init() {
-        memory.totalCostLimit = Self.maxMemoryBytes
-
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         directory = caches.appending(path: "ImageCache", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -80,11 +81,11 @@ nonisolated final class ImageCache: @unchecked Sendable {
         let fileManager = FileManager.default
         let trash = directory.deletingLastPathComponent()
             .appending(path: "ImageCache-removed-\(UUID().uuidString)", directoryHint: .isDirectory)
-        let inFlight = lock.withLock { () -> [() -> Void] in
-            generation += 1
-            let inFlight = decodes.values.map { $0.cancel } + downloads.values.map { $0.cancel }
-            decodes = [:]
-            downloads = [:]
+        let (decodes, downloads) = state.withLock { state in
+            state.generation += 1
+            let inFlight = (state.decodes, state.downloads)
+            state.decodes = [:]
+            state.downloads = [:]
             memory.removeAllObjects()
             // Moved aside at once, under the lock, so nothing in flight can write into the folder after it's been
             // emptied; deleting what's in it, which can take a while, happens afterwards.
@@ -92,7 +93,8 @@ nonisolated final class ImageCache: @unchecked Sendable {
             try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             return inFlight
         }
-        for cancel in inFlight { cancel() }
+        for task in decodes.values { task.cancel() }
+        for task in downloads.values { task.cancel() }
         Task.detached(priority: .utility) {
             try? FileManager.default.removeItem(at: trash)
         }
@@ -112,17 +114,17 @@ nonisolated final class ImageCache: @unchecked Sendable {
     func image(for url: URL) async -> PlatformImage? {
         if let cached = cachedImage(for: url) { return cached }
 
-        let task = lock.withLock { () -> Task<PlatformImage?, Never> in
-            if let existing = decodes[url] { return existing }
-            let generation = generation
+        let task = state.withLock { state -> Task<PlatformImage?, Never> in
+            if let existing = state.decodes[url] { return existing }
+            let generation = state.generation
             let new = Task { await self.decode(url, generation: generation) }
-            decodes[url] = new
+            state.decodes[url] = new
             return new
         }
 
         let image = await task.value
         // Unless `removeAll()` has run since, and the entry is a newer decode's.
-        lock.withLock { if decodes[url] == task { decodes[url] = nil } }
+        state.withLock { state in if state.decodes[url] == task { state.decodes[url] = nil } }
         return image
     }
 
@@ -137,7 +139,7 @@ nonisolated final class ImageCache: @unchecked Sendable {
         let pending = urls.filter { cachedImage(for: $0) == nil && !isOnDisk($0) }
         guard !pending.isEmpty else { return }
         // Those not started by the time the cache is emptied are skipped.
-        let generation = lock.withLock { self.generation }
+        let generation = state.withLock { $0.generation }
 
         Task.detached(priority: .utility) {
             await withTaskGroup(of: Void.self) { group in
@@ -202,8 +204,8 @@ nonisolated final class ImageCache: @unchecked Sendable {
         #endif
 
         // Checked and stored under one lock, so `removeAll()` can't empty the cache between the two.
-        lock.withLock {
-            guard generation == self.generation else { return }
+        state.withLock { state in
+            guard generation == state.generation else { return }
             memory.setObject(image, forKey: url as NSURL, cost: Self.cost(of: image))
         }
         return image
@@ -217,18 +219,18 @@ nonisolated final class ImageCache: @unchecked Sendable {
         if url.isFileURL { return try? Data(contentsOf: url) }
         if let data = try? Data(contentsOf: diskURL(for: url)) { return data }
 
-        let task = lock.withLock { () -> Task<Data?, Never>? in
+        let task = state.withLock { state -> Task<Data?, Never>? in
             // Started before the cache was emptied, so there's nothing it should fetch.
-            guard generation == self.generation else { return nil }
-            if let existing = downloads[url] { return existing }
+            guard generation == state.generation else { return nil }
+            if let existing = state.downloads[url] { return existing }
             let new = Task { await self.download(url, generation: generation) }
-            downloads[url] = new
+            state.downloads[url] = new
             return new
         }
         guard let task else { return nil }
 
         let data = await task.value
-        lock.withLock { if downloads[url] == task { downloads[url] = nil } }
+        state.withLock { state in if state.downloads[url] == task { state.downloads[url] = nil } }
         return data
     }
 
@@ -238,13 +240,13 @@ nonisolated final class ImageCache: @unchecked Sendable {
         else { return nil }
 
         // Keep the disk cache from growing without bound during a long session.
-        let shouldTrim = lock.withLock { () -> Bool in
+        let shouldTrim = state.withLock { state -> Bool in
             // Written under the lock, so it can't land in the folder after `removeAll()` has emptied it.
-            guard generation == self.generation else { return false }
+            guard generation == state.generation else { return false }
             try? data.write(to: diskURL(for: url), options: .atomic)
-            bytesWrittenSinceTrim += data.count
-            guard bytesWrittenSinceTrim >= Self.trimInterval else { return false }
-            bytesWrittenSinceTrim = 0
+            state.bytesWrittenSinceTrim += data.count
+            guard state.bytesWrittenSinceTrim >= Self.trimInterval else { return false }
+            state.bytesWrittenSinceTrim = 0
             return true
         }
         if shouldTrim { trimDiskCacheInBackground() }
@@ -304,17 +306,35 @@ nonisolated final class ImageCache: @unchecked Sendable {
     }
 }
 
+/// An `NSCache` that can be shared between threads.
+///
+/// `NSCache` is documented as safe to use from several threads at once, but isn't marked `Sendable`, so this says so for
+/// it. It's the one place that does: nothing else needs to be taken on trust.
+nonisolated final class SharedCache<Key: AnyObject, Value: AnyObject>: @unchecked Sendable {
+    private let cache = NSCache<Key, Value>()
+
+    /// Roughly how much the values may cost in all; see `NSCache.totalCostLimit`.
+    init(totalCostLimit: Int = 0) {
+        cache.totalCostLimit = totalCostLimit
+    }
+
+    func object(forKey key: Key) -> Value? { cache.object(forKey: key) }
+
+    func setObject(_ value: Value, forKey key: Key, cost: Int = 0) { cache.setObject(value, forKey: key, cost: cost) }
+
+    func removeAllObjects() { cache.removeAllObjects() }
+}
+
 /// Resumes a continuation the first time it's asked to, and ignores any later request.
-private nonisolated final class ResumeOnce: @unchecked Sendable {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private let lock = NSLock()
+private nonisolated final class ResumeOnce: Sendable {
+    private let continuation: Mutex<CheckedContinuation<Void, Never>?>
 
     init(_ continuation: CheckedContinuation<Void, Never>) {
-        self.continuation = continuation
+        self.continuation = Mutex(continuation)
     }
 
     func resume() {
-        let pending = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+        let pending = continuation.withLock { continuation in
             defer { continuation = nil }
             return continuation
         }

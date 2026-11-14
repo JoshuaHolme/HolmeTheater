@@ -117,7 +117,7 @@ private extension MediaItem {
 }
 
 /// A scrolling grid of posters that open their item, with sorting, filtering and an A to Z index down the side.
-struct PosterBrowser: View {
+struct PosterBrowser<Hero: View>: View {
     let items: [MediaItem]
 
     /// A heading for the page, shown on tvOS at the leading edge of the row with the sort and filter buttons. Nil for none.
@@ -129,7 +129,7 @@ struct PosterBrowser: View {
 
     /// A hero for the top of the page, edge to edge above the grid, built for the size of the scroll view. Nil for none. A page
     /// with a hero runs under the navigation bar, and the hero names it.
-    var hero: ((CGSize) -> AnyView)?
+    var hero: ((CGSize) -> Hero)?
 
     /// The size of the scroll view, for the hero.
     @State private var viewport: CGSize = .zero
@@ -142,13 +142,25 @@ struct PosterBrowser: View {
     @State private var visibleItems: [MediaItem]
     @State private var genres: [String]
 
-    /// - Parameter sort: The order the grid starts in. The viewer can change it from the sort menu.
+    /// - Parameters:
+    ///   - sort: The order the grid starts in. The viewer can change it from the sort menu.
+    ///   - hero: Builds the hero for the top of the page, for the size of the scroll view.
     init(
         items: [MediaItem],
         sort: PosterSort = .nameAscending,
         title: String? = nil,
         offersGenreFilter: Bool = true,
-        hero: ((CGSize) -> AnyView)? = nil
+        hero: @escaping (CGSize) -> Hero
+    ) {
+        self.init(items: items, sort: sort, title: title, offersGenreFilter: offersGenreFilter, optionalHero: hero)
+    }
+
+    private init(
+        items: [MediaItem],
+        sort: PosterSort,
+        title: String?,
+        offersGenreFilter: Bool,
+        optionalHero hero: ((CGSize) -> Hero)?
     ) {
         self.items = items
         self.title = title
@@ -172,7 +184,7 @@ struct PosterBrowser: View {
         #endif
     }
 
-    private static let ratingChoices = [5.0, 6.0, 7.0, 8.0, 9.0]
+    private static var ratingChoices: [Double] { [5.0, 6.0, 7.0, 8.0, 9.0] }
 
     private static func genres(in items: [MediaItem]) -> [String] {
         Set(items.flatMap(\.genres)).sorted()
@@ -475,6 +487,15 @@ private struct AlphabetIndex: View {
     }
 }
 #endif
+
+extension PosterBrowser where Hero == EmptyView {
+    /// A page with no hero.
+    ///
+    /// - Parameter sort: The order the grid starts in. The viewer can change it from the sort menu.
+    init(items: [MediaItem], sort: PosterSort = .nameAscending, title: String? = nil, offersGenreFilter: Bool = true) {
+        self.init(items: items, sort: sort, title: title, offersGenreFilter: offersGenreFilter, optionalHero: nil)
+    }
+}
 
 #Preview {
     NavigationStack {
