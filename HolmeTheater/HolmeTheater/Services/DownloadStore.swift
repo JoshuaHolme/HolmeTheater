@@ -7,103 +7,6 @@ import Foundation
 import OSLog
 import Synchronization
 
-/// Where a download is in its life.
-nonisolated enum DownloadState: String, Codable, Sendable {
-    /// Waiting for its turn.
-    case queued
-    /// Saving the item's details, cast and artwork, and asking the server for the file.
-    case preparing
-    /// The file is on its way.
-    case downloading
-    /// Stopped by the user, to be resumed.
-    case paused
-    /// Stopped by an error; ``DownloadRecord/errorMessage`` says which.
-    case failed
-    /// The file and everything that goes with it are saved.
-    case completed
-}
-
-/// Watch progress made on the device that the server hasn't been told about yet.
-nonisolated struct PendingProgress: Codable, Hashable, Sendable {
-    /// Where playback stopped, in seconds.
-    var position: TimeInterval
-
-    /// Whether it was watched to the end.
-    var isPlayed: Bool
-
-    /// When it was watched, so a newer watch on another device isn't overwritten.
-    var date: Date
-}
-
-/// One movie or episode that's been, or is being, saved for offline viewing, with everything the app needs to show
-/// and play it without the server.
-nonisolated struct DownloadRecord: Identifiable, Codable, Hashable, Sendable {
-    /// The movie's or episode's own item, including its description, cast and chapters.
-    var item: MediaItem
-
-    /// The account and server it was downloaded for (``AppModel/cacheScope``).
-    var scope: String
-
-    var state: DownloadState
-
-    /// How much of the file has arrived, and how big it is. The size is 0 until the server says (a converted
-    /// file has no size until it's finished).
-    var bytesWritten: Int64 = 0
-    var bytesExpected: Int64 = 0
-
-    /// Whether ``bytesExpected`` is the server's own figure for the file rather than a guess. Servers often don't say how
-    /// big a transfer is, so until one does, the size is estimated from what's known about the movie.
-    var isSizeEstimated = false
-
-    /// The video file's name within the item's folder, once it's saved.
-    var videoFileName: String?
-
-    /// The tracks in the file. Its URL is a placeholder: the real one holds the access token, which isn't kept.
-    var info: PlaybackInfo?
-
-    /// For each text subtitle track (by ``MediaTrack/index``), the name of its saved file.
-    var subtitleFiles: [Int: String] = [:]
-
-    /// The intro, credits and so on the server marked, so the player can still offer to skip them.
-    var segments: [MediaSegment] = []
-
-    /// What went wrong, for a ``DownloadState/failed`` download.
-    var errorMessage: String?
-
-    var dateAdded: Date = .now
-
-    /// Progress made here that's waiting to be sent to the server. Nil once it has been.
-    var pendingProgress: PendingProgress?
-
-    /// The size of the saved file in bytes. 0 until it's saved.
-    var fileSize: Int64 = 0
-
-    var id: String { item.id }
-
-    /// How much of the file has arrived, from 0 to 1.
-    var progress: Double {
-        guard bytesExpected > 0 else { return 0 }
-        let fraction = Double(bytesWritten) / Double(bytesExpected)
-        // A guess can be too small, but it shouldn't claim to be done before the file is.
-        return isSizeEstimated && !isComplete ? min(0.99, fraction) : min(1, fraction)
-    }
-
-    var isComplete: Bool { state == .completed }
-}
-
-/// Everything saved, as written to disk.
-nonisolated struct DownloadIndex: Codable, Sendable {
-    /// Downloads by ``DownloadStore/key(scope:id:)``. Two accounts on one server see the same item IDs, so the account
-    /// is part of the key.
-    var records: [String: DownloadRecord] = [:]
-
-    /// The shows and seasons that downloaded episodes belong to, so they can be shown in their place.
-    var containers: [String: MediaItem] = [:]
-
-    /// What the server knew about each person in the downloaded cast, by person ID.
-    var people: [String: PersonDetails] = [:]
-}
-
 /// Saves downloads to disk, and finds them again.
 ///
 /// Layout, under Application Support (which the system never purges, unlike Caches):
@@ -149,7 +52,7 @@ nonisolated final class DownloadStore: Sendable {
     private let itemFiles = Mutex(())
     private let artworkFiles = Mutex(())
 
-    private let writer: IndexWriter
+    private let writer: DownloadIndexWriter
 
     /// Where downloads go: Application Support, which the system never purges. Apple TV may not let apps write there; if it
     /// doesn't, they go in Caches instead, and ``isPermanent`` is false.
@@ -183,17 +86,17 @@ nonisolated final class DownloadStore: Sendable {
         self.root = directory
 
         var initial = State()
-        initial.index = Self.loadIndex(from: Self.indexURL(in: directory))
+        initial.index = DownloadIndexWriter.load(from: Self.indexURL(in: directory))
         let artworkFiles = (try? FileManager.default.contentsOfDirectory(atPath: Self.artworkDirectory(in: directory).path(percentEncoded: false))) ?? []
         initial.artwork = Set(artworkFiles)
         // Both run, whatever the first finds.
         let migrated = Self.migrateUnscopedRecords(&initial.index, itemsDirectory: Self.itemsDirectory(in: directory))
         let cleaned = Self.removeSavedTokens(&initial.index)
         if migrated || cleaned {
-            Self.write(initial.index, to: Self.indexURL(in: directory))
+            DownloadIndexWriter.write(initial.index, to: Self.indexURL(in: directory))
         }
         state = Mutex(initial)
-        writer = IndexWriter(url: Self.indexURL(in: directory))
+        writer = DownloadIndexWriter(url: Self.indexURL(in: directory))
 
         // Whatever a removal didn't get to delete before the app last closed.
         let trash = Self.trashDirectory(in: directory)
@@ -221,7 +124,7 @@ nonisolated final class DownloadStore: Sendable {
     }
 
     /// Like ``parse(key:)``, for use with the lock held, where reading ``scope`` would wait on it forever.
-    private static func parse(key: String, fallbackScope: String) -> (scope: String, id: String) {
+    static func parse(key: String, fallbackScope: String) -> (scope: String, id: String) {
         guard let separator = key.lastIndex(of: keySeparator) else { return (fallbackScope, key) }
         return (String(key[..<separator]), String(key[key.index(after: separator)...]))
     }
@@ -229,16 +132,6 @@ nonisolated final class DownloadStore: Sendable {
     // MARK: - Index
 
     private static func indexURL(in root: URL) -> URL { root.appending(path: "index.json", directoryHint: .notDirectory) }
-
-    private static func loadIndex(from url: URL) -> DownloadIndex {
-        guard let data = try? Data(contentsOf: url) else { return DownloadIndex() }
-        do {
-            return try JSONDecoder().decode(DownloadIndex.self, from: data)
-        } catch {
-            logger.error("Couldn't read the downloads index: \(error.localizedDescription, privacy: .public)")
-            return DownloadIndex()
-        }
-    }
 
     /// Clears subtitle URLs saved by earlier versions, which carried the access token. Returns whether there were any.
     private static func removeSavedTokens(_ index: inout DownloadIndex) -> Bool {
@@ -271,63 +164,6 @@ nonisolated final class DownloadStore: Sendable {
             try? FileManager.default.moveItem(at: old, to: new)
         }
         return !unscoped.isEmpty
-    }
-
-    /// Encodes and writes the index, on whatever thread calls it.
-    private static func write(_ index: DownloadIndex, to url: URL) {
-        do {
-            try JSONEncoder().encode(index).write(to: url, options: .atomic)
-        } catch {
-            logger.error("Couldn't save the downloads index: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// Writes the index off the thread that changed it, keeping only the latest version waiting.
-    ///
-    /// The index holds every download's item, cast and chapters, so encoding it takes a while, and changes come in bursts
-    /// (a whole season queued, each download moving from state to state). Writing each one where it was made held up the
-    /// main thread and every other user of the lock; now a burst ends in one write, in the background.
-    private final class IndexWriter: Sendable {
-        private let url: URL
-
-        /// The version waiting to be written, and whether a background write has been asked for.
-        private let pending = Mutex<(index: DownloadIndex?, isScheduled: Bool)>((nil, false))
-
-        /// Held while writing, so writes go out one at a time and an older version never lands after a newer one.
-        private let writing = Mutex(())
-
-        init(url: URL) {
-            self.url = url
-        }
-
-        /// Queues `index` to be written, replacing any version still waiting. Returns at once.
-        func submit(_ index: DownloadIndex) {
-            let shouldSchedule = pending.withLock { pending -> Bool in
-                pending.index = index
-                guard !pending.isScheduled else { return false }
-                pending.isScheduled = true
-                return true
-            }
-            if shouldSchedule {
-                Task.detached(priority: .utility) { self.flush() }
-            }
-        }
-
-        /// Writes the waiting version, if there is one, before returning.
-        func flush() {
-            writing.withLock { _ in
-                // Taken while holding `writing`, so whichever write runs last has the latest version.
-                let next = pending.withLock { pending -> DownloadIndex? in
-                    defer {
-                        pending.index = nil
-                        pending.isScheduled = false
-                    }
-                    return pending.index
-                }
-                guard let next else { return }
-                DownloadStore.write(next, to: url)
-            }
-        }
     }
 
     /// Writes any change still waiting to go to disk, before returning. For when the system may suspend the app as soon
@@ -516,7 +352,7 @@ nonisolated final class DownloadStore: Sendable {
     }
 
     /// Whether a name from the server is safe to use as a folder name: letters, digits and dashes only.
-    private static func isPlainName(_ name: String) -> Bool {
+    static func isPlainName(_ name: String) -> Bool {
         !name.isEmpty && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
     }
 
@@ -554,7 +390,7 @@ nonisolated final class DownloadStore: Sendable {
 
     /// The fingerprint of the token a request was made with: in its `Authorization` header, or, for a transfer started
     /// before the token moved out of the URL, its `ApiKey`. Nil if it has neither.
-    private static func tokenFingerprint(in request: URLRequest?) -> String? {
+    static func tokenFingerprint(in request: URLRequest?) -> String? {
         guard let request else { return nil }
         if let header = request.value(forHTTPHeaderField: "Authorization"),
            let start = header.range(of: "Token=\"")?.upperBound,
@@ -732,6 +568,9 @@ nonisolated final class DownloadStore: Sendable {
         return info
     }
 
+    /// Past this share of the runtime an item counts as finished, like the server's own rule of thumb.
+    static let playedThreshold = 0.9
+
     /// Remembers how far through a downloaded item the viewer got, so it resumes there and shows as watched even when
     /// the server can't be told.
     ///
@@ -741,7 +580,7 @@ nonisolated final class DownloadStore: Sendable {
             guard let runtime = record.item.runtime, runtime > 0 else { return }
             let fraction = position / runtime
             // Past the credits it counts as finished, like the server's own rule of thumb.
-            let isPlayed = fraction >= 0.9
+            let isPlayed = fraction >= Self.playedThreshold
             if isPlayed {
                 record.item.isPlayed = true
                 record.item.playedFraction = nil

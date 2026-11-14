@@ -71,10 +71,7 @@ struct SubtitleTimingPanel: View {
     }
 
     /// "+1.5 s", "−0.25 s" or "0 s".
-    private static func offsetText(_ offset: TimeInterval) -> String {
-        let sign = offset > 0 ? "+" : offset < 0 ? "−" : ""
-        return "\(sign)\(abs(offset).formatted(.number.precision(.fractionLength(0...1)))) s"
-    }
+    private static func offsetText(_ offset: TimeInterval) -> String { SubtitleOffset.text(offset) }
 }
 
 /// The episode that follows, offered near the end of one: its still, number, title and description, and a countdown
@@ -90,24 +87,16 @@ struct NextEpisodeOverlay: View {
     /// How long the countdown runs from when the card appears, unless the episode ends first.
     fileprivate static let countdown: TimeInterval = 15
 
-    /// With no credits marked by the server, the card appears this long before the end: longer than the countdown,
-    /// so the countdown has time to run, with a little to spare.
-    private static let fallbackLead: TimeInterval = 45
-
     /// When the card appears: where the server says the credits start, if it does, else a share of the runtime
     /// before the end.
     static func appearance(session: PlaybackSession, duration: TimeInterval) -> TimeInterval {
-        let latest = duration - 10
-        if let credits = session.segments.last(where: { $0.kind == .outro && $0.start > duration / 2 }) {
-            return min(credits.start, latest)
-        }
-        return min(duration - fallbackLead, latest)
+        UpNextTiming.appearance(duration: duration, outroStart: session.segments.last { $0.kind == .outro }?.start)
     }
 
     /// Whether the card is on screen: an episode with a successor, from the credits to the end.
     static func isShowing(session: PlaybackSession, model: PlayerControlsModel) -> Bool {
-        guard session.nextEpisode != nil, !session.autoPlayCancelled, model.duration > 60 else { return false }
-        return model.currentTime >= appearance(session: session, duration: model.duration) && model.currentTime < model.duration + 1
+        guard session.nextEpisode != nil, !session.autoPlayCancelled else { return false }
+        return UpNextTiming.isShowing(position: model.currentTime, duration: model.duration, outroStart: session.segments.last { $0.kind == .outro }?.start)
     }
 
     var body: some View {
@@ -281,7 +270,7 @@ struct SkipSegmentButton: View {
             Button {
                 model.seek(to: segment.end)
             } label: {
-                Label(Self.title(for: segment.kind), systemImage: "forward.end.fill")
+                Label(segment.kind.skipActionTitle, systemImage: "forward.end.fill")
                     .font(.headline)
                     // It floats over the picture and controls, so it stops growing before it covers them.
                     .dynamicTypeSize(...DynamicTypeSize.accessibility1)
@@ -292,17 +281,6 @@ struct SkipSegmentButton: View {
             .tint(.white)
             .controlSize(.large)
             .transition(.opacity)
-        }
-    }
-
-    private static func title(for kind: MediaSegment.Kind) -> LocalizedStringKey {
-        switch kind {
-        case .intro: "Skip Intro"
-        case .outro: "Skip Outro"
-        case .recap: "Skip Recap"
-        case .preview: "Skip Preview"
-        case .commercial: "Skip Commercial"
-        case .unknown: "Skip"
         }
     }
 }

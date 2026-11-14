@@ -447,21 +447,6 @@ extension PlaybackInfo {
     }
 }
 
-extension URL {
-    /// The URL without the access token: an `ApiKey` query parameter, or the `api_key` older servers put in the URLs
-    /// they hand out, matched in any case. The rest of the query is kept byte for byte.
-    nonisolated func removingAccessToken() -> URL {
-        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false),
-              let items = components.percentEncodedQueryItems else { return self }
-        let kept = items.filter { item in
-            !["ApiKey", "api_key"].contains { item.name.caseInsensitiveCompare($0) == .orderedSame }
-        }
-        guard kept.count != items.count else { return self }
-        components.percentEncodedQueryItems = kept.isEmpty ? nil : kept
-        return components.url ?? self
-    }
-}
-
 /// A stretch of a movie or episode the server knows the purpose of, which the player offers to skip.
 nonisolated struct MediaSegment: Hashable, Sendable, Codable {
     nonisolated enum Kind: Hashable, Sendable, Codable {

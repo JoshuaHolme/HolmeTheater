@@ -235,7 +235,7 @@ extension MediaItem {
     }
 
     /// e.g. "8 Episodes · 2021". Whichever part the server didn't give is left out.
-    var seasonDetailLine: String? {
+    nonisolated var seasonDetailLine: String? {
         var parts: [String] = []
         if let episodeCount {
             parts.append(episodeCount == 1 ? String(localized: "1 Episode") : String(localized: "\(episodeCount) Episodes"))

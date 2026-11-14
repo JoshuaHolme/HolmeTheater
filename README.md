@@ -51,15 +51,36 @@ The UI never talks to the Jellyfin SDK directly. Everything goes through one pro
 | File | Role |
 |---|---|
 | `Services/MediaService.swift` | The protocol the UI depends on: connect, sign in, browse, search, play, report progress |
-| `Services/JellyfinMediaService.swift` | The real implementation, built on [jellyfin-sdk-swift](https://github.com/jellyfin/jellyfin-sdk-swift) |
+| `Services/JellyfinMediaService.swift` (+`Browsing`/`Collections`/`Playback`/`Mapping`) | The real implementation, built on [jellyfin-sdk-swift](https://github.com/jellyfin/jellyfin-sdk-swift), split by area |
 | `Services/MockMediaService.swift` | Canned data for previews, demos, and UI work without a server |
 | `Services/MediaModels.swift` | Plain value types shared by the UI and services (no SDK types) |
-| `Services/KeychainStore.swift` | Stores the saved session |
+| `Services/SessionStore.swift` | Where the signed-in session is kept: the Keychain in the app, in memory in tests |
 | `AppModel.swift` | App-wide state: which service is in use and who is signed in |
 | `Views/` | SwiftUI screens. These only use `MediaService` and the types in `MediaModels.swift` |
 
 Because of this split you can rework the UI without touching networking code, and swap in a different backend
 (or a test double) without touching the UI.
+
+Larger files are broken up by area rather than kept in one place. The Jellyfin service, the download system
+(`Services/Downloads/`), the subtitle parsers (`Services/Subtitles/`), and the biggest screens (the detail hero,
+the Home carousel, the players) are each split across focused files. Logic that can be reasoned about on its own,
+such as URL handling, paging, subtitle parsing, the carousel's index maths, and the player's timing, lives in small
+value types and pure functions so it can be unit tested without a server or a running view.
+
+## Tests
+
+Unit tests live in the `HolmeTheaterTests` target and use the [Swift Testing](https://developer.apple.com/documentation/testing/)
+framework. They cover the extracted helpers and value types: server-address parsing, access-token URL handling,
+merged paging, the WebVTT and SubStation Alpha subtitle parsers, the download summary and library grouping, the
+detail-hero text lines, the carousel and up-next timing maths, and `AppModel`'s sign-in, sign-out and session
+restore (against an in-memory session store and the mock service, so they never touch a real server or the
+Keychain).
+
+Run them from Xcode with **Product → Test** (⌘U), or on the command line:
+
+```sh
+xcodebuild test -scheme HolmeTheater -destination 'platform=iOS Simulator,name=iPhone 17'
+```
 
 ## Security notes
 

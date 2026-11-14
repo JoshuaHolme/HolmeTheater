@@ -64,9 +64,16 @@ final class AppModel {
     /// A show the player asked to open ("Go to Show"). The main view pushes it onto the current tab and clears it.
     var pendingShow: MediaItem?
 
-    @ObservationIgnored private let keychain: KeychainStore
-    private static let sessionAccount = "session"
+    @ObservationIgnored private let sessionStore: any SessionStore
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "Session")
+
+    /// The Keychain namespace a service's saved session goes under. Mock runs (`-UseMockService`) get their own;
+    /// otherwise the canned session they save would be restored against the real server on the next normal launch,
+    /// which can never sign it in.
+    private static func keychainNamespace(for service: any MediaService) -> String {
+        let base = Bundle.main.bundleIdentifier ?? "JellyfinClient"
+        return service is MockMediaService ? base + ".mock" : base
+    }
 
     init(service: any MediaService) {
         let store = DownloadStore()
@@ -75,17 +82,14 @@ final class AppModel {
         self.playbackSettings = PlaybackSettings()
         self.service = OfflineFallbackMediaService(base: service, store: store)
         self.downloads = DownloadManager(service: service, store: store)
-        // Mock runs (`-UseMockService`) get their own Keychain namespace; otherwise the canned session they save
-        // would be restored against the real server on the next normal launch, which can never sign it in.
-        let namespace = Bundle.main.bundleIdentifier ?? "JellyfinClient"
-        self.keychain = KeychainStore(service: service is MockMediaService ? namespace + ".mock" : namespace)
+        self.sessionStore = KeychainSessionStore(keychain: KeychainStore(service: Self.keychainNamespace(for: service)))
     }
 
     /// Creates a model already in `state`, for SwiftUI previews and tests.
     ///
-    /// It uses a separate Keychain namespace, so signing in inside a preview can never overwrite
-    /// the session the real app restores at launch.
-    init(service: any MediaService, state: SessionState) {
+    /// - Parameter sessionStore: Where the session is kept. The default is an in-memory store, so signing in inside a
+    ///   preview or test never touches the session the real app restores at launch.
+    init(service: any MediaService, state: SessionState, sessionStore: any SessionStore = InMemorySessionStore()) {
         // Downloads go in a throwaway folder, with no background session, so a preview never touches real ones.
         let store = DownloadStore(root: FileManager.default.temporaryDirectory.appending(path: "PreviewDownloads", directoryHint: .isDirectory))
         self.service = OfflineFallbackMediaService(base: service, store: store)
@@ -95,7 +99,7 @@ final class AppModel {
         self.homeSettings = HomeSettings(defaults: UserDefaults(suiteName: "HomeSettingsPreviews") ?? .standard)
         self.themeSettings = ThemeSettings(defaults: UserDefaults(suiteName: "ThemeSettingsPreviews") ?? .standard)
         self.playbackSettings = PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard)
-        self.keychain = KeychainStore(service: (Bundle.main.bundleIdentifier ?? "JellyfinClient") + ".previews")
+        self.sessionStore = sessionStore
         playbackSettings.scope = cacheScope
     }
 
@@ -106,7 +110,7 @@ final class AppModel {
     func restoreSession() async {
         let saved: UserSession?
         do {
-            saved = try keychain.load(UserSession.self, account: Self.sessionAccount)
+            saved = try sessionStore.load()
         } catch {
             // Unreadable (e.g. from an incompatible older build). Treat as signed out rather than failing.
             Self.logger.error("Couldn't read the saved session: \(error.localizedDescription, privacy: .public)")
@@ -185,7 +189,7 @@ final class AppModel {
         playback = nil
         // The saved token goes first, so it's gone even if the app is closed before the rest finishes. The service forgets
         // the session at once and revokes it on the server without waiting.
-        keychain.delete(account: Self.sessionAccount)
+        sessionStore.delete()
         await service.signOut()
         // Counts learned for this account's shows.
         SeasonCountCache.shared.removeAll()
@@ -221,7 +225,7 @@ final class AppModel {
     /// so it's logged rather than surfaced.
     private func persist(_ session: UserSession) {
         do {
-            try keychain.save(session, account: Self.sessionAccount)
+            try sessionStore.save(session)
         } catch {
             Self.logger.error("Couldn't save the session: \(error.localizedDescription, privacy: .public)")
         }

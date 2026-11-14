@@ -363,12 +363,3 @@ nonisolated extension DownloadStore {
         }
     }
 }
-
-nonisolated extension DownloadRecord {
-    /// Season by season, episode by episode.
-    static func episodeOrder(_ a: DownloadRecord, _ b: DownloadRecord) -> Bool {
-        let (sa, sb) = (a.item.seasonNumber ?? 0, b.item.seasonNumber ?? 0)
-        if sa != sb { return sa < sb }
-        return (a.item.episodeNumber ?? 0) < (b.item.episodeNumber ?? 0)
-    }
-}

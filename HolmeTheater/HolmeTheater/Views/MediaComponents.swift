@@ -117,7 +117,7 @@ extension MediaItem {
     var shelfKey: String { playlistEntryID ?? id }
 
     /// e.g. "Show Name · S1E3" for episodes; nil for everything else.
-    var subtitle: String? {
+    nonisolated var subtitle: String? {
         guard kind == .episode else { return nil }
         var parts: [String] = []
         if let seriesTitle { parts.append(seriesTitle) }
@@ -126,7 +126,7 @@ extension MediaItem {
     }
 
     /// e.g. "2019 · 1h 52m"; nil if neither year nor runtime is known.
-    var metadataLine: String? {
+    nonisolated var metadataLine: String? {
         var parts: [String] = []
         if let year { parts.append(String(year)) }
         if let runtime {
