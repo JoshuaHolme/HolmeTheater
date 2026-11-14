@@ -3,11 +3,16 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import AVKit
+import OSLog
 import SwiftUI
 
 /// Full-screen AVPlayer for one item: custom controls on iOS, the system player on tvOS.
 struct PlayerView: View {
     let item: MediaItem
+
+    /// What to play after `item`, in order, when it's one of a list such as a playlist: `item` first, then the items that
+    /// follow it. Empty for an item that plays on its own, which is followed by the next episode of its show.
+    var queue: [MediaItem] = []
 
     /// Called after the player closes, once the server has been told where playback stopped, so the presenter
     /// can refresh and show the latest progress.
@@ -23,6 +28,8 @@ struct PlayerView: View {
     @State private var followingItem: MediaItem?
     /// The load of the following episode, so closing the player can cancel it.
     @State private var followingLoad: Task<Void, Never>?
+    /// Where `playing` is in ``queue``.
+    @State private var queueIndex = 0
 
     /// What's playing: the item this view was opened with, or the episode that followed it.
     private var playing: MediaItem { followingItem ?? item }
@@ -37,7 +44,19 @@ struct PlayerView: View {
                     // A new session is a new player: its own model, controls and clock.
                     .id(ObjectIdentifier(session))
                 #else
-                VideoPlayer(player: session.player)
+                TVPlayerController(
+                    session: session,
+                    service: appModel.service,
+                    playNext: playNext,
+                    // Closes the player, then the tab that's showing opens the page, as "Go to Show" does on iOS.
+                    openItem: { item in
+                        appModel.pendingShow = item
+                        close()
+                    },
+                    close: close
+                )
+                    // A new session is a new player controller, with its own menus and subtitles.
+                    .id(ObjectIdentifier(session))
                     .ignoresSafeArea()
                 #endif
             } else if let errorMessage {
@@ -63,6 +82,19 @@ struct PlayerView: View {
             followingLoad?.cancel()
             session?.viewerDisappeared()
         }
+        #if os(iOS)
+        // An item that plays to its end with no episode to follow it, or whose autoplay was cancelled, closes the player and
+        // leaves the page it was opened from. (tvOS does this in its own controller.) One with a next episode moves on
+        // through the Up Next card.
+        .task(id: session.map { ObjectIdentifier($0) }) {
+            guard let session else { return }
+            for await note in NotificationCenter.default.notifications(named: AVPlayerItem.didPlayToEndTimeNotification) {
+                guard let finished = note.object as? AVPlayerItem, finished === session.player.currentItem else { continue }
+                if session.nextEpisode == nil || session.autoPlayCancelled { close() }
+                return
+            }
+        }
+        #endif
     }
 
     /// Picks up the item's playback if it's already going, or asks the server how to play it and starts.
@@ -84,7 +116,13 @@ struct PlayerView: View {
             let info = try await appModel.service.playbackInfo(for: playing, options: PlaybackOptions())
             // Dismissed while the server was thinking.
             guard !Task.isCancelled else { return }
-            let session = PlaybackSession(item: playing, info: info, service: appModel.service)
+            let session = PlaybackSession(
+                item: playing,
+                info: info,
+                service: appModel.service,
+                settings: appModel.playbackSettings,
+                queue: queue.isEmpty ? nil : .init(next: queue.indices.contains(queueIndex + 1) ? queue[queueIndex + 1] : nil)
+            )
             session.originID = item.id
             session.onStop = onStop
             appModel.playback = session
@@ -111,6 +149,7 @@ struct PlayerView: View {
         }
         session = nil
         errorMessage = nil
+        if !queue.isEmpty { queueIndex += 1 }
         followingItem = next
         followingLoad = Task { await load() }
     }
@@ -119,450 +158,6 @@ struct PlayerView: View {
         followingLoad?.cancel()
         session?.stop(then: onStop)
         dismiss()
-    }
-}
-
-/// A bitrate cap offered in the quality menu.
-struct StreamQuality: Identifiable, Hashable {
-    let maxBitrate: Int
-    let height: Int
-
-    var id: Int { maxBitrate }
-
-    var title: String {
-        let resolution = height >= 2160 ? "4K" : "\(height)p"
-        let rate = maxBitrate >= 1_000_000
-            ? "\((Double(maxBitrate) / 1_000_000).formatted(.number.precision(.fractionLength(0...1)))) Mbps"
-            : "\(maxBitrate / 1000) kbps"
-        return "\(resolution) · \(rate)"
-    }
-
-    private static let all = [
-        StreamQuality(maxBitrate: 60_000_000, height: 2160),
-        StreamQuality(maxBitrate: 40_000_000, height: 2160),
-        StreamQuality(maxBitrate: 20_000_000, height: 1080),
-        StreamQuality(maxBitrate: 10_000_000, height: 1080),
-        StreamQuality(maxBitrate: 4_000_000, height: 720),
-        StreamQuality(maxBitrate: 1_500_000, height: 480),
-        StreamQuality(maxBitrate: 720_000, height: 360)
-    ]
-
-    /// The caps worth offering for a file: lower than its own bitrate, and no taller than its picture.
-    static func choices(for info: PlaybackInfo) -> [StreamQuality] {
-        // A downloaded file is only ever the quality it was saved in.
-        if info.url.isFileURL { return [] }
-        return all.filter { quality in
-            (info.sourceBitrate.map { quality.maxBitrate < $0 } ?? true)
-                && (info.sourceHeight.map { quality.height <= max($0, 360) } ?? true)
-        }
-    }
-}
-
-/// Owns the AVPlayer for one playback and keeps the server informed:
-/// started, progress every 10 seconds, stopped.
-///
-/// Call `start()` once, and `stop()` when the player goes away. `stop()` may be called at any point,
-/// even while `start()` is still running, and more than once.
-///
-/// Changing quality, or a track the current stream doesn't carry, asks the server for a new stream and
-/// carries on from the same point in it.
-@Observable
-final class PlaybackSession {
-    let player: AVPlayer
-    let item: MediaItem
-
-    /// How the current stream is being delivered, and the tracks and qualities on offer.
-    private(set) var info: PlaybackInfo
-
-    /// The audio track playing.
-    private(set) var audioIndex: Int?
-
-    /// The subtitle track on screen, or nil for none. Can be nil while the stream still carries one,
-    /// when the player has just hidden it.
-    private(set) var subtitleIndex: Int?
-
-    /// Whether a new stream is being fetched for a change of quality or track.
-    private(set) var isSwitching = false
-
-    /// The ID of the item the player was opened with, which can differ from ``item`` once "Up Next" has moved on.
-    @ObservationIgnored var originID: String?
-
-    /// The episode that follows this one, for the "Up Next" card. Nil for anything else, or if there isn't one.
-    private(set) var nextEpisode: MediaItem?
-
-    /// Whether the viewer has cancelled the automatic start of the next episode.
-    var autoPlayCancelled = false
-
-    /// The intro, credits and so on the server has marked, which the player offers to skip.
-    private(set) var segments: [MediaSegment] = []
-
-    /// Whether the player's controls are showing. Kept here so a rebuilt player view picks up where the last left off.
-    @ObservationIgnored var controlsAreShowing = true
-
-    /// The lines of the subtitle track on screen, drawn by the app. Empty for none, or while they load.
-    private(set) var subtitleCues: [SubtitleCue] = []
-    @ObservationIgnored private var cueTask: Task<Void, Never>?
-
-    /// How many seconds later than the file says the subtitles show, for a file whose subtitles don't line up.
-    /// Negative shows them earlier. Remembered for the item.
-    private(set) var subtitleOffset: TimeInterval = 0
-
-    /// Why the last change of quality or track failed. The old stream carries on playing.
-    var switchError: String?
-
-    /// Called once the server has the final position after ``stop(then:)`` or when the session is released.
-    @ObservationIgnored var onStop: () -> Void = {}
-
-    @ObservationIgnored private(set) var isStopped = false
-    @ObservationIgnored private let service: any MediaService
-    @ObservationIgnored private var progressTask: Task<Void, Never>?
-
-    /// The "started" report, once sent. "Stopped" waits for it, so the server never sees them out of order
-    /// (which would leave a phantom "now playing" session on the server).
-    @ObservationIgnored private var startReport: Task<Void, Never>?
-
-    /// How many player views are showing this session. See ``viewerDisappeared()``.
-    @ObservationIgnored private var viewers = 0
-
-    #if os(iOS)
-    /// Keeps the screen from locking while the video plays, as the system player does.
-    @ObservationIgnored private var keepAwake: NSKeyValueObservation?
-    #endif
-
-    init(item: MediaItem, info: PlaybackInfo, service: any MediaService) {
-        self.item = item
-        self.info = info
-        self.service = service
-        self.audioIndex = info.audioIndex
-        self.subtitleIndex = info.subtitleIndex
-        self.subtitleOffset = UserDefaults.standard.double(forKey: Self.offsetKey(for: item))
-        self.player = AVPlayer(playerItem: Self.makePlayerItem(for: item, info: info))
-        // Waiting lets the player hold back to build a buffer and carry on by itself after a stall. Without it, a
-        // dip in the network pauses a direct-play file for good (4K files at high bitrates stall often on Wi-Fi).
-        player.automaticallyWaitsToMinimizeStalling = true
-
-        #if os(iOS)
-        // Paused, the screen may lock as usual.
-        keepAwake = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
-            let isPlaying = player.timeControlStatus != .paused
-            Task { @MainActor in
-                // A change still on its way when playback stopped mustn't keep the screen awake after it.
-                guard let self, !self.isStopped else { return }
-                UIApplication.shared.isIdleTimerDisabled = isPlaying
-            }
-        }
-        #endif
-    }
-
-    /// Stops and reports if the session is released without being stopped.
-    isolated deinit {
-        stop(then: onStop)
-    }
-
-    private static func makePlayerItem(for item: MediaItem, info: PlaybackInfo) -> AVPlayerItem {
-        let playerItem = AVPlayerItem(url: info.url)
-        // Buffer well ahead so a dip in the network doesn't run the buffer dry. (The default is a few seconds.) This
-        // is only a hint: the system still caps it by memory, and a transcode can only be buffered as far as the
-        // server has produced.
-        playerItem.preferredForwardBufferDuration = 300
-        let title = AVMutableMetadataItem()
-        title.identifier = .commonIdentifierTitle
-        title.value = item.title as NSString
-        title.extendedLanguageTag = "und"
-        playerItem.externalMetadata = [title]
-        return playerItem
-    }
-
-    /// Moves the subtitles later (or, if negative, earlier) by `seconds`, and remembers it for this item.
-    func adjustSubtitleOffset(by seconds: TimeInterval) {
-        setSubtitleOffset(subtitleOffset + seconds)
-    }
-
-    func resetSubtitleOffset() { setSubtitleOffset(0) }
-
-    func setSubtitleOffset(_ offset: TimeInterval) {
-        subtitleOffset = (offset * 100).rounded() / 100
-        let key = Self.offsetKey(for: item)
-        if subtitleOffset == 0 {
-            UserDefaults.standard.removeObject(forKey: key)
-        } else {
-            UserDefaults.standard.set(subtitleOffset, forKey: key)
-        }
-    }
-
-    private static func offsetKey(for item: MediaItem) -> String { "subtitleOffset.\(item.id)" }
-
-    /// The episode after this one: the next in its season, else the first of the next season that has any.
-    private func findNextEpisode() async -> MediaItem? {
-        guard item.kind == .episode, let seriesID = item.seriesID,
-              let series = try? await service.item(id: seriesID),
-              let top = try? await service.children(of: series) else { return nil }
-
-        // Some services list a show's episodes directly.
-        if top.first?.kind == .episode { return Self.episode(after: item, in: top) }
-
-        guard let seasonIndex = top.firstIndex(where: { $0.id == item.seasonID }) else { return nil }
-        if let episodes = try? await service.children(of: top[seasonIndex]), let next = Self.episode(after: item, in: episodes) {
-            return next
-        }
-        for season in top[(seasonIndex + 1)...] {
-            if let first = try? await service.children(of: season).first(where: { $0.kind == .episode }) { return first }
-        }
-        return nil
-    }
-
-    private static func episode(after item: MediaItem, in episodes: [MediaItem]) -> MediaItem? {
-        guard let index = episodes.firstIndex(where: { $0.id == item.id }) else { return nil }
-        return episodes[(index + 1)...].first { $0.kind == .episode }
-    }
-
-    /// Sets what a preview shows, which has no server to ask. Not wrapped in `#if DEBUG` because
-    /// `#Preview` bodies are compiled in Release builds too.
-    func setPreview(nextEpisode: MediaItem?, segments: [MediaSegment]) {
-        self.nextEpisode = nextEpisode
-        self.segments = segments
-    }
-
-    /// The marked stretch `time` is in, if any.
-    func segment(at time: TimeInterval) -> MediaSegment? {
-        segments.first { $0.start <= time && time < $0.end }
-    }
-
-    /// The subtitle to show at `time`, if any.
-    func subtitleText(at time: TimeInterval) -> String? {
-        let shifted = time - subtitleOffset
-        let lines = subtitleCues.filter { $0.start <= shifted && shifted < $0.end }.map(\.text)
-        return lines.isEmpty ? nil : lines.joined(separator: "\n")
-    }
-
-    /// Fetches subtitle files. Their URLs carry the access token, which the shared session's cache would write to disk.
-    private static let subtitleSession = URLSession(configuration: .ephemeral)
-
-    /// Fetches the lines of the selected subtitle track, or clears them if there's nothing for the app to draw.
-    private func loadSubtitleCues() {
-        cueTask?.cancel()
-        subtitleCues = []
-        guard !info.subtitlesBurnedIn, let subtitleIndex,
-              let url = info.subtitleTracks.first(where: { $0.index == subtitleIndex })?.url else { return }
-        cueTask = Task {
-            guard let (data, _) = try? await Self.subtitleSession.data(from: url), !Task.isCancelled else { return }
-            subtitleCues = WebVTT.parse(String(decoding: data, as: UTF8.self))
-        }
-    }
-
-    /// Current playback position in seconds (0 until the player knows it).
-    private var position: TimeInterval {
-        let seconds = player.currentTime().seconds
-        return seconds.isFinite ? seconds : 0
-    }
-
-    // MARK: Lifecycle
-
-    /// Seeks to the resume position, begins playback, reports "started", and begins periodic progress reports.
-    func start() async {
-        #if os(iOS) || os(tvOS)
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        // Active, so the volume slider hears about changes made with the hardware buttons. Asynchronously, as
-        // activating can block the calling thread for a noticeable time.
-        AVAudioSession.sharedInstance().activate { _, _ in }
-        #endif
-
-        if info.resumePosition > 1 {
-            await player.seek(to: CMTime(seconds: info.resumePosition, preferredTimescale: 600))
-        }
-        // Closed while seeking: don't start playing with nothing on screen.
-        guard !isStopped else { return }
-        player.play()
-        await applyTrackSelection()
-        // Closed while the tracks were being chosen: `stop()` has already run and found nothing to cancel, so
-        // starting the reports now would leave them running with no one to stop them.
-        guard !isStopped else { return }
-        loadSubtitleCues()
-
-        Task { segments = await service.segments(for: item) }
-        Task { nextEpisode = await findNextEpisode() }
-
-        let (service, item, info, position) = (service, item, info, position)
-        startReport = Task { await service.report(.started, for: item, info: info, position: position, isPaused: false) }
-
-        progressTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(10))
-                guard !Task.isCancelled, let self else { return }
-                await self.service.report(
-                    .progress,
-                    for: self.item,
-                    info: self.info,
-                    position: self.position,
-                    isPaused: self.player.timeControlStatus == .paused
-                )
-            }
-        }
-    }
-
-    /// Stops playback and the progress loop, releases the stream, and reports "stopped" with the final
-    /// position (only if "started" was reported).
-    ///
-    /// - Parameter completion: Called once the server has the final position (or at once, if there's nothing
-    ///   to report). Only the first call's runs.
-    func stop(then completion: @escaping () -> Void = {}) {
-        guard !isStopped else { return }
-        isStopped = true
-        progressTask?.cancel()
-        #if os(iOS)
-        keepAwake = nil
-        UIApplication.shared.isIdleTimerDisabled = false
-        #endif
-
-        let (service, item, info, position) = (service, item, info, position)
-        player.pause()
-        // Drop the item so AVPlayer closes its network connection now rather than when it's deallocated.
-        player.replaceCurrentItem(with: nil)
-        #if os(iOS) || os(tvOS)
-        // Let whatever was playing before (music, a podcast) carry on.
-        AVAudioSession.sharedInstance().deactivate(options: .notifyOthersOnDeactivation) { _, _ in }
-        #endif
-
-        guard let startReport else {
-            completion()
-            return
-        }
-        // Unstructured so the report still goes out after the view's task is cancelled.
-        Task {
-            await startReport.value
-            await service.report(.stopped, for: item, info: info, position: position, isPaused: true)
-            completion()
-        }
-    }
-
-    /// A player view started showing this session.
-    func viewerAppeared() {
-        viewers += 1
-    }
-
-    /// A player view stopped showing this session. If no other view picks it up within a moment, the player
-    /// has closed for real (rather than being rebuilt for a new window shape), so playback stops.
-    func viewerDisappeared() {
-        viewers = max(0, viewers - 1)
-        Task {
-            try? await Task.sleep(for: .seconds(1))
-            if viewers == 0 { stop(then: onStop) }
-        }
-    }
-
-    // MARK: Quality and tracks
-
-    /// Caps the stream's bitrate, or lifts the cap with nil.
-    func selectMaxBitrate(_ bitrate: Int?) async {
-        guard bitrate != info.maxBitrate else { return }
-        await switchStream { $0.maxBitrate = bitrate }
-    }
-
-    func selectAudio(_ index: Int) async {
-        guard index != audioIndex else { return }
-        // A direct-played file carries all its audio tracks, so the player can switch on its own.
-        if info.method == .directPlay, await select(index, among: info.audioTracks, characteristic: .audible) {
-            audioIndex = index
-            return
-        }
-        await switchStream { $0.audioIndex = index }
-    }
-
-    /// Shows a subtitle track, or hides subtitles with nil.
-    func selectSubtitle(_ index: Int?) async {
-        guard index != subtitleIndex else { return }
-        // The app draws text subtitles itself, so switching needs no new stream. Burned-in subtitles, and tracks
-        // made of pictures, are the server's to draw.
-        let drawnByApp = !info.subtitlesBurnedIn
-            && (index == nil || info.subtitleTracks.first { $0.index == index }?.url != nil)
-        if drawnByApp {
-            subtitleIndex = index
-            loadSubtitleCues()
-            return
-        }
-        await switchStream { $0.subtitleIndex = index ?? PlaybackOptions.noSubtitles }
-    }
-
-    /// Asks the server for a new stream with `change` applied, and carries on from the same point in it.
-    private func switchStream(_ change: (inout PlaybackOptions) -> Void) async {
-        // A downloaded file can't be asked to come in another form.
-        guard !isStopped, !isSwitching, !info.url.isFileURL else { return }
-        var options = PlaybackOptions(
-            mediaSourceID: info.mediaSourceID,
-            maxBitrate: info.maxBitrate,
-            audioIndex: audioIndex,
-            subtitleIndex: subtitleIndex ?? PlaybackOptions.noSubtitles
-        )
-        change(&options)
-
-        isSwitching = true
-        defer { isSwitching = false }
-        let resumeAt = position
-        let wasPlaying = player.timeControlStatus != .paused
-
-        let newInfo: PlaybackInfo
-        do {
-            newInfo = try await service.playbackInfo(for: item, options: options)
-        } catch {
-            switchError = error.localizedDescription
-            return
-        }
-        guard !isStopped else { return }
-
-        let oldInfo = info
-        info = newInfo
-        audioIndex = newInfo.audioIndex
-        subtitleIndex = newInfo.subtitleIndex
-
-        // Close the old stream on the server (which ends its transcode) before announcing the new one. Queued
-        // now, before the waits below, so closing the player during them still ends the old play session:
-        // `stop()` reports the new one only after this has gone out.
-        let (service, item, previous) = (service, item, startReport)
-        startReport = Task {
-            await previous?.value
-            await service.report(.stopped, for: item, info: oldInfo, position: resumeAt, isPaused: true)
-            await service.report(.started, for: item, info: newInfo, position: resumeAt, isPaused: !wasPlaying)
-        }
-
-        player.replaceCurrentItem(with: Self.makePlayerItem(for: item, info: newInfo))
-        player.automaticallyWaitsToMinimizeStalling = true
-        await player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
-        guard !isStopped else { return }
-        if wasPlaying { player.play() }
-        await applyTrackSelection()
-        loadSubtitleCues()
-    }
-
-    /// Makes the player show `subtitleIndex` (and, for a direct-played file, play `audioIndex`) from the tracks
-    /// inside the current stream, rather than whatever it would pick by itself.
-    private func applyTrackSelection() async {
-        guard let playerItem = player.currentItem else { return }
-        // The app draws the subtitles, so the player's own are always off, or they'd show twice.
-        if let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible) {
-            playerItem.select(nil, in: group)
-        }
-
-        if info.method == .directPlay, let audioIndex {
-            _ = await select(audioIndex, among: info.audioTracks, characteristic: .audible)
-        }
-    }
-
-    /// Selects the player's own option for a track of a direct-played file. Returns false if the file's tracks
-    /// can't be matched up with the server's list.
-    private func select(_ index: Int, among tracks: [MediaTrack], characteristic: AVMediaCharacteristic) async -> Bool {
-        guard let playerItem = player.currentItem,
-              let group = try? await playerItem.asset.loadMediaSelectionGroup(for: characteristic),
-              let option = Self.option(for: index, among: tracks, in: group) else { return false }
-        playerItem.select(option, in: group)
-        return true
-    }
-
-    /// The player lists a file's own tracks in the order the server does; external ones aren't in the file.
-    private static func option(for index: Int, among tracks: [MediaTrack], in group: AVMediaSelectionGroup) -> AVMediaSelectionOption? {
-        let embedded = tracks.filter { !$0.isExternal }
-        guard embedded.count == group.options.count,
-              let position = embedded.firstIndex(where: { $0.index == index }) else { return nil }
-        return group.options[position]
     }
 }
 

@@ -34,7 +34,13 @@ struct SearchView: View {
                 resultsList
             }
         }
+        .themeWash()
+        #if os(tvOS)
+        // tvOS draws the title large over the content, and the search field is already labelled "Search".
+        .navigationTitle("")
+        #else
         .navigationTitle("Search")
+        #endif
         .searchable(text: $query)
         .watchActionAlerts(watchActions)
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
@@ -44,7 +50,7 @@ struct SearchView: View {
     }
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: nil, state: $watchState) { effect in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, canManageCollections: appModel.canManageCollections, destination: nil, state: $watchState) { effect in
             results = results.applying(effect)
         }
     }
@@ -56,13 +62,30 @@ struct SearchView: View {
     /// One row per result: poster, title and a line of details, with a menu of actions on the right.
     private var resultsList: some View {
         ScrollView {
+            #if os(tvOS)
+            // A grid of landscape cards, as in the Apple TV app's search: more results on screen, one focus stop each.
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 360), spacing: Layout.cardSpacing, alignment: .top)], spacing: Layout.cardSpacing) {
+                ForEach(results) { item in
+                    let actions = watchActions.actions(for: item, navigation: navigation)
+                    Button { navigation.open(item) } label: {
+                        WideCard(item: item)
+                    }
+                    .cardLinkStyle()
+                    .contextMenu { ItemActionButtons(entries: actions?.menuEntries(for: item) ?? []) }
+                    .accessibilityLabel(item.accessibilityDescription)
+                }
+            }
+            .padding()
+            #else
             LazyVStack(spacing: 0) {
                 ForEach(results) { item in
                     SearchResultRow(item: item, actions: watchActions.actions(for: item, navigation: navigation))
                 }
             }
             .padding(.horizontal)
+            #endif
         }
+        .scrollClipDisabled()
     }
 
     /// Fetches the current results again, e.g. after playback, so their watch state and progress are up to date. Keeps
@@ -124,6 +147,8 @@ private struct SearchResultRow: View {
         case .season: parts.append(String(localized: "Season"))
         case .episode: parts.append(String(localized: "Episode"))
         case .extra: parts.append(String(localized: "Extra"))
+        case .collection: parts.append(String(localized: "Collection"))
+        case .playlist: parts.append(String(localized: "Playlist"))
         case .other: break
         }
         if let genre = item.genres.first { parts.append(genre) }
@@ -169,11 +194,17 @@ private struct SearchResultRow: View {
 private struct GenreBrowser: View {
     @Environment(AppModel.self) private var appModel
 
+    #if os(tvOS)
+    private static let columnCount = 5
+    #else
+    private static let columnCount = 2
+    #endif
+
     var body: some View {
         AsyncContent(load: { try await appModel.service.genres() }) { genres in
             ScrollView {
-                // Two posters across, whatever the screen width.
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: 2), spacing: 16) {
+                // Two posters across, whatever the screen width; five on a TV, where the screen is much wider.
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Layout.cardSpacing, alignment: .top), count: Self.columnCount), spacing: Layout.cardSpacing) {
                     ForEach(genres) { genre in
                         NavigationLink(value: genre) {
                             CollageCard(title: genre.name, aspectRatio: 2.0 / 3.0, cacheKey: "\(appModel.cacheScope)|genre-\(genre.id)") {
@@ -198,9 +229,14 @@ struct GenreView: View {
 
     var body: some View {
         AsyncContent(load: { try await appModel.service.items(in: genre) }) { items in
-            PosterBrowser(items: items)
+            PosterBrowser(items: items, title: genre.name, offersGenreFilter: false)
         }
+        #if os(tvOS)
+        // The browser draws the title itself, level with the sort and filter buttons, as a library's page does.
+        .navigationTitle("")
+        #else
         .navigationTitle(genre.name)
+        #endif
     }
 }
 

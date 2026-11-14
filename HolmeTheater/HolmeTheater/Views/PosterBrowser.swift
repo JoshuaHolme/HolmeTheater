@@ -5,7 +5,7 @@
 import SwiftUI
 
 /// How a collection of posters is ordered.
-enum PosterSort: CaseIterable, Identifiable {
+enum PosterSort: CaseIterable, Identifiable, Hashable {
     case nameAscending, nameDescending
     case addedNewest, addedOldest
     case releasedNewest, releasedOldest
@@ -117,10 +117,24 @@ private extension MediaItem {
 }
 
 /// A scrolling grid of posters that open their item, with sorting, filtering and an A to Z index down the side.
-struct PosterBrowser: View {
+struct PosterBrowser<Hero: View>: View {
     let items: [MediaItem]
 
-    @State private var sort = PosterSort.nameAscending
+    /// A heading for the page, shown on tvOS at the leading edge of the row with the sort and filter buttons. Nil for none.
+    /// (Elsewhere the navigation bar has the title.)
+    var title: String?
+
+    /// Whether the filter menu can narrow by genre. Off on a genre's own page, where every item is of that genre.
+    var offersGenreFilter = true
+
+    /// A hero for the top of the page, edge to edge above the grid, built for the size of the scroll view. Nil for none. A page
+    /// with a hero runs under the navigation bar, and the hero names it.
+    var hero: ((CGSize) -> Hero)?
+
+    /// The size of the scroll view, for the hero.
+    @State private var viewport: CGSize = .zero
+
+    @State private var sort: PosterSort
     @State private var filter = PosterFilter()
 
     /// The items as filtered and sorted, and the genres among them, kept rather than worked out on every redraw.
@@ -128,16 +142,49 @@ struct PosterBrowser: View {
     @State private var visibleItems: [MediaItem]
     @State private var genres: [String]
 
-    init(items: [MediaItem]) {
+    /// - Parameters:
+    ///   - sort: The order the grid starts in. The viewer can change it from the sort menu.
+    ///   - hero: Builds the hero for the top of the page, for the size of the scroll view.
+    init(
+        items: [MediaItem],
+        sort: PosterSort = .nameAscending,
+        title: String? = nil,
+        offersGenreFilter: Bool = true,
+        hero: @escaping (CGSize) -> Hero
+    ) {
+        self.init(items: items, sort: sort, title: title, offersGenreFilter: offersGenreFilter, optionalHero: hero)
+    }
+
+    private init(
+        items: [MediaItem],
+        sort: PosterSort,
+        title: String?,
+        offersGenreFilter: Bool,
+        optionalHero hero: ((CGSize) -> Hero)?
+    ) {
         self.items = items
-        _visibleItems = State(initialValue: PosterSort.nameAscending.sorted(items))
+        self.title = title
+        self.offersGenreFilter = offersGenreFilter
+        self.hero = hero
+        _sort = State(initialValue: sort)
+        _visibleItems = State(initialValue: sort.sorted(items))
         _genres = State(initialValue: Self.genres(in: items))
     }
 
     /// The narrowest a poster gets, wider at larger text sizes so captions stay readable.
-    @ScaledMetric(relativeTo: .subheadline) private var posterMinimum: CGFloat = Layout.posterWidth
+    @ScaledMetric(relativeTo: .subheadline) private var posterMinimum: CGFloat = PosterBrowser.basePosterWidth
 
-    private static let ratingChoices = [5.0, 6.0, 7.0, 8.0, 9.0]
+    /// How wide a poster is to start with. Smaller than the shelves' on tvOS, where a grid has the whole screen to fill and
+    /// shows more of the library at once.
+    private static var basePosterWidth: CGFloat {
+        #if os(tvOS)
+        return 200
+        #else
+        return Layout.posterWidth
+        #endif
+    }
+
+    private static var ratingChoices: [Double] { [5.0, 6.0, 7.0, 8.0, 9.0] }
 
     private static func genres(in items: [MediaItem]) -> [String] {
         Set(items.flatMap(\.genres)).sorted()
@@ -154,31 +201,52 @@ struct PosterBrowser: View {
             let visible = visibleItems
             ScrollViewReader { proxy in
                 ScrollView {
-                    if visible.isEmpty {
-                        ContentUnavailableView {
-                            Label("No Matches", systemImage: "line.3.horizontal.decrease.circle")
-                        } actions: {
-                            Button("Clear Filters") { filter = PosterFilter() }
-                        }
-                    } else {
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: min(posterMinimum, Layout.posterWidth * 2)), spacing: 12, alignment: .top)],
-                            spacing: 16
-                        ) {
-                            ForEach(visible) { item in
-                                NavigationLink(value: item) {
-                                    PosterCard(item: item)
-                                }
-                                .cardLinkStyle()
-                            }
-                        }
-                        .padding()
-                        #if !os(tvOS)
-                        // Room for the index.
-                        .padding(.trailing, sort.isByName ? 16 : 0)
+                    VStack(alignment: .leading, spacing: 0) {
+                    if let hero {
+                        hero(viewport)
+                    }
+                    VStack(alignment: .leading, spacing: Self.headerGap) {
+                        #if os(tvOS)
+                        header
                         #endif
+                        if visible.isEmpty {
+                            ContentUnavailableView {
+                                Label("No Matches", systemImage: "line.3.horizontal.decrease.circle")
+                            } actions: {
+                                Button("Clear Filters") { filter = PosterFilter() }
+                            }
+                            .frame(maxWidth: .infinity)
+                        } else {
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: min(posterMinimum, Layout.posterWidth * 2)), spacing: Layout.cardSpacing, alignment: .top)],
+                                spacing: Layout.cardSpacing
+                            ) {
+                                ForEach(visible) { item in
+                                    NavigationLink(value: item) {
+                                        PosterCard(item: item)
+                                    }
+                                    .cardLinkStyle()
+                                }
+                            }
+                            #if !os(tvOS)
+                            // Room for the index.
+                            .padding(.trailing, sort.isByName ? 16 : 0)
+                            #endif
+                        }
+                    }
+                    .padding()
                     }
                 }
+                .onGeometryChange(for: CGSize.self) { proxy in
+                    #if os(tvOS)
+                    // Measured before the safe area is ignored, so the hero can be as tall as the whole screen.
+                    CGSize(width: proxy.size.width, height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
+                    #else
+                    proxy.size
+                    #endif
+                } action: { viewport = $0 }
+                // The hero runs under the status and navigation bars, up to the top edge of the screen.
+                .ignoresSafeArea(edges: hero == nil ? [] : .top)
                 #if !os(tvOS)
                 .overlay(alignment: .trailing) {
                     if sort.isByName && !visible.isEmpty {
@@ -189,7 +257,10 @@ struct PosterBrowser: View {
                 }
                 #endif
             }
+            .themeWash()
+            #if !os(tvOS)
             .toolbar { toolbar }
+            #endif
             .onChange(of: items) {
                 genres = Self.genres(in: items)
                 updateVisibleItems()
@@ -198,6 +269,52 @@ struct PosterBrowser: View {
             .onChange(of: filter) { updateVisibleItems() }
         }
     }
+
+    /// Room between the row of buttons and the posters, so a poster lifted by focus doesn't run into them.
+    private static var headerGap: CGFloat {
+        #if os(tvOS)
+        return 48
+        #else
+        return 0
+        #endif
+    }
+
+    #if os(tvOS)
+    /// The page's title, with the sort and filter buttons at the other end of the same line.
+    private var header: some View {
+        HStack(spacing: 24) {
+            if let title {
+                Text(title)
+                    .font(.largeTitle.bold())
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            Spacer(minLength: 24)
+            sortMenu
+            filterMenu
+        }
+        // The row is as wide as the grid, and a focus section, so moving up from any poster along the top row reaches the
+        // buttons at its end, not only one right under them.
+        .tvFocusSection()
+        // A little in from the grid's edges, so the buttons' focus effect has room.
+        .padding(.horizontal, 4)
+    }
+
+    /// What the filters are doing, e.g. "Unwatched · 7+ · Comedy".
+    private var filterSummary: String {
+        var parts: [String] = []
+        switch filter.watched {
+        case .all: break
+        case .unwatched: parts.append(String(localized: "Unwatched"))
+        case .watched: parts.append(String(localized: "Watched"))
+        }
+        if let rating = filter.minimumRating {
+            parts.append("★ \(rating.formatted(.number.precision(.fractionLength(0))))+")
+        }
+        if let genre = filter.genre { parts.append(genre) }
+        return parts.joined(separator: " · ")
+    }
+    #endif
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
@@ -215,8 +332,17 @@ struct PosterBrowser: View {
                 ForEach(PosterSort.allCases) { Text($0.title).tag($0) }
             }
         } label: {
+            #if os(tvOS)
+            // The order it's in now, rather than just "Sort".
+            Label(sort.title, systemImage: "arrow.up.arrow.down")
+            #else
             Label("Sort", systemImage: "arrow.up.arrow.down")
+            #endif
         }
+        #if os(tvOS)
+        // A pill, with the order beside the icon.
+        .buttonBorderShape(.capsule)
+        #endif
     }
 
     private var filterMenu: some View {
@@ -246,7 +372,7 @@ struct PosterBrowser: View {
                 }
             }
 
-            if !genres.isEmpty {
+            if offersGenreFilter, !genres.isEmpty {
                 Menu {
                     Picker("Genre", selection: $filter.genre) {
                         Text("All Genres").tag(String?.none)
@@ -265,6 +391,18 @@ struct PosterBrowser: View {
                 Button("Clear Filters", role: .destructive) { filter = PosterFilter() }
             }
         } label: {
+            #if os(tvOS)
+            // A circle with just the icon, until something is filtered: then a pill that lists what is.
+            Group {
+                if filter.isActive {
+                    Label(filterSummary, systemImage: "line.3.horizontal.decrease.circle.fill")
+                } else {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                }
+            }
+            .accessibilityLabel("Filter")
+            .accessibilityValue(filter.isActive ? Text(filterSummary) : Text(""))
+            #else
             Image(systemName: filter.isActive
                 ? "line.3.horizontal.decrease.circle.fill"
                 : "line.3.horizontal.decrease.circle")
@@ -280,7 +418,11 @@ struct PosterBrowser: View {
                 }
                 .accessibilityLabel("Filter")
                 .accessibilityValue(filter.isActive ? Text("\(filter.activeCount) filters applied") : Text(""))
+            #endif
         }
+        #if os(tvOS)
+        .buttonBorderShape(filter.isActive ? .capsule : .circle)
+        #endif
     }
 }
 
@@ -345,6 +487,15 @@ private struct AlphabetIndex: View {
     }
 }
 #endif
+
+extension PosterBrowser where Hero == EmptyView {
+    /// A page with no hero.
+    ///
+    /// - Parameter sort: The order the grid starts in. The viewer can change it from the sort menu.
+    init(items: [MediaItem], sort: PosterSort = .nameAscending, title: String? = nil, offersGenreFilter: Bool = true) {
+        self.init(items: items, sort: sort, title: title, offersGenreFilter: offersGenreFilter, optionalHero: nil)
+    }
+}
 
 #Preview {
     NavigationStack {

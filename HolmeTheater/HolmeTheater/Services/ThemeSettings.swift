@@ -17,6 +17,8 @@ final class ThemeSettings {
         var isEnabled = true
         var isAutomatic = true
         var showsEffects = true
+        var showsHolidays = true
+        var showsSeasons = true
         var manualTheme: AppTheme = .fall
         var unscheduled: Set<AppTheme> = []
         var customWindows: [AppTheme: ThemeWindow] = [:]
@@ -41,8 +43,14 @@ final class ThemeSettings {
     /// each read, since views read it often and the schedule takes some date arithmetic.
     private(set) var scheduledTheme: AppTheme?
 
-    /// The theme showing now, or nil for the app's usual look.
-    private(set) var activeTheme: AppTheme?
+    /// The theme the settings call for, or nil for the app's usual look.
+    private(set) var appliedTheme: AppTheme?
+
+    /// A theme being tried out, which shows in place of the applied one until the preview ends. Nothing is saved.
+    var previewTheme: AppTheme?
+
+    /// The theme showing now, or nil for the app's usual look: the one being previewed, if any.
+    var activeTheme: AppTheme? { previewTheme ?? appliedTheme }
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let calendar = Calendar.themes
@@ -61,11 +69,14 @@ final class ThemeSettings {
     }
 
     private func updateActiveTheme() {
-        let scheduled = schedule.theme(on: today, among: Set(AppTheme.allCases).subtracting(stored.unscheduled))
+        var allowed = Set(AppTheme.allCases).subtracting(stored.unscheduled)
+        if !stored.showsHolidays { allowed.subtract(AppTheme.holidays) }
+        if !stored.showsSeasons { allowed.subtract(AppTheme.seasons) }
+        let scheduled = schedule.theme(on: today, among: allowed)
         let active = stored.isEnabled ? (stored.isAutomatic ? scheduled : stored.manualTheme) : nil
         // Only on a change, so views that read them aren't redrawn for nothing.
         if scheduled != scheduledTheme { scheduledTheme = scheduled }
-        if active != activeTheme { activeTheme = active }
+        if active != appliedTheme { appliedTheme = active }
     }
 
     // MARK: Switches
@@ -86,6 +97,17 @@ final class ThemeSettings {
     var showsEffects: Bool {
         get { stored.showsEffects }
         set { stored.showsEffects = newValue }
+    }
+
+    /// Whether the calendar can pick a holiday's theme, or a season's. Either can be off, so only the other kind shows.
+    var showsHolidays: Bool {
+        get { stored.showsHolidays }
+        set { stored.showsHolidays = newValue }
+    }
+
+    var showsSeasons: Bool {
+        get { stored.showsSeasons }
+        set { stored.showsSeasons = newValue }
     }
 
     /// The theme shown when the calendar isn't picking.
@@ -139,7 +161,7 @@ final class ThemeSettings {
 /// that's since been renamed or removed, then costs only that one setting rather than all of them.
 extension ThemeSettings.Stored: Codable {
     private enum CodingKeys: String, CodingKey {
-        case isEnabled, isAutomatic, showsEffects, manualTheme, unscheduled, customWindows
+        case isEnabled, isAutomatic, showsEffects, showsHolidays, showsSeasons, manualTheme, unscheduled, customWindows
     }
 
     init(from decoder: any Decoder) throws {
@@ -148,6 +170,8 @@ extension ThemeSettings.Stored: Codable {
         isEnabled = (try? container.decodeIfPresent(Bool.self, forKey: .isEnabled)) ?? defaults.isEnabled
         isAutomatic = (try? container.decodeIfPresent(Bool.self, forKey: .isAutomatic)) ?? defaults.isAutomatic
         showsEffects = (try? container.decodeIfPresent(Bool.self, forKey: .showsEffects)) ?? defaults.showsEffects
+        showsHolidays = (try? container.decodeIfPresent(Bool.self, forKey: .showsHolidays)) ?? defaults.showsHolidays
+        showsSeasons = (try? container.decodeIfPresent(Bool.self, forKey: .showsSeasons)) ?? defaults.showsSeasons
         manualTheme = (try? container.decodeIfPresent(String.self, forKey: .manualTheme)).flatMap { $0 }
             .flatMap(AppTheme.init(rawValue:)) ?? defaults.manualTheme
         // Themes by name, so one this version doesn't know is skipped rather than failing the lot.
@@ -164,6 +188,8 @@ extension ThemeSettings.Stored: Codable {
         try container.encode(isEnabled, forKey: .isEnabled)
         try container.encode(isAutomatic, forKey: .isAutomatic)
         try container.encode(showsEffects, forKey: .showsEffects)
+        try container.encode(showsHolidays, forKey: .showsHolidays)
+        try container.encode(showsSeasons, forKey: .showsSeasons)
         try container.encode(manualTheme.rawValue, forKey: .manualTheme)
         try container.encode(unscheduled.map(\.rawValue).sorted(), forKey: .unscheduled)
         // Keyed by name, which JSON keeps as an object, rather than a list of alternating keys and values.

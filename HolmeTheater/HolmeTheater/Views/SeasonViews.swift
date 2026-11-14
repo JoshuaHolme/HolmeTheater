@@ -35,14 +35,13 @@ struct SeasonsSection: View {
             await ImageCache.shared.preload(children.prefix(6).compactMap(\.posterURL))
             return children
         }, reloadID: reloadID, pullsToRefresh: false) { children in
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: Layout.shelfHeadingGap) {
                 if children.count == 1, let season = children.first {
                     // A show with a single season is a mini series: its episodes stand in for the one season.
                     EpisodeShelf(season: season, reloadID: reloadID, omitting: [.show, .season], open: open, play: play)
                 } else {
                     ShelfHeadingLink(title: "\(children.count) Seasons") { showsSeasonList = true }
-                        .padding(.horizontal)
-
+                        .padding(.horizontal, Layout.contentInset)
                     seasonShelf(children)
                 }
             }
@@ -53,14 +52,16 @@ struct SeasonsSection: View {
     /// A horizontally scrolling row of season posters. It pads its own ends, so it scrolls edge to edge.
     private func seasonShelf(_ seasons: [MediaItem]) -> some View {
         ScrollView(.horizontal) {
-            LazyHStack(alignment: .top, spacing: 12) {
+            LazyHStack(alignment: .top, spacing: Layout.cardSpacing) {
                 ForEach(seasons) { season in
                     seasonCard(season)
                 }
             }
-            .padding(.horizontal)
+            .padding(.horizontal, Layout.contentInset)
         }
         .scrollIndicators(.hidden)
+        .scrollClipDisabled()
+        .tvFocusSection()
     }
 
     /// A season poster that opens the season when tapped, and peeks and pops when long-pressed.
@@ -81,8 +82,6 @@ struct SeasonsSection: View {
         .cardLinkStyle()
         .contextMenu {
             ItemActionButtons(entries: actions?.menuEntries(for: season) ?? [])
-        } preview: {
-            ItemPeek(item: season)
         }
         #endif
     }
@@ -103,11 +102,18 @@ struct ShelfHeadingLink: View {
     let action: () -> Void
 
     var body: some View {
+        #if os(tvOS)
+        // Plain text, as on the home screen: the row is the whole list, so there's no chevron to focus above it.
+        Text(title)
+            .font(Layout.shelfHeadingFont)
+            .foregroundStyle(.secondary)
+            .accessibilityAddTraits(.isHeader)
+        #else
         Button(action: action) {
             // The chevron stays beside the first line when the heading wraps.
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title)
-                    .font(.title2.bold())
+                    .font(Layout.shelfHeadingFont)
                     .multilineTextAlignment(.leading)
                 Image(systemName: "chevron.right")
                     .font(.headline)
@@ -116,6 +122,7 @@ struct ShelfHeadingLink: View {
         }
         .cardLinkStyle()
         .accessibilityAddTraits(.isHeader)
+        #endif
     }
 }
 
@@ -128,6 +135,10 @@ struct EpisodeShelf: View {
 
     /// Menu links to leave out because the screen is already inside them.
     let omitting: Set<RelatedLink>
+
+    /// Whether the row scrolls to the first episode that isn't watched, and puts focus on it (tvOS). For a season's own page,
+    /// where that's the episode to carry on with.
+    var focusesFirstUnwatched = false
 
     let open: (MediaItem) -> Void
     let play: (MediaItem) -> Void
@@ -154,8 +165,10 @@ struct EpisodeShelf: View {
                     onHeadingTap: { showsList = true },
                     isWide: true,
                     omitting: omitting,
+                    autoFocusItemID: focusesFirstUnwatched ? episodes.first { !$0.isPlayed }?.shelfKey : nil,
                     onChange: { reloadCount += 1 },
-                    navigation: ItemNavigation(open: open, play: play)
+                    // Inside the season, selecting an episode plays it; its page is "Go to Episode" in the menu.
+                    navigation: ItemNavigation(open: open, play: play, playsOnTap: true)
                 )
             }
         }
@@ -179,7 +192,7 @@ struct SeasonListView: View {
     @State private var openedSeason: MediaItem?
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: nil, state: $watchState) { _ in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, canManageCollections: appModel.canManageCollections, destination: nil, state: $watchState) { _ in
             reloadCount += 1
         }
     }
@@ -195,14 +208,16 @@ struct SeasonListView: View {
                 // Built once and shared by the "more" menu and the long-press menu.
                 // Already inside the show, so there's no "Go to Show".
                 let actions = watchActions.actions(for: season, navigation: navigation, omitting: [.show])
-                ItemRow(item: season, captionLines: [season.seasonTitle, season.seasonDetailLine].compactMap { $0 }, actions: actions, peek: WatchActions.peekSpec(for: season, actions: actions, navigation: navigation))
-                    #if !os(iOS)
-                    .background {
-                        Button { openedSeason = season } label: { Color.clear.contentShape(Rectangle()) }
-                            .cardLinkStyle()
-                            .accessibilityLabel(season.accessibilityDescription)
-                    }
-                    #endif
+                let row = ItemRow(item: season, captionLines: [season.seasonTitle, season.seasonDetailLine].compactMap { $0 }, actions: actions, peek: WatchActions.peekSpec(for: season, actions: actions, navigation: navigation))
+                #if os(tvOS)
+                // The row is the button, so it has one focus stop; its actions are in the long-press menu.
+                Button { openedSeason = season } label: { row.padding(12) }
+                    .buttonStyle(.card)
+                    .contextMenu { ItemActionButtons(entries: actions?.menuEntries(for: season) ?? []) }
+                    .accessibilityLabel(season.accessibilityDescription)
+                #else
+                row
+                #endif
             }
             .listStyle(.plain)
         }
@@ -220,7 +235,7 @@ extension MediaItem {
     }
 
     /// e.g. "8 Episodes · 2021". Whichever part the server didn't give is left out.
-    var seasonDetailLine: String? {
+    nonisolated var seasonDetailLine: String? {
         var parts: [String] = []
         if let episodeCount {
             parts.append(episodeCount == 1 ? String(localized: "1 Episode") : String(localized: "\(episodeCount) Episodes"))
@@ -239,7 +254,7 @@ private struct SeasonCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Layout.captionGap) {
             ArtworkView(url: season.posterURL, aspectRatio: 2.0 / 3.0)
                 .overlay(alignment: .topTrailing) {
                     if season.showsWatchedBadge {
@@ -247,7 +262,13 @@ private struct SeasonCard: View {
                     }
                 }
                 .overlay(alignment: .topLeading) { DownloadedBadge(item: season) }
+                // The artwork is what lifts and shines on focus, as on the other posters.
+                .focusHighlight()
 
+            #if os(tvOS)
+            // The same caption as the other posters, so the row looks like them.
+            ItemCaption(item: season, reservedLines: 2, lines: [season.seasonTitle, season.seasonDetailLine].compactMap { $0 })
+            #else
             VStack(alignment: .leading, spacing: 2) {
                 Text(season.seasonTitle)
                     .font(.subheadline.weight(.semibold))
@@ -260,6 +281,7 @@ private struct SeasonCard: View {
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
                 }
             }
+            #endif
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)

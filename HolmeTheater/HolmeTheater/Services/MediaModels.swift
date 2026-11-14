@@ -52,6 +52,12 @@ nonisolated struct UserSession: Codable, Hashable, Sendable {
     ///
     /// Optional with a default so sessions saved before this property existed still decode.
     var avatarURL: URL? = nil
+
+    /// Whether the user may create collections and change what's in them: an administrator, or someone the server has given
+    /// that permission. `nil` until the server has said, as for sessions saved before this property existed.
+    ///
+    /// Optional with a default so those sessions still decode. Playlists need no permission.
+    var canManageCollections: Bool? = nil
 }
 
 // Keep the access token out of logs and debugger output: printing a session shows everything but the token.
@@ -96,6 +102,17 @@ nonisolated struct Library: Identifiable, Hashable, Sendable {
 
     /// The kind of content the library holds.
     let kind: Kind
+
+    /// What a library is to the user: a real library of media, or one of the server's collected views, which are listed
+    /// after the libraries.
+    nonisolated enum Role: Int, Hashable, Sendable {
+        case library
+        case collections
+        case playlists
+    }
+
+    /// Whether this is a library, or the server's collections or playlists.
+    var role: Role = .library
 }
 
 /// A genre such as "Comedy", as a way to browse movies and shows other than by library.
@@ -125,7 +142,11 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable, Codable {
         /// A bonus video attached to a movie or show: behind the scenes, a deleted scene, an interview. It can
         /// be played.
         case extra
-        /// Anything the app doesn't specifically handle (music, photos, collections, …).
+        /// A server collection (a "box set"): a group of movies or shows, such as a film series.
+        case collection
+        /// A playlist: an ordered list of movies and episodes that the user can edit and play through.
+        case playlist
+        /// Anything the app doesn't specifically handle (music, photos, …).
         case other
     }
 
@@ -186,6 +207,9 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable, Codable {
 
     /// The ID of the season an episode belongs to, or `nil` for anything else.
     var seasonID: String? = nil
+
+    /// For an episode: its season's poster, ready to load, if the server may have one. `nil` for anything else.
+    var seasonPosterURL: URL? = nil
 
     /// For a show or season: how many episodes it has. `nil` for anything else, or if the server didn't say.
     var episodeCount: Int? = nil
@@ -253,6 +277,10 @@ nonisolated struct MediaItem: Identifiable, Hashable, Sendable, Codable {
 
     /// When the user last played the item, or nil if they never have.
     var lastPlayedDate: Date? = nil
+
+    /// For an item listed in a playlist: this entry's ID in the playlist, which is what removing it needs. The same item can
+    /// be in a playlist more than once, so this differs from ``id``. `nil` for anything not fetched as part of a playlist.
+    var playlistEntryID: String? = nil
 }
 
 /// A chapter of a movie or episode, as the server lists it.
@@ -348,7 +376,8 @@ nonisolated enum PlaybackMethod: Sendable, Codable {
 ///
 /// Printing playback info redacts its URL, which contains the access token.
 nonisolated struct PlaybackInfo: Hashable, Sendable, Codable {
-    /// A URL AVPlayer can load directly. The access token is embedded in its query.
+    /// A URL AVPlayer can load directly. The access token is embedded in its query, because AVPlayer has no way to send
+    /// it in a header with every HLS request, but it's left out whenever the info is encoded (see ``encode(to:)``).
     var url: URL
 
     /// Where to start playing, in seconds.
@@ -392,6 +421,32 @@ nonisolated struct PlaybackInfo: Hashable, Sendable, Codable {
     var expectedBytes: Int64?
 }
 
+extension PlaybackInfo {
+    /// Encodes the info with the access token taken out of ``url``, so whatever saves it (a download's record, say) can
+    /// never write the token to disk. Decoding is the synthesized one, and the keys are the same, so saved data reads as
+    /// before.
+    ///
+    /// Written out because a property wrapper can't do it in a `nonisolated` struct. A new property has to be added here
+    /// too, or it won't be saved.
+    nonisolated func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(url.removingAccessToken(), forKey: .url)
+        try container.encode(resumePosition, forKey: .resumePosition)
+        try container.encodeIfPresent(playSessionID, forKey: .playSessionID)
+        try container.encodeIfPresent(mediaSourceID, forKey: .mediaSourceID)
+        try container.encode(method, forKey: .method)
+        try container.encode(audioTracks, forKey: .audioTracks)
+        try container.encode(subtitleTracks, forKey: .subtitleTracks)
+        try container.encodeIfPresent(audioIndex, forKey: .audioIndex)
+        try container.encodeIfPresent(subtitleIndex, forKey: .subtitleIndex)
+        try container.encode(subtitlesBurnedIn, forKey: .subtitlesBurnedIn)
+        try container.encodeIfPresent(sourceBitrate, forKey: .sourceBitrate)
+        try container.encodeIfPresent(sourceHeight, forKey: .sourceHeight)
+        try container.encodeIfPresent(maxBitrate, forKey: .maxBitrate)
+        try container.encodeIfPresent(expectedBytes, forKey: .expectedBytes)
+    }
+}
+
 /// A stretch of a movie or episode the server knows the purpose of, which the player offers to skip.
 nonisolated struct MediaSegment: Hashable, Sendable, Codable {
     nonisolated enum Kind: Hashable, Sendable, Codable {
@@ -418,11 +473,33 @@ nonisolated struct MediaTrack: Identifiable, Hashable, Sendable, Codable {
     /// Whether the track is in a separate file next to the video rather than inside it.
     let isExternal: Bool
 
-    /// For a text subtitle track: where to fetch it as WebVTT, so the app can show it itself. `nil` for anything
-    /// else, including picture-based subtitles, which only the server can draw (by burning them into the video).
+    /// For a subtitle track the app can draw itself: where to fetch it, in ``format``. `nil` for anything else, such as
+    /// picture-based subtitles other than PGS, which only the server can draw (by burning them into the video).
     var url: URL? = nil
 
+    /// What ``url`` holds. Nil means WebVTT, as for every track saved before this was kept.
+    var format: SubtitleFormat? = nil
+
+    /// For a subtitle track: whether it only has the lines that aren't understood otherwise, e.g. foreign speech. Nil
+    /// when unknown, as for tracks saved before this was kept.
+    var isForced: Bool? = nil
+
+    /// Whether this is a forced track, going by the server's flag or, since not every file sets it, the name.
+    var looksForced: Bool {
+        isForced == true || title.localizedCaseInsensitiveContains("forced")
+    }
+
     var id: Int { index }
+}
+
+/// The kinds of subtitle file the app draws itself.
+nonisolated enum SubtitleFormat: String, Hashable, Sendable, Codable {
+    /// Text, which the server converts most text tracks to.
+    case webVTT
+    /// SubStation Alpha text (`.ass` or `.ssa`), as it is: converted, it would lose where its lines go.
+    case ass
+    /// Pictures, as on Blu-ray discs (a `.sup` file), sent as they are: the server can't turn them into text.
+    case pgs
 }
 
 /// What to ask the server for when (re)starting a stream. Nil fields leave the choice to the server.
@@ -489,6 +566,12 @@ nonisolated enum MediaServiceError: LocalizedError, Sendable {
     /// The item doesn't exist on the server (any more), or the user can't see it.
     case itemNotFound
 
+    /// This service can't make or change playlists.
+    case playlistsNotSupported
+
+    /// This service can't make or change collections.
+    case collectionsNotSupported
+
     /// Anything else; the associated message is already user-presentable.
     case underlying(String)
 
@@ -502,6 +585,8 @@ nonisolated enum MediaServiceError: LocalizedError, Sendable {
         case .sessionExpired: String(localized: "Your session has expired. Sign in again.")
         case .itemNotPlayable: String(localized: "This item can't be played.")
         case .itemNotFound: String(localized: "This item is no longer available.")
+        case .playlistsNotSupported: String(localized: "Playlists can't be changed right now.")
+        case .collectionsNotSupported: String(localized: "Collections can't be changed right now.")
         case .underlying(let message): message
         }
     }

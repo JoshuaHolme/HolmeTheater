@@ -62,9 +62,14 @@ struct ItemNavigation {
     /// Plays an item full-screen.
     let play: (MediaItem) -> Void
 
-    init(open: @escaping (MediaItem) -> Void, play: @escaping (MediaItem) -> Void) {
+    /// Whether selecting a playable item plays it on tvOS, where selecting a card otherwise opens it. For a list of
+    /// episodes inside their season, where the point is to watch one.
+    let playsOnTap: Bool
+
+    init(open: @escaping (MediaItem) -> Void, play: @escaping (MediaItem) -> Void, playsOnTap: Bool = false) {
         openDetail = open
         self.play = play
+        self.playsOnTap = playsOnTap
     }
 
     /// Opens an item's detail screen. A special feature has none, so it plays instead.
@@ -79,11 +84,21 @@ struct ItemNavigation {
     /// What tapping an item does: plays it straight away, or opens it if it can't be played (a show or season).
     /// The detail screen is otherwise reached through "Go to …" or a peek.
     func tap(_ item: MediaItem) {
+        #if os(tvOS)
+        // As in the Apple TV app, selecting a card opens it; Play is on the detail screen and in the menu. Unless the
+        // list asks for playing, in which case the detail screen is "Go to …" in the menu.
+        if playsOnTap, item.isPlayable {
+            play(item)
+        } else {
+            open(item)
+        }
+        #else
         if item.isPlayable {
             play(item)
         } else {
             open(item)
         }
+        #endif
     }
 }
 
@@ -100,41 +115,12 @@ struct WatchActionState {
 
     /// A question about a download, waiting for an answer: whether to download a whole show or season, or to remove one.
     var downloadPrompt: DownloadPrompt?
-}
 
-/// How many seasons each show has, learned as screens load. A show with a single season is treated as a mini
-/// series, with no season page, so a menu needs to know before it offers "Go to Season".
-///
-/// It's observable, so a menu built in a view's body is rebuilt when a count arrives.
-@MainActor @Observable
-final class SeasonCountCache {
-    static let shared = SeasonCountCache()
+    /// A movie or episode the user chose to add to a playlist; the playlist sheet shows while it's set.
+    var playlistItem: MediaItem?
 
-    private var counts: [String: Int] = [:]
-
-    /// The shows being fetched. Not observed: it changes while a menu is being built in a view's body, and no view
-    /// shows it.
-    @ObservationIgnored private var loading: Set<String> = []
-
-    /// The show's season count, or nil if it isn't known yet.
-    func count(ofSeries id: String) -> Int? { counts[id] }
-
-    /// Remembers a count a screen already has.
-    func record(_ count: Int?, ofSeries id: String) {
-        if let count { counts[id] = count }
-    }
-
-    /// Fetches a show's count in the background if it isn't known and isn't already being fetched.
-    func prefetch(seriesID id: String, service: any MediaService) {
-        guard counts[id] == nil, !loading.contains(id) else { return }
-        loading.insert(id)
-        Task {
-            if let count = try? await service.seasonCount(ofSeries: id) {
-                counts[id] = count
-            }
-            loading.remove(id)
-        }
-    }
+    /// A movie or show the user chose to add to a collection; the collection sheet shows while it's set.
+    var collectionItem: MediaItem?
 }
 
 /// Builds the watch-state actions for the items on a screen, and runs them.
@@ -147,6 +133,9 @@ struct WatchActions {
 
     /// Where downloads are managed. With it, items' menus offer to download them.
     var downloads: DownloadManager? = nil
+
+    /// Whether the user may change collections. Without it, items' menus don't offer to add them to one.
+    var canManageCollections = false
 
     /// The shelf the items are on, which decides which changes take an item off it. Nil anywhere else.
     let destination: ShelfDestination?
@@ -165,6 +154,18 @@ struct WatchActions {
             actions = actions ?? ItemRowActions()
             actions?.downloadEntries = downloadEntries
         }
+        // A playlist holds movies and episodes.
+        if item.kind == .movie || item.kind == .episode {
+            actions = actions ?? ItemRowActions()
+            let state = state
+            actions?.addToPlaylist = { state.wrappedValue.playlistItem = item }
+        }
+        // A collection holds movies and shows.
+        if canManageCollections, item.kind == .movie || item.kind == .series {
+            actions = actions ?? ItemRowActions()
+            let state = state
+            actions?.addToCollection = { state.wrappedValue.collectionItem = item }
+        }
         return actions
     }
 
@@ -180,7 +181,12 @@ struct WatchActions {
         let start = { state.wrappedValue.downloadPrompt = DownloadPrompt.start(item, downloads: downloads) }
         let confirmRemoval = { state.wrappedValue.downloadPrompt = .remove(item) }
 
-        switch downloads.status(of: item) {
+        // Where the download is, not how far along: so the menu isn't rebuilt with every tick of progress, which makes an
+        // open one flash.
+        let remaining = entry(.download, String(localized: "Download Remaining Episodes"), "arrow.down.circle", start)
+        let hasMore = downloads.hasEpisodesToDownload(item)
+
+        switch downloads.stage(of: item) {
         case .none:
             return [entry(.download, isContainer ? String(localized: "Download All Episodes") : String(localized: "Download"), "arrow.down.circle", start)]
         case .partial:
@@ -189,16 +195,15 @@ struct WatchActions {
                 entry(.removeDownload, String(localized: "Remove Downloads"), "trash", confirmRemoval)
             ]
         case .downloading:
-            return [
-                entry(.pauseDownload, String(localized: "Pause Download"), "pause.circle") { downloads.pause(item) },
+            return [entry(.pauseDownload, String(localized: "Pause Download"), "pause.circle") { downloads.pause(item) }]
+                // A show with one season on its way can still have the rest downloaded.
+                + (hasMore ? [remaining] : [])
                 // Only what's unfinished: a show's or season's finished episodes stay.
-                entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }
-            ]
+                + [entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }]
         case .paused:
-            return [
-                entry(.resumeDownload, String(localized: "Resume Download"), "play.circle") { downloads.resume(item) },
-                entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }
-            ]
+            return [entry(.resumeDownload, String(localized: "Resume Download"), "play.circle") { downloads.resume(item) }]
+                + (hasMore ? [remaining] : [])
+                + [entry(.removeDownload, String(localized: "Cancel Download"), "xmark.circle") { downloads.cancel(item) }]
         case .downloaded:
             return [entry(.removeDownload, isContainer ? String(localized: "Remove Downloads") : String(localized: "Remove Download"), "trash", confirmRemoval)]
         }
@@ -248,6 +253,8 @@ struct WatchActions {
     func actions(for item: MediaItem, navigation: ItemNavigation, omitting: Set<RelatedLink> = []) -> ItemRowActions? {
         // A special feature has no screen of its own to go to; it only plays.
         var actions = actions(for: item, goTo: item.kind == .extra ? nil : { navigation.open(item) })
+        if item.isPlayable { actions?.play = { navigation.play(item) } }
+        actions?.tapPlays = navigation.playsOnTap && item.isPlayable
         // A show with a single season has no season page, so its episodes offer only the episode and the show. The
         // count is fetched if it isn't known yet, and the entry waits for it.
         if item.kind == .episode, !omitting.contains(.season), let seasonID = item.seasonID, let seriesID = item.seriesID {
@@ -409,6 +416,8 @@ extension View {
         .confirmShowRemoval(state.pendingRemoval) { actions.perform($0) }
         .confirmBulkWatchChange(state.pendingBulkChange) { actions.perform($0) }
         .downloadPrompts(state.downloadPrompt)
+        .sheet(item: state.playlistItem) { AddToListSheet(items: [$0], kind: .playlist) }
+        .sheet(item: state.collectionItem) { AddToListSheet(items: [$0], kind: .collection) }
     }
 
     /// Asks the user to confirm a pending show or season change, warning what it does to the watch history.

@@ -28,6 +28,10 @@ final class AppModel {
         if case .signedIn(let session) = state { session } else { nil }
     }
 
+    /// Whether the signed-in user may create collections and change what's in them. False until the server has said, so
+    /// the controls appear once the profile loads rather than failing when used.
+    var canManageCollections: Bool { session?.canManageCollections == true }
+
     /// Identifies the signed-in account and its server, for caches that must not show one account's data to another.
     /// Empty when signed out.
     var cacheScope: String {
@@ -46,6 +50,9 @@ final class AppModel {
     /// Which seasonal or holiday theme the app wears, if any.
     let themeSettings: ThemeSettings
 
+    /// How playback behaves, e.g. whether the next episode starts by itself. Shared by the settings and the player.
+    let playbackSettings: PlaybackSettings
+
     /// A short message to show over the tabs for a moment, e.g. that something worked. The main view clears it.
     var toastMessage: String?
 
@@ -57,27 +64,32 @@ final class AppModel {
     /// A show the player asked to open ("Go to Show"). The main view pushes it onto the current tab and clears it.
     var pendingShow: MediaItem?
 
-    @ObservationIgnored private let keychain: KeychainStore
-    private static let sessionAccount = "session"
+    @ObservationIgnored private let sessionStore: any SessionStore
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "Session")
+
+    /// The Keychain namespace a service's saved session goes under. Mock runs (`-UseMockService`) get their own;
+    /// otherwise the canned session they save would be restored against the real server on the next normal launch,
+    /// which can never sign it in.
+    private static func keychainNamespace(for service: any MediaService) -> String {
+        let base = Bundle.main.bundleIdentifier ?? "JellyfinClient"
+        return service is MockMediaService ? base + ".mock" : base
+    }
 
     init(service: any MediaService) {
         let store = DownloadStore()
         self.homeSettings = HomeSettings()
         self.themeSettings = ThemeSettings()
+        self.playbackSettings = PlaybackSettings()
         self.service = OfflineFallbackMediaService(base: service, store: store)
         self.downloads = DownloadManager(service: service, store: store)
-        // Mock runs (`-UseMockService`) get their own Keychain namespace; otherwise the canned session they save
-        // would be restored against the real server on the next normal launch, which can never sign it in.
-        let namespace = Bundle.main.bundleIdentifier ?? "JellyfinClient"
-        self.keychain = KeychainStore(service: service is MockMediaService ? namespace + ".mock" : namespace)
+        self.sessionStore = KeychainSessionStore(keychain: KeychainStore(service: Self.keychainNamespace(for: service)))
     }
 
     /// Creates a model already in `state`, for SwiftUI previews and tests.
     ///
-    /// It uses a separate Keychain namespace, so signing in inside a preview can never overwrite
-    /// the session the real app restores at launch.
-    init(service: any MediaService, state: SessionState) {
+    /// - Parameter sessionStore: Where the session is kept. The default is an in-memory store, so signing in inside a
+    ///   preview or test never touches the session the real app restores at launch.
+    init(service: any MediaService, state: SessionState, sessionStore: any SessionStore = InMemorySessionStore()) {
         // Downloads go in a throwaway folder, with no background session, so a preview never touches real ones.
         let store = DownloadStore(root: FileManager.default.temporaryDirectory.appending(path: "PreviewDownloads", directoryHint: .isDirectory))
         self.service = OfflineFallbackMediaService(base: service, store: store)
@@ -86,7 +98,9 @@ final class AppModel {
         // A preview's changes stay out of the real settings.
         self.homeSettings = HomeSettings(defaults: UserDefaults(suiteName: "HomeSettingsPreviews") ?? .standard)
         self.themeSettings = ThemeSettings(defaults: UserDefaults(suiteName: "ThemeSettingsPreviews") ?? .standard)
-        self.keychain = KeychainStore(service: (Bundle.main.bundleIdentifier ?? "JellyfinClient") + ".previews")
+        self.playbackSettings = PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard)
+        self.sessionStore = sessionStore
+        playbackSettings.scope = cacheScope
     }
 
     /// Call once at launch to pick up a saved session.
@@ -96,7 +110,7 @@ final class AppModel {
     func restoreSession() async {
         let saved: UserSession?
         do {
-            saved = try keychain.load(UserSession.self, account: Self.sessionAccount)
+            saved = try sessionStore.load()
         } catch {
             // Unreadable (e.g. from an incompatible older build). Treat as signed out rather than failing.
             Self.logger.error("Couldn't read the saved session: \(error.localizedDescription, privacy: .public)")
@@ -173,8 +187,12 @@ final class AppModel {
     func signOut(removingDownloads: Bool = true) async {
         playback?.stop()
         playback = nil
+        // The saved token goes first, so it's gone even if the app is closed before the rest finishes. The service forgets
+        // the session at once and revokes it on the server without waiting.
+        sessionStore.delete()
         await service.signOut()
-        keychain.delete(account: Self.sessionAccount)
+        // Counts learned for this account's shows.
+        SeasonCountCache.shared.removeAll()
         // So the next person on a shared device doesn't see the previous user's artwork or profile picture.
         ImageCache.shared.removeAll()
         // Responses kept by the shared session, which earlier versions fetched subtitles with: their URLs carry the
@@ -183,6 +201,7 @@ final class AppModel {
         // Likewise their downloaded videos and details. Other accounts' downloads on the device stay.
         if removingDownloads {
             downloads.removeAllForAccount()
+            playbackSettings.removeSubtitleOffsets()
         } else {
             // The downloads stay, but not the access token that paused ones keep to carry on with.
             downloads.discardResumeData()
@@ -199,13 +218,14 @@ final class AppModel {
     private func transition(to newState: SessionState) {
         state = newState
         downloads.accountChanged(scope: cacheScope, accessToken: session?.accessToken)
+        playbackSettings.scope = cacheScope
     }
 
     /// Saves the session so the next launch is already signed in. A failure only costs that convenience,
     /// so it's logged rather than surfaced.
     private func persist(_ session: UserSession) {
         do {
-            try keychain.save(session, account: Self.sessionAccount)
+            try sessionStore.save(session)
         } catch {
             Self.logger.error("Couldn't save the session: \(error.localizedDescription, privacy: .public)")
         }

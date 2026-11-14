@@ -13,7 +13,8 @@ nonisolated struct ClientIdentity: Sendable {
     let name: String
     /// The app's marketing version.
     let version: String
-    /// A human-readable name for this device, e.g. "Josh's iPhone".
+    /// A human-readable name for this device: the one its owner gave it where the system shares that (e.g. "Living
+    /// Room"), otherwise its model and a short tag for this install (e.g. "iPhone (3F2A)").
     let deviceName: String
     /// Stable per install so the server doesn't accumulate duplicate devices.
     let deviceID: String
@@ -34,7 +35,11 @@ nonisolated struct ClientIdentity: Sendable {
         }()
 
         #if canImport(UIKit)
-        let deviceName = UIDevice.current.name
+        // Since iOS 16 the name the user gave the device is only readable with an entitlement Apple grants on request;
+        // without it, this is just the model ("iPhone"). Every iPhone in the house would then look the same in the
+        // server's list of devices, so a generic name gets the start of this install's ID to tell them apart.
+        let device = UIDevice.current
+        let deviceName = device.name == device.model ? "\(device.model) (\(deviceID.prefix(4)))" : device.name
         #else
         let deviceName = ProcessInfo.processInfo.hostName
         #endif

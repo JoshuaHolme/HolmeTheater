@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "Holme Logo.svg",
+      "idiom" : "tv"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

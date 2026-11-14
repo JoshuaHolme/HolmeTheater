@@ -40,6 +40,15 @@ struct HomeView: View {
     /// because shelves sit in a lazy stack, where SwiftUI ignores navigation destinations.
     @State private var goToItem: MediaItem?
 
+    /// Which shelf card has focus (tvOS), as the shelf and the item's ID. Setting it moves focus to that card.
+    @FocusState private var focusedCard: String?
+
+    /// The last shelf card that had focus, to put focus back on when an item's page opened from it is closed. Without this
+    /// the screen has to guess where focus should be after it reloads, and often picks a different card. It's the last
+    /// one, not the one at the moment the page opens, because a card's long-press menu takes focus from it first, so by
+    /// then no card has it.
+    @State private var lastFocusedCard: String?
+
     /// The item a tapped poster is playing; setting it presents the full-screen player. The shelves reload
     /// when it closes, so they show the latest progress.
     @State private var playingItem: MediaItem?
@@ -52,11 +61,33 @@ struct HomeView: View {
     /// The seasonal theme showing, if any.
     private var theme: AppTheme? { appModel.themeSettings.activeTheme }
 
+    /// Whether the page draws its own heading. On tvOS the sidebar already names the screen, so there's none (it
+    /// collided with the hero's title). That includes a holiday theme's greeting; the theme still tints the page.
+    private var showsHeader: Bool {
+        #if os(tvOS)
+        false
+        #else
+        true
+        #endif
+    }
+
+    /// How far down the screen the theme's string of lights hangs from. On Apple TV, where the screen has no bar or heading of
+    /// its own, they run along the very top; elsewhere they hang just below the status bar.
+    private func effectsTopInset(_ safeArea: EdgeInsets) -> CGFloat {
+        #if os(tvOS)
+        16
+        #else
+        safeArea.top
+        #endif
+    }
+
     /// One shelf on the home screen.
     private struct Shelf: Identifiable {
         let id: String
         let destination: ShelfDestination
         let items: [MediaItem]
+        /// Whether there's more behind the shelf than the items shown, which is when it ends with a See All card.
+        let hasMore: Bool
     }
 
     private struct HomeData {
@@ -72,9 +103,20 @@ struct HomeView: View {
         // Outside the scroll view, so it reports the real safe area, which the scroll view below runs past.
         GeometryReader { proxy in
             let safeArea = proxy.safeAreaInsets
+            // The theme's layers are siblings of the scroll view rather than its background and overlay: the scroll view's
+            // frame can be wider than the screen (its carousel runs past the safe areas), and then the string of lights, laid
+            // out by the layer's width, came out differently once the screen had loaded.
+            ZStack {
+            if let theme {
+                ThemeWash(color: theme.accent)
+                // The soft, near pieces, behind the posters and everything else on the screen...
+                if appModel.themeSettings.showsEffects {
+                    ThemeParticles(effect: theme.effect, topInset: effectsTopInset(safeArea), layer: .back)
+                }
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if !showsHero {
+                    if !showsHero && showsHeader {
                         header
                             .padding(.top, safeArea.top)
                             .padding(.top)
@@ -82,8 +124,8 @@ struct HomeView: View {
 
                     // Loads inside the scroll view, below the header, so the profile button in the bar stays
                     // reachable (e.g. to sign out) even if loading fails.
-                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, offersDownloads: true) { data in
-                        LazyVStack(alignment: .leading, spacing: 24) {
+                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, loadingHeight: loadingHeight(proxy), offersDownloads: true) { data in
+                        HomeColumn {
                             if !data.hero.isEmpty {
                                 HomeHeroCarousel(
                                     items: data.hero,
@@ -92,18 +134,41 @@ struct HomeView: View {
                                     // The whole screen, past the side safe areas the carousel runs under.
                                     screenSize: CGSize(
                                         width: proxy.size.width + safeArea.leading + safeArea.trailing,
-                                        height: proxy.size.height
+                                        height: screenHeight(proxy)
                                     ),
-                                    open: { goToItem = $0 },
+                                    // From the carousel's button, not a card: coming back, focus belongs on that button, which
+                                    // the system puts it back on, not on whichever card had it last.
+                                    open: { lastFocusedCard = nil; goToItem = $0 },
                                     play: { playingItem = $0 }
                                 ) {
-                                    header.foregroundStyle(.white)
+                                    if showsHeader { header.foregroundStyle(.white) }
                                 }
-
+                                #if os(tvOS)
+                                // Scrolled up, the carousel leaves faster than the page, so the first shelf, which moves with the
+                                // page, comes away from it and stands on its own, with a gap between them. Read here, not in
+                                // the effect, which runs outside the main actor.
+                                .visualEffect { [lead = HeroLayout.parallaxLead, travel = HeroLayout.parallaxTravel] content, proxy in
+                                    let scrolled = max(0, -proxy.frame(in: .scrollView).minY)
+                                    // Only over the first stretch of scrolling, which is when the gap is made. After that the
+                                    // carousel goes with the page, and stays in view above the shelves.
+                                    return content.offset(y: -min(scrolled, travel) * lead)
+                                }
+                                // The first shelf rises over the artwork's bottom edge, so its heading and the tops of its
+                                // cards show over the hero at rest.
+                                .padding(.bottom, -HeroLayout.bottomReserve)
+                                #endif
                             }
+                            #if os(tvOS)
+                            shelvesSection(data.shelves, bleed: max(safeArea.leading, safeArea.trailing))
+                                // The carousel is as wide as the whole screen, which stretches the column past the safe areas.
+                                // Without this the rows were that wide too, and scrolled to their ends with the last card
+                                // still beyond the screen's edge.
+                                .frame(width: proxy.size.width, alignment: .leading)
+                            #else
                             ForEach(data.shelves) { shelf in
-                                self.shelf(shelf.destination, items: shelf.items)
+                                self.shelf(shelf)
                             }
+                            #endif
                             if data.shelves.isEmpty {
                                 ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
                             }
@@ -115,34 +180,143 @@ struct HomeView: View {
             }
             // The carousel runs under the status bar, up to the top edge of the screen.
             .ignoresSafeArea(edges: .top)
-            .background {
-                if let theme { ThemeWash(color: theme.accent) }
-            }
-            .overlay {
-                if let theme, appModel.themeSettings.showsEffects {
-                    ThemeParticles(effect: theme.effect, topInset: safeArea.top)
-                }
-            }
             .pullToRefresh { await refresher.refresh() }
+            // ...and the sharp ones in front, so the two layers give it some depth.
+            if let theme, appModel.themeSettings.showsEffects {
+                ThemeParticles(effect: theme.effect, topInset: effectsTopInset(safeArea), layer: .front)
+            }
+            }
         }
+        #if os(tvOS)
+        // The holiday's greeting, which the heading would carry on other platforms, pinned to the top right corner of the screen,
+        // level with the tab bar's label at the other corner. On the page itself, not inside its scroll view, whose width runs
+        // past the screen's edge.
+        .overlay {
+            if let theme, let greeting = theme.greeting(on: appModel.themeSettings.today) {
+                // A clear layer that fills the whole screen, safe areas included (a view of fixed size can't grow into them, so
+                // its own margins would be measured from the edge inside them), with the badge in its corner.
+                Color.clear
+                    .overlay(alignment: .topTrailing) {
+                        ThemeBadge(theme: theme, greeting: greeting)
+                            // The same distance from the top and the right edges.
+                            .padding(.top, 50)
+                            .padding(.trailing, 50)
+                    }
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
+        }
+        #endif
         // The title is set so pushed screens can show "Home" on their back button. The bar itself only holds the profile
         // button (added where the tab is made): the heading below already names the screen.
+        #if os(tvOS)
+        // tvOS draws the title over the content, which here is the hero artwork; the sidebar already says "Home".
+        .navigationTitle("")
+        #else
         .navigationTitle("Home")
+        #endif
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(removing: .title)
         #endif
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: reload) }
+        // Coming back from an item's page, the shelves are loaded again, so what was changed there (marked watched, a
+        // favorite, progress made by playing from it) shows at once. The screen below a pushed page doesn't reliably load
+        // again by itself when it's uncovered.
+        .onChange(of: focusedCard) { _, card in
+            if let card { lastFocusedCard = card }
+        }
+        .onChange(of: goToItem) { old, new in
+            guard old != nil, new == nil else { return }
+            reload()
+            restoreFocus()
+        }
+        // The player reloads the shelves itself once the server has the final position, but that depends on it getting to say
+        // so. Whenever it closes, they're loaded again a moment later too, so what was watched shows without leaving the tab.
+        .onChange(of: playingItem) { old, new in
+            guard old != nil, new == nil else { return }
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                reload()
+            }
+        }
+    }
+
+    /// Puts focus back on the card an item's page was opened from, once the screen has settled after coming back to it and
+    /// after the reload has put its shelves back. Does nothing if that card is gone (watched and so off the shelf).
+    private func restoreFocus() {
+        guard let key = lastFocusedCard else { return }
+        Task {
+            // Twice: the system settles focus on its own pick as the page comes back, and again as the reload puts the
+            // shelves back, so the first try can be undone.
+            for delay in [300, 400] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                if focusedCard != key { focusedCard = key }
+            }
+        }
+    }
+
+    /// The height to center the loading spinner in. On tvOS the page starts at the top edge of the screen with nothing
+    /// above it, so the whole screen's height puts the spinner in the middle. Elsewhere the header sits above it, so the
+    /// spinner fills what's left of the container.
+    private func loadingHeight(_ proxy: GeometryProxy) -> CGFloat? {
+        #if os(tvOS)
+        screenHeight(proxy)
+        #else
+        nil
+        #endif
+    }
+
+    /// The height of the whole screen, safe areas included. The carousel on tvOS is that tall.
+    private func screenHeight(_ proxy: GeometryProxy) -> CGFloat {
+        #if os(tvOS)
+        proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+        #else
+        proxy.size.height
+        #endif
+    }
+
+    #if os(tvOS)
+    /// The shelves, starting a little way in so the first heading clears the artwork's bottom edge.
+    private func shelvesSection(_ shelves: [Shelf], bleed: CGFloat) -> some View {
+        LazyVStack(alignment: .leading, spacing: Layout.shelfSpacing) {
+            ForEach(shelves) { shelf in
+                self.shelf(shelf, bleed: bleed)
+            }
+        }
+        // Close under the artwork's edge: the heading and the tops of the first cards show over the artwork, with about as
+        // much of them as the Apple TV app's.
+        .padding(.top, 12)
+    }
+    #endif
+
+    /// Whether a shelf shows widescreen cards, with their progress and time left over the picture, as the Apple TV app's
+    /// Continue Watching does. Only on tvOS, where there's room; elsewhere every shelf is posters.
+    private static func usesWideCards(_ destination: ShelfDestination) -> Bool {
+        #if os(tvOS)
+        switch destination {
+        case .continueWatching, .continueWatchingAndUpNext, .nextUp: true
+        default: false
+        }
+        #else
+        false
+        #endif
     }
 
     /// A shelf whose heading opens `destination`'s full list. Its posters play here, and its watch-state
     /// actions reload the whole screen.
-    private func shelf(_ destination: ShelfDestination, items: [MediaItem]) -> some View {
-        MediaShelf(
+    private func shelf(_ shelf: Shelf, bleed: CGFloat = 0) -> some View {
+        let destination = shelf.destination
+        return MediaShelf(
             title: destination.title,
-            items: items,
+            items: shelf.items,
             destination: destination,
+            isWide: Self.usesWideCards(destination),
+            hasMore: shelf.hasMore,
+            bleed: bleed,
+            focus: $focusedCard,
+            focusPrefix: shelf.id,
             onChange: reload,
             navigation: ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
         )
@@ -171,7 +345,7 @@ struct HomeView: View {
     /// The carousel's items from the newest ones: movies and shows as they are, and an episode or season as the show it
     /// belongs to. A TV library's newest items are often single episodes, which the carousel should show as the show.
     /// A show that comes up more than once is shown once, where it first appears.
-    private static func heroes(from newest: [MediaItem], limit: Int, service: any MediaService) async -> [MediaItem] {
+    private static func heroes(from newest: [MediaItem], limit: Int, hidesWatched: Bool, service: any MediaService) async -> [MediaItem] {
         // Enough to still have `limit` once shows that repeat are gone.
         let candidates = Array(newest.prefix(limit * 3))
 
@@ -191,7 +365,7 @@ struct HomeView: View {
                 default: item
                 }
             }
-            .filter { seen.insert($0.id).inserted && ($0.backdropURL != nil || $0.posterURL != nil) }
+            .filter { seen.insert($0.id).inserted && ($0.backdropURL != nil || $0.posterURL != nil) && !(hidesWatched && $0.isPlayed) }
             .prefix(limit)
             .map { $0 }
     }
@@ -243,7 +417,7 @@ struct HomeView: View {
                 group.addTask {
                     async let added = wantsAdded ? service.recentlyAddedItems(in: library) : []
                     // A failure here only costs this shelf; the rest of the screen still loads.
-                    async let released = wantsReleased ? service.recentlyReleasedPage(in: library, offset: 0, limit: Self.shelfLimit) : []
+                    async let released = wantsReleased ? service.recentlyReleasedPage(in: library, offset: 0, limit: Self.shelfLimit + 1) : []
                     return (index, try await added, (try? await released) ?? [])
                 }
             }
@@ -255,7 +429,8 @@ struct HomeView: View {
         let fetched = shelves.sorted { $0.0 < $1.0 }
         let resumeItems = try await resume
         let nextUpItems = try await nextUp
-        let onThisDay = Array((await onThisDayItems ?? []).prefix(Self.shelfLimit))
+        let allOnThisDay = await onThisDayItems ?? []
+        let onThisDay = Array(allOnThisDay.prefix(Self.shelfLimit))
 
         let byLibrary = Dictionary(uniqueKeysWithValues: fetched.map { (libraries[$0.0].id, (added: $0.1, released: $0.2)) })
 
@@ -264,18 +439,23 @@ struct HomeView: View {
         for section in sections {
             switch section {
             case .continueWatching:
-                homeShelves.append(Shelf(id: "continue", destination: combined ? .continueWatchingAndUpNext : .continueWatching, items: resumeItems))
+                // A full page may have another behind it.
+                homeShelves.append(Shelf(id: "continue", destination: combined ? .continueWatchingAndUpNext : .continueWatching, items: resumeItems, hasMore: resumeItems.count >= Self.shelfLimit))
             case .nextUp:
-                homeShelves.append(Shelf(id: "nextUp", destination: .nextUp, items: nextUpItems))
+                homeShelves.append(Shelf(id: "nextUp", destination: .nextUp, items: nextUpItems, hasMore: nextUpItems.count >= Self.shelfLimit))
             case .onThisDay:
-                homeShelves.append(Shelf(id: "onThisDay", destination: .onThisDay, items: onThisDay))
+                homeShelves.append(Shelf(id: "onThisDay", destination: .onThisDay, items: onThisDay, hasMore: allOnThisDay.count > Self.shelfLimit))
             case .recentlyReleased:
                 for library in settings.ordered(libraries, for: .recentlyReleased) where settings.includes(library, in: .recentlyReleased) {
-                    homeShelves.append(Shelf(id: "released-\(library.id)", destination: .recentlyReleased(library), items: byLibrary[library.id]?.released ?? []))
+                    // One more than the shelf shows was asked for, to know whether there's more.
+                    let released = byLibrary[library.id]?.released ?? []
+                    homeShelves.append(Shelf(id: "released-\(library.id)", destination: .recentlyReleased(library), items: Array(released.prefix(Self.shelfLimit)), hasMore: released.count > Self.shelfLimit))
                 }
             case .recentlyAdded:
                 for library in settings.ordered(libraries, for: .recentlyAdded) where settings.includes(library, in: .recentlyAdded) {
-                    homeShelves.append(Shelf(id: "added-\(library.id)", destination: .recentlyAdded(library), items: byLibrary[library.id]?.added ?? []))
+                    // The server's latest-media list can't be asked for one more, so a full one may have more behind it.
+                    let added = byLibrary[library.id]?.added ?? []
+                    homeShelves.append(Shelf(id: "added-\(library.id)", destination: .recentlyAdded(library), items: added, hasMore: added.count >= Self.shelfLimit))
                 }
             }
         }
@@ -332,7 +512,7 @@ struct HomeView: View {
             }
             newest = picks.filter(hasArtwork).shuffled()
         }
-        let hero = await Self.heroes(from: newest, limit: Self.heroCount, service: service)
+        let hero = await Self.heroes(from: newest, limit: Self.heroCount, hidesWatched: settings.heroHidesWatched, service: service)
 
         // The first posters of each shelf are loaded before the shelves show, so they don't pop in. Every other
         // poster starts downloading now, so it's cached by the time you scroll to it.
@@ -375,4 +555,21 @@ struct HomeView: View {
             .mediaNavigationDestinations()
     }
     .environment(AppModel.preview())
+}
+
+/// The column that holds the carousel and the shelves. Lazy, so shelves far down the page aren't built until they're near.
+/// Not on tvOS: there the first shelf is pulled up over the carousel's bottom edge, so the carousel draws below its layout
+/// box. A lazy stack goes by the layout box, so it threw the carousel away while its bottom was still on screen, then had
+/// to build it and load its picture again on the way back, which showed as the hero popping out and in. (The shelves are
+/// still lazy on tvOS: see `shelvesSection`.)
+private struct HomeColumn<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        #if os(tvOS)
+        VStack(alignment: .leading, spacing: Layout.shelfSpacing) { content }
+        #else
+        LazyVStack(alignment: .leading, spacing: Layout.shelfSpacing) { content }
+        #endif
+    }
 }

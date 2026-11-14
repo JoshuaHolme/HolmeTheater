@@ -73,6 +73,10 @@ private struct AccountToolbarModifier: ViewModifier {
     @State private var isPresented = false
 
     func body(content: Content) -> some View {
+        #if os(tvOS)
+        // Account is its own tab in the sidebar on tvOS, so there's no toolbar button.
+        content
+        #else
         content
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -89,6 +93,7 @@ private struct AccountToolbarModifier: ViewModifier {
             .sheet(isPresented: $isPresented) {
                 AccountSheet(isPresented: $isPresented)
             }
+        #endif
     }
 }
 

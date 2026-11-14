@@ -13,20 +13,21 @@ struct LibrariesView: View {
 
     private var cardMinimumWidth: CGFloat {
         #if os(tvOS)
-        return 560
+        return 420
         #else
-        return 320
+        return 240
         #endif
     }
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.libraries() }, offersDownloads: true) { libraries in
+        // The libraries first, then the collections and playlists, each in the order the server gave them.
+        AsyncContent(load: { try await orderedLibraries() }, offersDownloads: true) { libraries in
             ScrollView {
                 // As many columns as fit, so a wide screen shows several cards across instead of stretching one.
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: 16)], spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: Layout.cardSpacing, alignment: .top)], alignment: .leading, spacing: Layout.cardSpacing) {
                     ForEach(libraries) { library in
                         NavigationLink(value: library) {
-                            CollageCard(title: library.name, systemImage: library.systemImage, cacheKey: "\(appModel.cacheScope)|library-\(library.id)") {
+                            LibraryCard(library: library, cacheKey: "\(appModel.cacheScope)|library-\(library.id)") {
                                 await posterURLs(for: library)
                             }
                         }
@@ -36,7 +37,21 @@ struct LibrariesView: View {
                 .padding()
             }
         }
+        .themeWash()
+        #if os(tvOS)
+        // tvOS draws the title large over the content, and the cards already name each library.
+        .navigationTitle("")
+        #else
         .navigationTitle("Libraries")
+        #endif
+    }
+
+    /// The server's libraries, with its collections and playlists after them. Each group keeps the server's order.
+    private func orderedLibraries() async throws -> [Library] {
+        let all = try await appModel.service.libraries()
+        return all.enumerated()
+            .sorted { ($0.element.role.rawValue, $0.offset) < ($1.element.role.rawValue, $1.offset) }
+            .map(\.element)
     }
 
     /// A handful of the library's newest posters for its card.
@@ -48,6 +63,113 @@ struct LibrariesView: View {
             urls = items.prefix(16).compactMap(\.posterURL)
         }
         return urls
+    }
+}
+
+/// A library as a widescreen card like the rest of the app's: a tilted collage of its newest posters (or one, blurred
+/// behind itself, if that's all there is) that lifts under the system's focus effect, with its name beneath.
+private struct LibraryCard: View {
+    let library: Library
+
+    /// Identifies the card's artwork in ``PosterURLCache``. See ``CollageCard/cacheKey``.
+    let cacheKey: String
+
+    /// Fetches the artwork. Runs once, the first time the card appears.
+    let loadPosterURLs: () async -> [URL]
+
+    @State private var posterURLs: [URL]
+
+    init(library: Library, cacheKey: String, loadPosterURLs: @escaping () async -> [URL]) {
+        self.library = library
+        self.cacheKey = cacheKey
+        self.loadPosterURLs = loadPosterURLs
+        // Lazy grids discard cards that scroll away, so start from what an earlier copy of this card loaded.
+        _posterURLs = State(initialValue: PosterURLCache.urls[cacheKey] ?? [])
+    }
+
+    private static let cornerRadius: CGFloat = {
+        #if os(tvOS)
+        12
+        #else
+        8
+        #endif
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Layout.captionGap) {
+            artwork
+                .focusHighlight()
+
+            Label(library.name, systemImage: library.systemImage)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .task { await loadPosters() }
+    }
+
+    private var artwork: some View {
+        Color.secondary.opacity(0.2)
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .overlay {
+                GeometryReader { proxy in
+                    posters(in: proxy.size)
+                }
+                .allowsHitTesting(false)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: Self.cornerRadius)
+                    .strokeBorder(.primary.opacity(0.15), lineWidth: 1)
+            }
+    }
+
+    /// The library's posters: one on its own, blurred behind itself, or several in a tilted collage.
+    @ViewBuilder
+    private func posters(in size: CGSize) -> some View {
+        if posterURLs.isEmpty {
+            Image(systemName: library.systemImage)
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+                .frame(width: size.width, height: size.height)
+        } else if posterURLs.count == 1, let url = posterURLs.first {
+            // One poster alone, enlarged to fill the card, would be blurry: it's blurred on purpose behind itself.
+            ZStack {
+                poster(url, width: size.width, height: size.height)
+                    .scaleEffect(1.3)
+                    .blur(radius: 30)
+                    .overlay { Color.black.opacity(0.3) }
+                poster(url, width: size.height * 2 / 3, height: size.height)
+            }
+            .frame(width: size.width, height: size.height)
+            .clipped()
+        } else {
+            // Tilted, with gaps between, as the genre cards are.
+            LibraryCollage(urls: posterURLs, size: size)
+        }
+    }
+
+    private func poster(_ url: URL, width: CGFloat, height: CGFloat) -> some View {
+        CachedAsyncImage(url: url) { phase in
+            if case .success(let image) = phase {
+                image.resizable().scaledToFill()
+            }
+        }
+        .frame(width: width, height: height)
+        .clipped()
+    }
+
+    private func loadPosters() async {
+        guard posterURLs.isEmpty else { return }
+        let urls = await loadPosterURLs()
+        guard !Task.isCancelled else { return }
+        // The pictures that show first load before the card shows them, so it doesn't fill in poster by poster. They're
+        // on disk after this, so a card that comes back doesn't go to the network.
+        await ImageCache.shared.preload(Array(urls.prefix(24)))
+        guard !Task.isCancelled else { return }
+        PosterURLCache.urls[cacheKey] = urls
+        posterURLs = urls
     }
 }
 
@@ -320,16 +442,31 @@ private struct LibraryCollage: View {
     }
 }
 
+/// A library opened in a particular order, as a home-screen shelf's See All does.
+struct SortedLibrary: Hashable {
+    let library: Library
+    let sort: PosterSort
+}
+
 /// Every item in one library, as a poster grid.
 struct LibraryView: View {
     let library: Library
+
+    /// The order the grid starts in.
+    var sort = PosterSort.nameAscending
+
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
         AsyncContent(load: loadItems) { items in
-            PosterBrowser(items: items)
+            PosterBrowser(items: items, sort: sort, title: library.name)
         }
+        #if os(tvOS)
+        // The browser draws the title itself, level with the sort and filter buttons.
+        .navigationTitle("")
+        #else
         .navigationTitle(library.name)
+        #endif
     }
 
     /// Fetches the library and starts caching its posters in the background.
@@ -348,7 +485,8 @@ struct LibraryView: View {
 private extension Library {
     /// The SF Symbol shown beside the library in lists.
     var systemImage: String {
-        switch kind {
+        if role == .playlists { return "list.bullet.rectangle" }
+        return switch kind {
         case .movies: "film"
         case .tvShows: "tv"
         case .music: "music.note"

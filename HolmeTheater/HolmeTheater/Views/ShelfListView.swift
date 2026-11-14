@@ -25,6 +25,16 @@ enum ShelfDestination: Hashable {
     /// - omitsShow: Whether the list's menus leave out "Go to Show", because it was opened from the show's page.
     case episodes(MediaItem, omitsShow: Bool)
 
+    /// The library page a shelf's See All card opens, in the order the shelf is in, for the shelves that are a slice of
+    /// one library. Nil for the others, whose See All opens their own list.
+    var sortedLibrary: SortedLibrary? {
+        switch self {
+        case .recentlyAdded(let library): SortedLibrary(library: library, sort: .addedNewest)
+        case .recentlyReleased(let library): SortedLibrary(library: library, sort: .releasedNewest)
+        default: nil
+        }
+    }
+
     var title: String {
         switch self {
         case .continueWatching: String(localized: "Continue Watching")
@@ -83,7 +93,10 @@ struct ShelfListView: View {
                 ContentUnavailableView("Nothing Here Yet", systemImage: "film.stack")
             }
         }
+        #if !os(tvOS)
         .navigationTitle(destination.title)
+        #endif
+        .themeWash()
         .watchActionAlerts(watchActions)
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
         // Back from a detail screen, where the user may have played the item or changed its watch state.
@@ -99,7 +112,7 @@ struct ShelfListView: View {
     }
 
     private var watchActions: WatchActions {
-        WatchActions(service: appModel.service, downloads: appModel.downloads, destination: destination, state: $watchState) { effect in
+        WatchActions(service: appModel.service, downloads: appModel.downloads, canManageCollections: appModel.canManageCollections, destination: destination, state: $watchState) { effect in
             let before = items.count
             items = items.applying(effect)
             // Any rows that went are gone on the server too, so its next page starts that much earlier.
@@ -130,10 +143,9 @@ struct ShelfListView: View {
             ForEach(items) { item in
                 // Built once and shared by the "more" menu and the long-press menu.
                 let actions = watchActions.actions(for: item, navigation: navigation, omitting: omittedLinks)
-                ItemRow(item: item, captionLines: captionLines(for: item), actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
-                    #if !os(iOS)
-                    .background { tapTarget(for: item) }
-                    #endif
+                tvTarget(for: item, actions: actions) {
+                    ItemRow(item: item, captionLines: captionLines(for: item), actions: actions, peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
+                }
             }
 
             pageFooter
@@ -144,14 +156,22 @@ struct ShelfListView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVStack(spacing: 16) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 16, alignment: .top)], spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                #if os(tvOS)
+                // Like the library pages: the title at the leading edge, in the page rather than the navigation bar.
+                Text(destination.title)
+                    .font(.largeTitle.bold())
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 32)
+                #endif
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: Layout.cardSpacing, alignment: .top)], spacing: Layout.cardSpacing) {
                     ForEach(items) { item in
                         let actions = watchActions.actions(for: item, navigation: navigation, omitting: omittedLinks)
-                        ShelfGridCard(item: item, actions: actions, captionLines: captionLines(for: item), peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
-                            #if !os(iOS)
-                            .background { tapTarget(for: item) }
-                            #endif
+                        tvTarget(for: item, actions: actions) {
+                            ShelfGridCard(item: item, actions: actions, captionLines: captionLines(for: item), peek: WatchActions.peekSpec(for: item, actions: actions, navigation: navigation))
+                        }
                     }
                 }
 
@@ -162,14 +182,23 @@ struct ShelfListView: View {
         .pullToRefresh { await refresh() }
     }
 
-    /// On iOS the peek layer handles taps. Elsewhere, this button behind a row or card does: it sits behind,
-    /// so the menu button takes its own taps, and `contentShape` makes its clear label tappable.
-    private func tapTarget(for item: MediaItem) -> some View {
+    /// On iOS the peek layer handles taps, so a row or card is shown as it is. On tvOS the row or card is itself
+    /// the button, so it has a single focus stop: selecting opens the item, and the actions are in its long-press
+    /// menu rather than a separate "…" button.
+    @ViewBuilder
+    private func tvTarget<Content: View>(for item: MediaItem, actions: ItemRowActions?, @ViewBuilder content: () -> Content) -> some View {
+        #if os(tvOS)
         Button { navigation.tap(item) } label: {
-            Color.clear.contentShape(Rectangle())
+            content()
         }
         .cardLinkStyle()
+        .contextMenu {
+            ItemActionButtons(entries: actions?.menuEntries(for: item) ?? [])
+        }
         .accessibilityLabel(item.accessibilityDescription)
+        #else
+        content()
+        #endif
     }
 
     /// The error and Retry button if a page failed, or else a spinner that loads the next page when it scrolls

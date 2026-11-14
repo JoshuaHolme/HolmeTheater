@@ -13,8 +13,13 @@ struct ShowLogo: View {
     /// What to type out instead of the item's own title, if there is no logo. Nil to use the title.
     var fallbackTitle: String?
 
+    /// A cap to use instead of the usual one, for where the logo should be smaller (the Home carousel on tvOS).
+    var maxSizeOverride: CGSize?
+
+    private var maxSize: CGSize { maxSizeOverride ?? Self.defaultMaxSize }
+
     /// The largest the logo gets. Logos vary from wide wordmarks to near-square badges, so both are capped.
-    private static var maxSize: CGSize {
+    private static var defaultMaxSize: CGSize {
         #if os(tvOS)
         return CGSize(width: 600, height: 220)
         #else
@@ -30,13 +35,13 @@ struct ShowLogo: View {
                     image
                         .resizable()
                         .scaledToFit()
-                        .frame(maxWidth: Self.maxSize.width, maxHeight: Self.maxSize.height, alignment: .bottomLeading)
+                        .frame(maxWidth: maxSize.width, maxHeight: maxSize.height, alignment: .bottomLeading)
                         .accessibilityLabel(item.title)
                         .accessibilityAddTraits(.isHeader)
                 case .empty:
                     // Hold the logo's room while it loads, rather than flashing the name first.
                     Color.clear
-                        .frame(width: Self.maxSize.width, height: Self.maxSize.height)
+                        .frame(width: maxSize.width, height: maxSize.height)
                 default:
                     title
                 }
@@ -62,6 +67,16 @@ struct TruncatingOverview: View {
     /// The color of the text and of MORE. White over the show's artwork; the primary color elsewhere.
     var foreground: Color = .white
 
+    /// Whether the remote can focus the description (on tvOS, where it's a button). A page turns it off while it moves
+    /// focus to its Play button, so focus doesn't flash on the description on the way there.
+    var isFocusable = true
+
+    /// How the description looks on tvOS, where it's a button rather than text with a MORE button. The defaults are the
+    /// usual body text; the show page uses the Home carousel's smaller, dimmer text and wider column.
+    var tvFont: Font = .body
+    var tvOpacity: Double = 0.75
+    var tvMaxWidth: CGFloat = 900
+
     /// Called when MORE is tapped.
     let onMore: () -> Void
 
@@ -80,6 +95,24 @@ struct TruncatingOverview: View {
     private var isTruncated: Bool { fullHeight > shownHeight + 0.5 }
 
     var body: some View {
+        #if os(tvOS)
+        if isTruncated {
+            // The whole description is the button, as in the Apple TV app: selecting it shows all of it. The card style gives
+            // it the system's focus platter, and the padding gives that platter room around the text. The negative padding
+            // outside takes the room back, so the text sits where it does when it isn't a button.
+            Button(action: onMore) {
+                tvText.padding(Self.tvPlatterInset)
+            }
+            .buttonStyle(.card)
+            .padding(-Self.tvPlatterInset)
+            // Held off the remote while the page moves focus to its Play button.
+            .disabled(!isFocusable)
+            .accessibilityHint("Shows the full description")
+        } else {
+            // All of it fits, so there's nothing more to show and nothing to select.
+            tvText
+        }
+        #else
         Text(text)
             .font(.callout)
             // Dimmer than the genre line above it, but brighter than the system's secondary gray, whose
@@ -96,17 +129,57 @@ struct TruncatingOverview: View {
             .overlay(alignment: .bottomTrailing) {
                 if isTruncated { moreButton }
             }
+        #endif
+    }
+
+    #if os(tvOS)
+    /// How far the focus platter reaches past the text.
+    private static var tvPlatterInset: CGFloat { 20 }
+
+    /// The description as text, cut off at `lineLimit` lines. If it's cut off, its last line fades out into MORE, which is a
+    /// label here and not a button of its own: the whole description is the button.
+    private var tvText: some View {
+        Text(text)
+            .font(tvFont)
+            .foregroundStyle(foreground.opacity(tvOpacity))
+            .lineLimit(lineLimit)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: tvMaxWidth, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { shownHeight = $0 }
+            .background(alignment: .topLeading) { measurements }
+            .mask {
+                if isTruncated { truncationMask } else { Rectangle() }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if isTruncated {
+                    Text("MORE")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(foreground)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { moreWidth = $0 }
+                        .frame(height: lineHeight)
+                }
+            }
+    }
+    #endif
+
+    /// The font the text is set in, which the hidden copies that measure it have to match.
+    private var bodyFont: Font {
+        #if os(tvOS)
+        tvFont
+        #else
+        .callout
+        #endif
     }
 
     /// Invisible copies of the text that measure how tall all of it is, and how tall one line is.
     private var measurements: some View {
         ZStack(alignment: .topLeading) {
             Text(text)
-                .font(.callout)
+                .font(bodyFont)
                 .fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
             Text(verbatim: " ")
-                .font(.callout)
+                .font(bodyFont)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { lineHeight = $0 }
         }
         .hidden()
@@ -194,3 +267,55 @@ struct ShowOverviewSheet: View {
         #endif
     }
 }
+
+#if os(tvOS)
+/// Everything about a show, season, episode or movie in a glass sheet: its name, tagline, the whole description, then the
+/// facts listed under it. The sheet is the system's, so it has the glass look and the Menu button closes it.
+///
+/// Each block can take focus, because a scroll view on tvOS only scrolls as focus moves down through what's in it.
+struct ShowDetailsSheet: View {
+    let title: String
+    let tagline: String?
+    let overview: String?
+    let facts: [(label: String, value: String)]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 32) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(title)
+                        .font(.largeTitle.bold())
+                        .accessibilityAddTraits(.isHeader)
+                    if let tagline {
+                        Text(tagline)
+                            .font(.title3.italic())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .focusable()
+
+                if let overview {
+                    Text(overview)
+                        .font(.body)
+                        .focusable()
+                }
+
+                ForEach(Array(facts.enumerated()), id: \.offset) { _, fact in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(fact.label)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(fact.value)
+                            .font(.body)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .focusable()
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(60)
+        }
+    }
+}
+#endif

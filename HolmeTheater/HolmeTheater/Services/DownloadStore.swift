@@ -7,103 +7,6 @@ import Foundation
 import OSLog
 import Synchronization
 
-/// Where a download is in its life.
-nonisolated enum DownloadState: String, Codable, Sendable {
-    /// Waiting for its turn.
-    case queued
-    /// Saving the item's details, cast and artwork, and asking the server for the file.
-    case preparing
-    /// The file is on its way.
-    case downloading
-    /// Stopped by the user, to be resumed.
-    case paused
-    /// Stopped by an error; ``DownloadRecord/errorMessage`` says which.
-    case failed
-    /// The file and everything that goes with it are saved.
-    case completed
-}
-
-/// Watch progress made on the device that the server hasn't been told about yet.
-nonisolated struct PendingProgress: Codable, Hashable, Sendable {
-    /// Where playback stopped, in seconds.
-    var position: TimeInterval
-
-    /// Whether it was watched to the end.
-    var isPlayed: Bool
-
-    /// When it was watched, so a newer watch on another device isn't overwritten.
-    var date: Date
-}
-
-/// One movie or episode that's been, or is being, saved for offline viewing, with everything the app needs to show
-/// and play it without the server.
-nonisolated struct DownloadRecord: Identifiable, Codable, Hashable, Sendable {
-    /// The movie's or episode's own item, including its description, cast and chapters.
-    var item: MediaItem
-
-    /// The account and server it was downloaded for (``AppModel/cacheScope``).
-    var scope: String
-
-    var state: DownloadState
-
-    /// How much of the file has arrived, and how big it is. The size is 0 until the server says (a converted
-    /// file has no size until it's finished).
-    var bytesWritten: Int64 = 0
-    var bytesExpected: Int64 = 0
-
-    /// Whether ``bytesExpected`` is the server's own figure for the file rather than a guess. Servers often don't say how
-    /// big a transfer is, so until one does, the size is estimated from what's known about the movie.
-    var isSizeEstimated = false
-
-    /// The video file's name within the item's folder, once it's saved.
-    var videoFileName: String?
-
-    /// The tracks in the file. Its URL is a placeholder: the real one holds the access token, which isn't kept.
-    var info: PlaybackInfo?
-
-    /// For each text subtitle track (by ``MediaTrack/index``), the name of its saved file.
-    var subtitleFiles: [Int: String] = [:]
-
-    /// The intro, credits and so on the server marked, so the player can still offer to skip them.
-    var segments: [MediaSegment] = []
-
-    /// What went wrong, for a ``DownloadState/failed`` download.
-    var errorMessage: String?
-
-    var dateAdded: Date = .now
-
-    /// Progress made here that's waiting to be sent to the server. Nil once it has been.
-    var pendingProgress: PendingProgress?
-
-    /// The size of the saved file in bytes. 0 until it's saved.
-    var fileSize: Int64 = 0
-
-    var id: String { item.id }
-
-    /// How much of the file has arrived, from 0 to 1.
-    var progress: Double {
-        guard bytesExpected > 0 else { return 0 }
-        let fraction = Double(bytesWritten) / Double(bytesExpected)
-        // A guess can be too small, but it shouldn't claim to be done before the file is.
-        return isSizeEstimated && !isComplete ? min(0.99, fraction) : min(1, fraction)
-    }
-
-    var isComplete: Bool { state == .completed }
-}
-
-/// Everything saved, as written to disk.
-nonisolated struct DownloadIndex: Codable, Sendable {
-    /// Downloads by ``DownloadStore/key(scope:id:)``. Two accounts on one server see the same item IDs, so the account
-    /// is part of the key.
-    var records: [String: DownloadRecord] = [:]
-
-    /// The shows and seasons that downloaded episodes belong to, so they can be shown in their place.
-    var containers: [String: MediaItem] = [:]
-
-    /// What the server knew about each person in the downloaded cast, by person ID.
-    var people: [String: PersonDetails] = [:]
-}
-
 /// Saves downloads to disk, and finds them again.
 ///
 /// Layout, under Application Support (which the system never purges, unlike Caches):
@@ -141,7 +44,15 @@ nonisolated final class DownloadStore: Sendable {
 
     private let state: Mutex<State>
 
-    private let writer: IndexWriter
+    /// Held while files in the items' folders are written, moved or deleted, and while ``artworkFiles`` are. Disk work
+    /// is kept out of ``state``'s lock, which the main thread takes many times a second, so it never waits on the disk.
+    ///
+    /// Whatever checks the index before touching the disk (that a download hasn't been removed, say) does it while
+    /// holding the file lock, taking ``state``'s inside it, never the other way round.
+    private let itemFiles = Mutex(())
+    private let artworkFiles = Mutex(())
+
+    private let writer: DownloadIndexWriter
 
     /// Where downloads go: Application Support, which the system never purges. Apple TV may not let apps write there; if it
     /// doesn't, they go in Caches instead, and ``isPermanent`` is false.
@@ -175,17 +86,17 @@ nonisolated final class DownloadStore: Sendable {
         self.root = directory
 
         var initial = State()
-        initial.index = Self.loadIndex(from: Self.indexURL(in: directory))
+        initial.index = DownloadIndexWriter.load(from: Self.indexURL(in: directory))
         let artworkFiles = (try? FileManager.default.contentsOfDirectory(atPath: Self.artworkDirectory(in: directory).path(percentEncoded: false))) ?? []
         initial.artwork = Set(artworkFiles)
         // Both run, whatever the first finds.
         let migrated = Self.migrateUnscopedRecords(&initial.index, itemsDirectory: Self.itemsDirectory(in: directory))
         let cleaned = Self.removeSavedTokens(&initial.index)
         if migrated || cleaned {
-            Self.write(initial.index, to: Self.indexURL(in: directory))
+            DownloadIndexWriter.write(initial.index, to: Self.indexURL(in: directory))
         }
         state = Mutex(initial)
-        writer = IndexWriter(url: Self.indexURL(in: directory))
+        writer = DownloadIndexWriter(url: Self.indexURL(in: directory))
 
         // Whatever a removal didn't get to delete before the app last closed.
         let trash = Self.trashDirectory(in: directory)
@@ -213,7 +124,7 @@ nonisolated final class DownloadStore: Sendable {
     }
 
     /// Like ``parse(key:)``, for use with the lock held, where reading ``scope`` would wait on it forever.
-    private static func parse(key: String, fallbackScope: String) -> (scope: String, id: String) {
+    static func parse(key: String, fallbackScope: String) -> (scope: String, id: String) {
         guard let separator = key.lastIndex(of: keySeparator) else { return (fallbackScope, key) }
         return (String(key[..<separator]), String(key[key.index(after: separator)...]))
     }
@@ -221,16 +132,6 @@ nonisolated final class DownloadStore: Sendable {
     // MARK: - Index
 
     private static func indexURL(in root: URL) -> URL { root.appending(path: "index.json", directoryHint: .notDirectory) }
-
-    private static func loadIndex(from url: URL) -> DownloadIndex {
-        guard let data = try? Data(contentsOf: url) else { return DownloadIndex() }
-        do {
-            return try JSONDecoder().decode(DownloadIndex.self, from: data)
-        } catch {
-            logger.error("Couldn't read the downloads index: \(error.localizedDescription, privacy: .public)")
-            return DownloadIndex()
-        }
-    }
 
     /// Clears subtitle URLs saved by earlier versions, which carried the access token. Returns whether there were any.
     private static func removeSavedTokens(_ index: inout DownloadIndex) -> Bool {
@@ -263,63 +164,6 @@ nonisolated final class DownloadStore: Sendable {
             try? FileManager.default.moveItem(at: old, to: new)
         }
         return !unscoped.isEmpty
-    }
-
-    /// Encodes and writes the index, on whatever thread calls it.
-    private static func write(_ index: DownloadIndex, to url: URL) {
-        do {
-            try JSONEncoder().encode(index).write(to: url, options: .atomic)
-        } catch {
-            logger.error("Couldn't save the downloads index: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// Writes the index off the thread that changed it, keeping only the latest version waiting.
-    ///
-    /// The index holds every download's item, cast and chapters, so encoding it takes a while, and changes come in bursts
-    /// (a whole season queued, each download moving from state to state). Writing each one where it was made held up the
-    /// main thread and every other user of the lock; now a burst ends in one write, in the background.
-    private final class IndexWriter: Sendable {
-        private let url: URL
-
-        /// The version waiting to be written, and whether a background write has been asked for.
-        private let pending = Mutex<(index: DownloadIndex?, isScheduled: Bool)>((nil, false))
-
-        /// Held while writing, so writes go out one at a time and an older version never lands after a newer one.
-        private let writing = Mutex(())
-
-        init(url: URL) {
-            self.url = url
-        }
-
-        /// Queues `index` to be written, replacing any version still waiting. Returns at once.
-        func submit(_ index: DownloadIndex) {
-            let shouldSchedule = pending.withLock { pending -> Bool in
-                pending.index = index
-                guard !pending.isScheduled else { return false }
-                pending.isScheduled = true
-                return true
-            }
-            if shouldSchedule {
-                Task.detached(priority: .utility) { self.flush() }
-            }
-        }
-
-        /// Writes the waiting version, if there is one, before returning.
-        func flush() {
-            writing.withLock { _ in
-                // Taken while holding `writing`, so whichever write runs last has the latest version.
-                let next = pending.withLock { pending -> DownloadIndex? in
-                    defer {
-                        pending.index = nil
-                        pending.isScheduled = false
-                    }
-                    return pending.index
-                }
-                guard let next else { return }
-                DownloadStore.write(next, to: url)
-            }
-        }
     }
 
     /// Writes any change still waiting to go to disk, before returning. For when the system may suspend the app as soon
@@ -377,23 +221,27 @@ nonisolated final class DownloadStore: Sendable {
     /// Deletes the signed-in account's downloads of these items, their files, and whatever nothing else needs any more.
     func remove(ids: [String]) {
         let trash = Self.trashDirectory(in: root).appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let movedAny = state.withLock { state -> Bool in
-            var movedAny = false
-            for id in ids {
+        let directories = state.withLock { state -> [URL] in
+            let directories = ids.map { id in
                 state.index.records[Self.key(scope: state.scope, id: id)] = nil
-                // Moved aside rather than deleted, which for a whole series can take seconds. Still under the lock, so
-                // nothing that checks the record is there first (``saveResumeData(_:key:requestURL:)``) can write into
-                // the folder after it has gone.
-                let directory = itemDirectory(scope: state.scope, id: id)
-                guard FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) else { continue }
+                return itemDirectory(scope: state.scope, id: id)
+            }
+            pruneUnreferenced(&state)
+            writer.submit(state.index)
+            return directories
+        }
+        // Moved aside rather than deleted, which for a whole series can take seconds. The records are already gone, and
+        // anything that writes into a folder (``saveResumeData(_:key:request:)``) checks its record under this same
+        // lock, so nothing can write into one after it has been moved.
+        let movedAny = itemFiles.withLock { _ -> Bool in
+            var movedAny = false
+            for directory in directories where FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) {
                 if !movedAny { try? FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true) }
                 if (try? FileManager.default.moveItem(at: directory, to: trash.appending(path: UUID().uuidString))) == nil {
                     try? FileManager.default.removeItem(at: directory)
                 }
                 movedAny = true
             }
-            pruneUnreferenced(&state)
-            writer.submit(state.index)
             return movedAny
         }
         guard movedAny else { return }
@@ -403,7 +251,9 @@ nonisolated final class DownloadStore: Sendable {
     /// Where removed downloads' folders wait to be deleted, out of the way.
     private static func trashDirectory(in root: URL) -> URL { root.appending(path: "Removed", directoryHint: .isDirectory) }
 
-    /// Drops shows, seasons, people and artwork that no download uses.
+    /// Drops shows, seasons and people that no download uses, and forgets their artwork. The files themselves are deleted
+    /// in the background (see ``removeUnreferencedArtworkFiles()``): listing and deleting them could hold up the main
+    /// thread, and everything else waiting on the lock.
     private func pruneUnreferenced(_ state: inout State) {
         let items = state.index.records.values.map(\.item)
         let seriesIDs = Set(items.compactMap(\.seriesID))
@@ -413,16 +263,33 @@ nonisolated final class DownloadStore: Sendable {
         let personIDs = Set(items.flatMap(\.people).map(\.personID))
         state.index.people = state.index.people.filter { personIDs.contains($0.key) }
 
-        var keep = Set<String>()
-        for item in items + Array(state.index.containers.values) {
-            for url in Self.artworkURLs(of: item) { keep.insert(Self.artworkName(for: url)) }
+        state.artwork.formIntersection(Self.referencedArtwork(in: state.index))
+        Task.detached(priority: .utility) { [self] in removeUnreferencedArtworkFiles() }
+    }
+
+    /// The file names of every image the index's downloads, shows and seasons show.
+    private static func referencedArtwork(in index: DownloadIndex) -> Set<String> {
+        var names = Set<String>()
+        for item in index.records.values.map(\.item) + Array(index.containers.values) {
+            for url in artworkURLs(of: item) { names.insert(artworkName(for: url)) }
         }
-        // The folder itself, rather than the list of what's saved, so a file that slipped past the list goes too.
+        return names
+    }
+
+    /// Deletes the saved images nothing uses any more. Goes by the folder itself, rather than the list of what's saved, so
+    /// a file that slipped past the list goes too.
+    private func removeUnreferencedArtworkFiles() {
+        // Listed without the lock, which is the slow part.
         let files = (try? FileManager.default.contentsOfDirectory(at: artworkDirectory, includingPropertiesForKeys: nil)) ?? []
-        for file in files where !keep.contains(file.lastPathComponent) {
-            try? FileManager.default.removeItem(at: file)
+        guard !files.isEmpty else { return }
+        artworkFiles.withLock { _ in
+            // Worked out again now, under the lock that ``saveArtwork(_:for:)`` saves with, so an image saved for a
+            // download since the removal isn't taken for an unused one.
+            let keep = state.withLock { Self.referencedArtwork(in: $0.index).union($0.artwork) }
+            for file in files where !keep.contains(file.lastPathComponent) {
+                try? FileManager.default.removeItem(at: file)
+            }
         }
-        state.artwork.formIntersection(keep)
     }
 
     // MARK: - Shows, seasons and people
@@ -485,7 +352,7 @@ nonisolated final class DownloadStore: Sendable {
     }
 
     /// Whether a name from the server is safe to use as a folder name: letters, digits and dashes only.
-    private static func isPlainName(_ name: String) -> Bool {
+    static func isPlainName(_ name: String) -> Bool {
         !name.isEmpty && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
     }
 
@@ -521,9 +388,16 @@ nonisolated final class DownloadStore: Sendable {
     /// token down again.
     static func tokenFingerprint(_ token: String) -> String { hashed(token, length: 16) }
 
-    /// The fingerprint of the token in a request URL's `ApiKey`, or nil if it has none.
-    private static func tokenFingerprint(in url: URL?) -> String? {
-        guard let url,
+    /// The fingerprint of the token a request was made with: in its `Authorization` header, or, for a transfer started
+    /// before the token moved out of the URL, its `ApiKey`. Nil if it has neither.
+    static func tokenFingerprint(in request: URLRequest?) -> String? {
+        guard let request else { return nil }
+        if let header = request.value(forHTTPHeaderField: "Authorization"),
+           let start = header.range(of: "Token=\"")?.upperBound,
+           let end = header[start...].firstIndex(of: "\"") {
+            return tokenFingerprint(String(header[start..<end]))
+        }
+        guard let url = request.url,
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
               let token = items.first(where: { $0.name.caseInsensitiveCompare("ApiKey") == .orderedSame })?.value
         else { return nil }
@@ -532,17 +406,19 @@ nonisolated final class DownloadStore: Sendable {
 
     /// Keeps where a transfer got to, so trying again carries on from there, unless its download is gone.
     ///
-    /// Under the lock, like ``remove(ids:)``: a pause's resume data arrives a moment after the pause, and if the download
-    /// was removed in between, writing it would bring back a folder that nothing points to.
+    /// Under the item-files lock, like ``remove(ids:)``'s moving of folders: a pause's resume data arrives a moment after
+    /// the pause, and if the download was removed in between, writing it would bring back a folder that nothing points to.
     ///
     /// The data repeats the transfer's request, access token and all. It's only usable with that token, so it's tagged
     /// with its fingerprint, and ``removeResumeData()`` deletes it all when the session ends.
-    func saveResumeData(_ data: Data, key: String, requestURL: URL?) {
-        // Without a token in the URL, no session's fingerprint matches, and the data is only ever thrown away.
-        let fingerprint = Self.tokenFingerprint(in: requestURL) ?? ""
-        state.withLock { state in
-            guard state.index.records[key] != nil else { return }
-            let directory = itemDirectory(key: key, in: state)
+    func saveResumeData(_ data: Data, key: String, request: URLRequest?) {
+        // Without a token in the request, no session's fingerprint matches, and the data is only ever thrown away.
+        let fingerprint = Self.tokenFingerprint(in: request) ?? ""
+        itemFiles.withLock { _ in
+            let directory = state.withLock { state in
+                state.index.records[key] != nil ? itemDirectory(key: key, in: state) : nil
+            }
+            guard let directory else { return }
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 try data.write(to: directory.appending(path: Self.resumeFileName), options: .atomic)
@@ -556,8 +432,8 @@ nonisolated final class DownloadStore: Sendable {
     /// Takes a download's resume data off the disk. Returns it only if it was made with the token `fingerprint` is for:
     /// data from another session would replay a request with a token the server no longer accepts.
     func takeResumeData(key: String, tokenFingerprint fingerprint: String?) -> Data? {
-        state.withLock { state in
-            let directory = itemDirectory(key: key, in: state)
+        let directory = itemDirectory(key: key)
+        return itemFiles.withLock { _ in
             let dataFile = directory.appending(path: Self.resumeFileName)
             let tokenFile = directory.appending(path: Self.resumeTokenFileName)
             defer {
@@ -574,9 +450,11 @@ nonisolated final class DownloadStore: Sendable {
     /// Deletes the signed-in account's resume data, which holds the access token, for when the session ends. Paused
     /// downloads start again from the beginning.
     func removeResumeData() {
-        state.withLock { state in
-            for record in state.index.records.values where record.scope == state.scope {
-                let directory = itemDirectory(scope: state.scope, id: record.id)
+        let directories = state.withLock { state in
+            state.index.records.values.filter { $0.scope == state.scope }.map { itemDirectory(scope: state.scope, id: $0.id) }
+        }
+        itemFiles.withLock { _ in
+            for directory in directories {
                 try? FileManager.default.removeItem(at: directory.appending(path: Self.resumeFileName))
                 try? FileManager.default.removeItem(at: directory.appending(path: Self.resumeTokenFileName))
             }
@@ -607,16 +485,20 @@ nonisolated final class DownloadStore: Sendable {
         return state.withLock { $0.artwork.contains(name) }
     }
 
+    /// Saves an image. Called off the main thread, while a download is prepared.
     func saveArtwork(_ data: Data, for url: URL) {
         let name = Self.artworkName(for: url)
         try? FileManager.default.createDirectory(at: artworkDirectory, withIntermediateDirectories: true)
-        guard (try? data.write(to: artworkFile(named: name), options: .atomic)) != nil else { return }
-        state.withLock { _ = $0.artwork.insert(name) }
+        // Written and listed under one lock, so ``removeUnreferencedArtworkFiles()`` never finds the file without its name.
+        artworkFiles.withLock { _ in
+            guard (try? data.write(to: artworkFile(named: name), options: .atomic)) != nil else { return }
+            _ = state.withLock { $0.artwork.insert(name) }
+        }
     }
 
     /// Every image an item shows.
     static func artworkURLs(of item: MediaItem) -> [URL] {
-        let own = [item.posterURL, item.backdropURL, item.thumbnailURL, item.logoURL]
+        let own = [item.posterURL, item.seasonPosterURL, item.backdropURL, item.thumbnailURL, item.logoURL]
         let people = item.people.flatMap { [$0.imageURL, $0.largeImageURL] }
         let chapters = item.chapters.map(\.imageURL)
         return (own + people + chapters).compactMap { $0 }.filter { !$0.isFileURL }
@@ -633,6 +515,7 @@ nonisolated final class DownloadStore: Sendable {
         }
         var item = item
         item.posterURL = local(item.posterURL)
+        item.seasonPosterURL = local(item.seasonPosterURL)
         item.backdropURL = local(item.backdropURL)
         item.thumbnailURL = local(item.thumbnailURL)
         item.logoURL = local(item.logoURL)
@@ -685,6 +568,9 @@ nonisolated final class DownloadStore: Sendable {
         return info
     }
 
+    /// Past this share of the runtime an item counts as finished, like the server's own rule of thumb.
+    static let playedThreshold = 0.9
+
     /// Remembers how far through a downloaded item the viewer got, so it resumes there and shows as watched even when
     /// the server can't be told.
     ///
@@ -694,7 +580,7 @@ nonisolated final class DownloadStore: Sendable {
             guard let runtime = record.item.runtime, runtime > 0 else { return }
             let fraction = position / runtime
             // Past the credits it counts as finished, like the server's own rule of thumb.
-            let isPlayed = fraction >= 0.9
+            let isPlayed = fraction >= Self.playedThreshold
             if isPlayed {
                 record.item.isPlayed = true
                 record.item.playedFraction = nil

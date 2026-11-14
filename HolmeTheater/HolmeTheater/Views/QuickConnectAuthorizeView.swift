@@ -18,9 +18,72 @@ struct QuickConnectAuthorizeView: View {
     /// How many digits the server's codes have.
     private static let codeLength = 6
 
-    private var digits: String { code }
-
     var body: some View {
+        content
+            #if os(tvOS)
+            // The page lays itself out, with its heading in the column, as the sign-in screen does.
+            .navigationTitle("")
+            #else
+            .navigationTitle("Quick Connect")
+            #endif
+            .onChange(of: code) { failure = nil }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        #if os(tvOS)
+        tvLayout
+        #else
+        form
+        #endif
+    }
+
+    #if os(tvOS)
+    /// One centered column with large controls, like the sign-in screen's, instead of a form stretched across the screen.
+    private var tvLayout: some View {
+        ScrollView {
+            VStack(spacing: 44) {
+                VStack(spacing: 12) {
+                    Text("Quick Connect")
+                        .font(.title2.weight(.semibold))
+                    Text("On the device you want to sign in, choose Quick Connect, then enter the code it shows here.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                CodeBoxes(code: $code, length: Self.codeLength)
+                    .disabled(isWorking)
+
+                if let failure {
+                    Text(failure)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+
+                Button {
+                    Task { await authorize() }
+                } label: {
+                    Group {
+                        if isWorking { ProgressView() } else { Text("Authorize") }
+                    }
+                    .frame(minWidth: 240)
+                }
+                // The same bordered pill as the other buttons that act on the page.
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .disabled(code.count < Self.codeLength || isWorking)
+            }
+            .frame(maxWidth: 760)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 60)
+        }
+        .scrollClipDisabled()
+    }
+    #endif
+
+    private var form: some View {
         Form {
             Section {
                 CodeBoxes(code: $code, length: Self.codeLength)
@@ -41,18 +104,16 @@ struct QuickConnectAuthorizeView: View {
                 } label: {
                     if isWorking { ProgressView() } else { Text("Authorize") }
                 }
-                .disabled(digits.count < Self.codeLength || isWorking)
+                .disabled(code.count < Self.codeLength || isWorking)
             }
         }
-        .navigationTitle("Quick Connect")
-        .onChange(of: code) { failure = nil }
     }
 
     private func authorize() async {
         isWorking = true
         defer { isWorking = false }
         do {
-            try await appModel.service.authorizeQuickConnect(code: digits)
+            try await appModel.service.authorizeQuickConnect(code: code)
             // Back to the tab the user was on, where the message shows.
             dismissAccount()
             appModel.toastMessage = String(localized: "Quick Connect approved")
@@ -62,7 +123,7 @@ struct QuickConnectAuthorizeView: View {
     }
 }
 
-/// A code shown as a row of boxes, one per digit, like a PIN screen. A text field with no visible text sits over them and
+/// A code shown as a row of boxes, one per digit, like a PIN screen (on tvOS, only the field, which is all the remote can use). A text field with no visible text sits over them and
 /// takes the typing, so the keyboard, paste and the one-time-code suggestion all work.
 private struct CodeBoxes: View {
     @Binding var code: String
@@ -79,14 +140,16 @@ private struct CodeBoxes: View {
         )
     }
 
-    var body: some View {
+    #if !os(tvOS)
+    /// The row of boxes, one per digit.
+    private var boxes: some View {
         HStack(spacing: 10) {
             ForEach(0..<length, id: \.self) { index in
                 let characters = Array(code)
                 let isCurrent = isFocused && index == min(characters.count, length - 1)
                 Text(index < characters.count ? String(characters[index]) : "")
                     .font(.title.monospacedDigit().weight(.semibold))
-                    .frame(maxWidth: 52, minHeight: 64)
+                    .frame(maxWidth: Self.boxWidth, minHeight: Self.boxHeight)
                     .background(.fill.tertiary, in: .rect(cornerRadius: 12))
                     .overlay {
                         RoundedRectangle(cornerRadius: 12)
@@ -97,6 +160,22 @@ private struct CodeBoxes: View {
         .frame(maxWidth: .infinity)
         // Hidden from VoiceOver, which reads the field instead.
         .accessibilityHidden(true)
+    }
+
+    private static let boxWidth: CGFloat = 52
+    private static let boxHeight: CGFloat = 64
+    #endif
+
+    var body: some View {
+        #if os(tvOS)
+        // A text field you can't see can't be focused with the remote, and the remote's keyboard shows what's typed in
+        // the field itself, so on tvOS there are no boxes: just the field, with the code centered in it.
+        TextField("Enter Code", text: digits)
+            .focused($isFocused)
+            .autocorrectionDisabled()
+            .multilineTextAlignment(.center)
+        #else
+        boxes
         .overlay {
             TextField("", text: digits)
                 .focused($isFocused)
@@ -115,6 +194,7 @@ private struct CodeBoxes: View {
         .contentShape(Rectangle())
         .onTapGesture { isFocused = true }
         .task { isFocused = true }
+        #endif
     }
 }
 

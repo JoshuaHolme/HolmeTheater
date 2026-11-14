@@ -60,8 +60,15 @@ nonisolated protocol MediaService: Sendable {
     /// - Parameter session: A session saved from an earlier sign-in, e.g. loaded from the keychain.
     func restore(_ session: UserSession) async
 
-    /// Revokes the session's access token on the server (best effort) and forgets it locally.
+    /// Forgets the session locally at once, then revokes its access token on the server (best effort) without waiting.
     func signOut() async
+
+    /// A request for a file on the server (subtitles, a download) that the app fetches with its own `URLSession`, carrying
+    /// the access token in a header rather than in the URL, where server and proxy logs would record it.
+    ///
+    /// - Parameter url: A URL from this service. One that isn't on the signed-in server, or a file URL, gets no token.
+    /// - Returns: The request to send.
+    func authorizedRequest(for url: URL) async -> URLRequest
 
     /// Re-reads the signed-in user's profile (display name and profile picture) from the server,
     /// so changes made elsewhere show up without signing in again.
@@ -184,6 +191,64 @@ nonisolated protocol MediaService: Sendable {
     /// - Parameter item: A series or season.
     /// - Returns: A series' seasons, or a season's episodes in episode order. Empty for any other kind of item.
     func children(of item: MediaItem) async throws -> [MediaItem]
+
+    // MARK: Playlists
+
+    /// Fetches the signed-in user's playlists, for choosing where to add something.
+    ///
+    /// - Returns: The playlists, sorted by name.
+    func playlists() async throws -> [MediaItem]
+
+    /// Creates a playlist.
+    ///
+    /// - Parameters:
+    ///   - name: The new playlist's name.
+    ///   - itemIDs: The items to start it with, in order. May be empty.
+    /// - Returns: The new playlist.
+    func createPlaylist(named name: String, itemIDs: [String]) async throws -> MediaItem
+
+    /// Adds items to the end of a playlist.
+    ///
+    /// - Parameters:
+    ///   - itemIDs: The movies or episodes to add.
+    ///   - playlistID: The playlist's ID.
+    func addItems(withIDs itemIDs: [String], toPlaylist playlistID: String) async throws
+
+    /// Takes entries out of a playlist.
+    ///
+    /// - Parameters:
+    ///   - entryIDs: ``MediaItem/playlistEntryID`` of each entry to remove, not the items' own IDs.
+    ///   - playlistID: The playlist's ID.
+    func removeEntries(withIDs entryIDs: [String], fromPlaylist playlistID: String) async throws
+
+    /// Moves one entry of a playlist to another position.
+    ///
+    /// - Parameters:
+    ///   - entryID: ``MediaItem/playlistEntryID`` of the entry to move.
+    ///   - playlistID: The playlist's ID.
+    ///   - index: The position it should end up at, counting from 0.
+    func moveEntry(withID entryID: String, inPlaylist playlistID: String, to index: Int) async throws
+
+    // MARK: Collections
+
+    /// Fetches the collections on the server, for choosing where to add something.
+    ///
+    /// - Returns: The collections, sorted by name.
+    func collections() async throws -> [MediaItem]
+
+    /// Creates a collection. The server may refuse if the user isn't allowed to manage collections.
+    ///
+    /// - Parameters:
+    ///   - name: The new collection's name.
+    ///   - itemIDs: The movies or shows to start it with.
+    /// - Returns: The new collection.
+    func createCollection(named name: String, itemIDs: [String]) async throws -> MediaItem
+
+    /// Adds movies or shows to a collection.
+    func addItems(withIDs itemIDs: [String], toCollection collectionID: String) async throws
+
+    /// Takes movies or shows out of a collection. They stay on the server.
+    func removeItems(withIDs itemIDs: [String], fromCollection collectionID: String) async throws
 
     /// Finds the movies and shows on the server that a person is credited on, e.g. an actor's other work.
     ///
@@ -312,8 +377,45 @@ nonisolated protocol MediaService: Sendable {
 }
 
 extension MediaService {
+    /// Services with no server of their own have no token to send.
+    func authorizedRequest(for url: URL) async -> URLRequest { URLRequest(url: url) }
+
     /// Services with no server of their own have nothing to send it to.
     func syncProgress(itemID: String, position: TimeInterval, isPlayed: Bool, date: Date) async throws {}
+
+    /// Services with no collections of their own, such as the sample one, can't make or change any.
+    func collections() async throws -> [MediaItem] { [] }
+
+    func createCollection(named name: String, itemIDs: [String]) async throws -> MediaItem {
+        throw MediaServiceError.collectionsNotSupported
+    }
+
+    func addItems(withIDs itemIDs: [String], toCollection collectionID: String) async throws {
+        throw MediaServiceError.collectionsNotSupported
+    }
+
+    func removeItems(withIDs itemIDs: [String], fromCollection collectionID: String) async throws {
+        throw MediaServiceError.collectionsNotSupported
+    }
+
+    /// Services with no playlists of their own, such as the sample one, can't make or change any.
+    func playlists() async throws -> [MediaItem] { [] }
+
+    func createPlaylist(named name: String, itemIDs: [String]) async throws -> MediaItem {
+        throw MediaServiceError.playlistsNotSupported
+    }
+
+    func addItems(withIDs itemIDs: [String], toPlaylist playlistID: String) async throws {
+        throw MediaServiceError.playlistsNotSupported
+    }
+
+    func removeEntries(withIDs entryIDs: [String], fromPlaylist playlistID: String) async throws {
+        throw MediaServiceError.playlistsNotSupported
+    }
+
+    func moveEntry(withID entryID: String, inPlaylist playlistID: String, to index: Int) async throws {
+        throw MediaServiceError.playlistsNotSupported
+    }
 
     /// Services with nothing better to offer download what they'd stream.
     func downloadInfo(for item: MediaItem) async throws -> PlaybackInfo {
