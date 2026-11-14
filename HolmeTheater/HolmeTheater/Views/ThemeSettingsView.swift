@@ -173,10 +173,13 @@ private struct ThemePreviewView: View {
 
     private static let themes = AppTheme.holidays + AppTheme.seasons
 
+    /// How tall the strip's contents are: room for the buttons, a focused one grown, and its shadow.
+    private static let stripContentHeight: CGFloat = 150
+
     var body: some View {
         let settings = appModel.themeSettings
 
-        ZStack(alignment: .bottom) {
+        ZStack(alignment: .top) {
             // The screen itself, as the example. Nothing on it can be used; it's only there to look at.
             NavigationStack {
                 HomeView()
@@ -200,12 +203,32 @@ private struct ThemePreviewView: View {
         .onDisappear { settings.previewTheme = nil }
     }
 
+    /// A slab of glass across the top of the screen that the Home screen shows through, like the player's subtitle timing
+    /// panel, so most of the screen is left for the example.
     private func strip(_ settings: ThemeSettings) -> some View {
-        VStack(spacing: 14) {
-            Text(settings.previewTheme?.title ?? "")
-                .font(.title3.weight(.semibold))
+        HStack(spacing: 40) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Preview Theme")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(settings.previewTheme?.title ?? "")
+                    .font(.title2.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    // A height of its own, so the lines above and below stay where they are whichever name is showing: a
+                    // name shrunk to fit, or one with a descender, would otherwise move them.
+                    .frame(height: 40, alignment: .leading)
+                #if os(tvOS)
+                Text("Select one to use it.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                #endif
+            }
+            // A width of its own, so the name never runs under the buttons beside it.
+            .frame(width: 320, alignment: .leading)
+
             ScrollView(.horizontal) {
-                HStack(spacing: 20) {
+                HStack(spacing: 16) {
                     ForEach(Self.themes) { theme in
                         Button {
                             #if os(tvOS)
@@ -216,32 +239,49 @@ private struct ThemePreviewView: View {
                         } label: {
                             Label(theme.title, systemImage: theme.symbolName)
                         }
-                        .buttonBorderShape(.capsule)
                         .focused($focusedTheme, equals: theme)
                     }
                 }
-                .padding(.horizontal, 60)
-                .padding(.vertical, 20)
+                // Room all round for a focused button to grow into, and for its shadow, since the scroll view clips what's outside it.
+                .padding(.horizontal, 56)
+                .padding(.vertical, 40)
             }
-            .scrollClipDisabled()
-            #if os(tvOS)
-            Text("Select a theme to use it. Press Menu to go back without changing.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            #else
-            HStack(spacing: 16) {
+            // The buttons fade out at either end, rather than being cut off by a hard edge.
+            .mask {
+                HStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: 56)
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: 56)
+                }
+            }
+            .focusSection()
+
+            #if !os(tvOS)
+            HStack(spacing: 12) {
                 Button("Cancel", role: .cancel) { dismiss() }
-                Button("Use This Theme") {
+                Button("Use") {
                     if let theme = settings.previewTheme { use(theme, settings) }
                 }
                 .buttonStyle(.borderedProminent)
             }
             #endif
         }
-        .padding(.vertical, 24)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
+        // The same height whichever theme is chosen, so the panel doesn't change size as the choice moves along it.
+        .frame(height: Self.stripContentHeight)
+        .padding(.horizontal, 90)
+        .padding(.top, 50)
+        .padding(.bottom, 20)
         .frame(maxWidth: .infinity)
-        .background(.regularMaterial)
+        // Clear glass, which lets the Home screen show through more than the regular kind does.
+        .glassEffect(.clear, in: UnevenRoundedRectangle(bottomLeadingRadius: 48, bottomTrailingRadius: 48))
+        // Out to the top and side edges of the screen, as the subtitle timing panel is, rather than stopping at the safe areas.
+        .ignoresSafeArea(edges: [.top, .horizontal])
         .environment(\.colorScheme, .dark)
+        .animation(.smooth(duration: 0.2), value: settings.previewTheme)
     }
 
     /// Makes `theme` the app's theme, and closes the preview.
