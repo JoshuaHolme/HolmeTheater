@@ -31,7 +31,7 @@ struct ThemeSettingsView: View {
 
         return VStack(alignment: .leading, spacing: 44) {
             VStack(alignment: .leading, spacing: 14) {
-                TVToggleRow(title: "Seasonal Themes", isOn: $settings.isEnabled)
+                TVToggleRow(title: "Themes", isOn: $settings.isEnabled)
                 TVSettingsCaption(text: "Gives the app a touch of the season or holiday: its color, a symbol on the Home screen, and more.")
             }
 
@@ -54,6 +54,9 @@ struct ThemeSettingsView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     TVToggleRow(title: "Change Automatically", isOn: $settings.isAutomatic)
                     if settings.isAutomatic {
+                        // Which kinds of theme the calendar can pick: holidays, seasons, or both.
+                        TVToggleRow(title: "Holiday Themes", isOn: $settings.showsHolidays)
+                        TVToggleRow(title: "Seasonal Themes", isOn: $settings.showsSeasons)
                         TVSettingsCaption(text: "Follows the calendar. Holidays show instead of the season around them.")
                         TVSettingsCaption(text: "Now showing: \(settings.scheduledTheme?.title ?? String(localized: "None"))")
                     } else {
@@ -77,11 +80,13 @@ struct ThemeSettingsView: View {
                     }
                 }
 
-                if settings.isAutomatic {
+                if settings.isAutomatic, settings.showsHolidays {
                     VStack(alignment: .leading, spacing: 16) {
                         TVSettingsHeading(title: "Holidays")
                         ForEach(AppTheme.holidays) { ThemeScheduleRow(theme: $0) }
                     }
+                }
+                if settings.isAutomatic, settings.showsSeasons {
                     VStack(alignment: .leading, spacing: 16) {
                         TVSettingsHeading(title: "Seasons")
                         ForEach(AppTheme.seasons) { ThemeScheduleRow(theme: $0) }
@@ -104,7 +109,7 @@ struct ThemeSettingsView: View {
 
         return List {
             Section {
-                Toggle("Seasonal Themes", isOn: $settings.isEnabled)
+                Toggle("Themes", isOn: $settings.isEnabled)
             } footer: {
                 Text("Gives the app a touch of the season or holiday: its color, a symbol on the Home screen, and more.")
             }
@@ -129,6 +134,9 @@ struct ThemeSettingsView: View {
                 Section {
                     Toggle("Change Automatically", isOn: $settings.isAutomatic)
                     if settings.isAutomatic {
+                        // Which kinds of theme the calendar can pick: holidays, seasons, or both.
+                        Toggle("Holiday Themes", isOn: $settings.showsHolidays)
+                        Toggle("Seasonal Themes", isOn: $settings.showsSeasons)
                         LabeledContent("Now Showing", value: settings.scheduledTheme?.title ?? String(localized: "None"))
                     } else {
                         Picker("Theme", selection: $settings.manualTheme) {
@@ -143,10 +151,12 @@ struct ThemeSettingsView: View {
                     }
                 }
 
-                if settings.isAutomatic {
+                if settings.isAutomatic, settings.showsHolidays {
                     Section("Holidays") {
                         ForEach(AppTheme.holidays) { ThemeScheduleRow(theme: $0) }
                     }
+                }
+                if settings.isAutomatic, settings.showsSeasons {
                     Section("Seasons") {
                         ForEach(AppTheme.seasons) { ThemeScheduleRow(theme: $0) }
                     }
