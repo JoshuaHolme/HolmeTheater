@@ -79,7 +79,7 @@ actor JellyfinMediaService: MediaService {
             } catch {
                 // Nor is the next address worth trying for a connect that has been superseded.
                 guard generation == connectGeneration else { throw CancellationError() }
-                failures.append("\(url.absoluteString): \(error.localizedDescription)")
+                failures.append("\(url.absoluteString): \(Self.connectFailureDescription(error))")
                 continue
             }
             // A newer connect started while this one waited, and the server it finds is the one to use.
@@ -185,7 +185,11 @@ actor JellyfinMediaService: MediaService {
         client = nil
         server = nil
         session = nil
-        Task { try? await revoking?.signOut() }
+        Task {
+            // Playback that was showing reports its stop first, with this token, so the server keeps where it got to.
+            await waitForStopReports(using: revoking?.accessToken, timeout: .seconds(5))
+            try? await revoking?.signOut()
+        }
     }
 
     func authorizedRequest(for url: URL) async -> URLRequest {
@@ -855,28 +859,26 @@ actor JellyfinMediaService: MediaService {
         }
 
         let method: PlaybackMethod
-        let path: String
+        let streamURL: URL?
         if source.isSupportsDirectPlay == true {
             // Static stream of the original file.
             method = .directPlay
-            var components = URLComponents()
-            components.path = "/Videos/\(item.id)/stream"
-            components.queryItems = [
-                URLQueryItem(name: "static", value: "true"),
-                URLQueryItem(name: "mediaSourceId", value: sourceID),
-                URLQueryItem(name: "deviceId", value: identity.deviceID),
-                URLQueryItem(name: "tag", value: source.eTag)
-            ].filter { $0.value != nil }
-            path = components.string ?? components.path
+            streamURL = Self.serverURL(client, path: ["Videos", item.id, "stream"], query: [
+                "static": "true",
+                "mediaSourceId": sourceID,
+                "deviceId": identity.deviceID,
+                "tag": source.eTag
+            ])
         } else if let transcodingURL = source.transcodingURL {
-            // The server hands back a ready-made HLS URL (remux or transcode).
+            // The server hands back a ready-made HLS URL (remux or transcode). The SDK puts its path on the server's
+            // address, whatever host it names.
             method = source.isSupportsDirectStream == true ? .directStream : .transcode
-            path = transcodingURL
+            streamURL = client.url(path: transcodingURL)
         } else {
             throw MediaServiceError.itemNotPlayable
         }
 
-        guard let url = client.url(path: path) else { throw MediaServiceError.itemNotPlayable }
+        guard let url = streamURL else { throw MediaServiceError.itemNotPlayable }
 
         let streams = source.mediaStreams ?? []
         func tracks(of type: MediaStreamType) -> [MediaTrack] {
@@ -888,21 +890,23 @@ actor JellyfinMediaService: MediaService {
                 // server (10.9 and later) only offers for a track it's sending separately; an older one burns them in.
                 // SubStation Alpha is fetched as it is too (as the web client does), since its WebVTT leaves out the
                 // picture size its positions are measured on and the alignment its styles give.
-                var subtitlePath: String?
+                var subtitleURL: URL?
                 var format: SubtitleFormat?
                 let codec = stream.codec?.lowercased()
-                if type == .subtitle, stream.isTextSubtitleStream == true, let codec, codec == "ass" || codec == "ssa" {
-                    subtitlePath = "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.\(codec)"
-                    format = .ass
-                } else if type == .subtitle, stream.isTextSubtitleStream == true {
-                    subtitlePath = "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.vtt"
-                    format = .webVTT
-                } else if type == .subtitle, codec == "pgssub", stream.deliveryMethod == .external {
-                    subtitlePath = stream.deliveryURL ?? "/Videos/\(item.id)/\(sourceID)/Subtitles/\(index)/0/Stream.pgssub"
-                    format = .pgs
+                func subtitleStream(_ fileName: String) -> URL? {
+                    Self.serverURL(client, path: ["Videos", item.id, sourceID, "Subtitles", String(index), "0", fileName])
                 }
                 // No token in the URL: the app fetches these itself, with it in a header (see `authorizedRequest(for:)`).
-                let subtitleURL = subtitlePath.flatMap { client.url(path: $0) }
+                if type == .subtitle, stream.isTextSubtitleStream == true, let codec, codec == "ass" || codec == "ssa" {
+                    subtitleURL = subtitleStream("Stream.\(codec)")
+                    format = .ass
+                } else if type == .subtitle, stream.isTextSubtitleStream == true {
+                    subtitleURL = subtitleStream("Stream.vtt")
+                    format = .webVTT
+                } else if type == .subtitle, codec == "pgssub", stream.deliveryMethod == .external {
+                    subtitleURL = stream.deliveryURL.flatMap { client.url(path: $0) } ?? subtitleStream("Stream.pgssub")
+                    format = .pgs
+                }
                 return MediaTrack(index: index, title: title, isExternal: stream.isExternal == true, url: subtitleURL,
                                   format: format, isForced: type == .subtitle ? stream.isForced : nil)
             }
@@ -936,7 +940,7 @@ actor JellyfinMediaService: MediaService {
         var info = try await playbackInfo(for: item, options: PlaybackOptions())
         // A download is fetched by the app's own session, which sends the token in a header (see
         // `authorizedRequest(for:)`), so it stays out of the URL and the server's logs.
-        info.url = Self.removingAccessToken(from: info.url)
+        info.url = info.url.removingAccessToken()
         // The original file, as it is on the server.
         if info.method == .directPlay { return info }
 
@@ -944,17 +948,14 @@ actor JellyfinMediaService: MediaService {
         // URLSession can't save as one file. Ask for the same thing as a progressive MP4 instead.
         let (client, _) = try signedIn()
         guard let sourceID = info.mediaSourceID else { throw MediaServiceError.itemNotPlayable }
-        var components = URLComponents()
-        components.path = "/Videos/\(item.id)/stream.mp4"
-        components.queryItems = [
-            URLQueryItem(name: "mediaSourceId", value: sourceID),
-            URLQueryItem(name: "deviceId", value: identity.deviceID),
-            URLQueryItem(name: "videoCodec", value: "h264"),
-            URLQueryItem(name: "audioCodec", value: "aac"),
-            URLQueryItem(name: "maxAudioChannels", value: "6"),
-            URLQueryItem(name: "audioStreamIndex", value: info.audioIndex.map(String.init))
-        ].filter { $0.value != nil }
-        guard let path = components.string, let url = client.url(path: path) else { throw MediaServiceError.itemNotPlayable }
+        guard let url = Self.serverURL(client, path: ["Videos", item.id, "stream.mp4"], query: [
+            "mediaSourceId": sourceID,
+            "deviceId": identity.deviceID,
+            "videoCodec": "h264",
+            "audioCodec": "aac",
+            "maxAudioChannels": "6",
+            "audioStreamIndex": info.audioIndex.map(String.init)
+        ]) else { throw MediaServiceError.itemNotPlayable }
 
         var result = info
         result.url = url
@@ -988,7 +989,23 @@ actor JellyfinMediaService: MediaService {
     }
 
     func report(_ event: PlaybackEvent, for item: MediaItem, info: PlaybackInfo, position: TimeInterval, isPaused: Bool) async {
-        guard let client else { return }
+        // Each playback reports with the client it started with, so its token and user stay the same throughout: a stop
+        // reported after sign-out still goes out (before the token is revoked), and one reported after switching accounts
+        // never lands on the new account.
+        let key = Self.reportKey(item: item, info: info)
+        let client: JellyfinClient
+        switch event {
+        case .started:
+            guard let current = self.client, session != nil else { return }
+            reportingClients[key] = current
+            client = current
+        case .progress:
+            guard let started = reportingClients[key] else { return }
+            client = started
+        case .stopped:
+            guard let started = reportingClients.removeValue(forKey: key) else { return }
+            client = started
+        }
         let ticks = Int(position * Self.ticksPerSecond)
 
         // Progress reporting is best-effort; a failed report shouldn't interrupt playback.
@@ -1012,8 +1029,33 @@ actor JellyfinMediaService: MediaService {
                 playSessionID: info.playSessionID,
                 positionTicks: ticks
             )
+            stopsInFlight += 1
             _ = try? await client.send(Paths.reportPlaybackStopped(stop))
+            stopsInFlight -= 1
         }
+    }
+
+    /// The client each playback reported its start with, by ``reportKey(item:info:)``, until it reports its stop.
+    private var reportingClients: [String: JellyfinClient] = [:]
+
+    /// How many stop reports are on their way to the server, so revoking the token on sign-out can wait for them.
+    private var stopsInFlight = 0
+
+    /// Identifies one playback among those reporting: the server's play session, or the item if it gave none.
+    private static func reportKey(item: MediaItem, info: PlaybackInfo) -> String {
+        info.playSessionID ?? item.id
+    }
+
+    /// Waits, up to `timeout`, for playback started with `token` to report its stop. Sign-out stops the player just
+    /// before it signs out, and the stop report would fail if the token were revoked first.
+    private func waitForStopReports(using token: String?, timeout: Duration) async {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline,
+              stopsInFlight > 0 || reportingClients.values.contains(where: { $0.accessToken == token }) {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        // Whatever never reported its stop won't be able to once the token is revoked.
+        reportingClients = reportingClients.filter { $0.value.accessToken != token }
     }
 
     // MARK: - Watch state
@@ -1162,7 +1204,7 @@ actor JellyfinMediaService: MediaService {
     /// Like item artwork, no token is needed to fetch it.
     private static func avatarURL(userID: String, tag: String?, client: JellyfinClient) -> URL? {
         guard let tag else { return nil }
-        return client.url(path: "/UserImage?userId=\(userID)&tag=\(tag)")
+        return serverURL(client, path: ["UserImage"], query: ["userId": userID, "tag": tag])
     }
 
     /// Sends a request and unwraps its value, converting SDK errors to `MediaServiceError`.
@@ -1201,6 +1243,17 @@ actor JellyfinMediaService: MediaService {
         }
     }
 
+    /// Why one address in `connect(to:)` didn't work, in words the user can act on.
+    ///
+    /// The app only allows unencrypted HTTP to servers on the local network (`NSAllowsLocalNetworking`), so plain HTTP to
+    /// one on the internet is refused before anything is sent. The system's own message for that doesn't say so.
+    private static func connectFailureDescription(_ error: Error) -> String {
+        if let error = error as? URLError, error.code == .appTransportSecurityRequiresSecureConnection {
+            return String(localized: "Unencrypted connections are only allowed to servers on your local network. Use an HTTPS address for this server.")
+        }
+        return error.localizedDescription
+    }
+
     /// "jellyfin.local:8096" → https://… then http://…; an explicit scheme is used as-is.
     ///
     /// Falling back to HTTP is what makes LAN servers work without typing a scheme, but it means the
@@ -1212,7 +1265,10 @@ actor JellyfinMediaService: MediaService {
         // What the user typed with a scheme is used as it is; without one, secure first, then plain.
         let strings = trimmed.contains("://") ? [trimmed] : ["https://\(trimmed)", "http://\(trimmed)"]
         return strings.compactMap { string in
-            guard let url = URL(string: string), url.host() != nil else { return nil }
+            // Only web addresses: a `file:`, `ftp:` or custom scheme would never reach a Jellyfin server, and the
+            // password must never go anywhere else.
+            guard let url = URL(string: string), let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+                  url.host() != nil else { return nil }
             return url
         }
     }
@@ -1233,15 +1289,6 @@ actor JellyfinMediaService: MediaService {
         let hasKey = items.contains { $0.name.caseInsensitiveCompare("ApiKey") == .orderedSame }
         if !hasKey { items.append(URLQueryItem(name: "ApiKey", value: encodedToken)) }
         components.percentEncodedQueryItems = items
-        return components.url ?? url
-    }
-
-    /// The URL without the `ApiKey` that ``addingAccessToken(_:to:)`` put in it.
-    private static func removingAccessToken(from url: URL) -> URL {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let items = components.percentEncodedQueryItems else { return url }
-        let kept = items.filter { $0.name.caseInsensitiveCompare("ApiKey") != .orderedSame }
-        components.percentEncodedQueryItems = kept.isEmpty ? nil : kept
         return components.url ?? url
     }
 

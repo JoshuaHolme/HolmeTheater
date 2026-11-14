@@ -141,6 +141,14 @@ nonisolated final class DownloadStore: Sendable {
 
     private let state: Mutex<State>
 
+    /// Held while files in the items' folders are written, moved or deleted, and while ``artworkFiles`` are. Disk work
+    /// is kept out of ``state``'s lock, which the main thread takes many times a second, so it never waits on the disk.
+    ///
+    /// Whatever checks the index before touching the disk (that a download hasn't been removed, say) does it while
+    /// holding the file lock, taking ``state``'s inside it, never the other way round.
+    private let itemFiles = Mutex(())
+    private let artworkFiles = Mutex(())
+
     private let writer: IndexWriter
 
     /// Where downloads go: Application Support, which the system never purges. Apple TV may not let apps write there; if it
@@ -377,23 +385,27 @@ nonisolated final class DownloadStore: Sendable {
     /// Deletes the signed-in account's downloads of these items, their files, and whatever nothing else needs any more.
     func remove(ids: [String]) {
         let trash = Self.trashDirectory(in: root).appending(path: UUID().uuidString, directoryHint: .isDirectory)
-        let movedAny = state.withLock { state -> Bool in
-            var movedAny = false
-            for id in ids {
+        let directories = state.withLock { state -> [URL] in
+            let directories = ids.map { id in
                 state.index.records[Self.key(scope: state.scope, id: id)] = nil
-                // Moved aside rather than deleted, which for a whole series can take seconds. Still under the lock, so
-                // nothing that checks the record is there first (``saveResumeData(_:key:request:)``) can write into
-                // the folder after it has gone.
-                let directory = itemDirectory(scope: state.scope, id: id)
-                guard FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) else { continue }
+                return itemDirectory(scope: state.scope, id: id)
+            }
+            pruneUnreferenced(&state)
+            writer.submit(state.index)
+            return directories
+        }
+        // Moved aside rather than deleted, which for a whole series can take seconds. The records are already gone, and
+        // anything that writes into a folder (``saveResumeData(_:key:request:)``) checks its record under this same
+        // lock, so nothing can write into one after it has been moved.
+        let movedAny = itemFiles.withLock { _ -> Bool in
+            var movedAny = false
+            for directory in directories where FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) {
                 if !movedAny { try? FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true) }
                 if (try? FileManager.default.moveItem(at: directory, to: trash.appending(path: UUID().uuidString))) == nil {
                     try? FileManager.default.removeItem(at: directory)
                 }
                 movedAny = true
             }
-            pruneUnreferenced(&state)
-            writer.submit(state.index)
             return movedAny
         }
         guard movedAny else { return }
@@ -434,10 +446,10 @@ nonisolated final class DownloadStore: Sendable {
         // Listed without the lock, which is the slow part.
         let files = (try? FileManager.default.contentsOfDirectory(at: artworkDirectory, includingPropertiesForKeys: nil)) ?? []
         guard !files.isEmpty else { return }
-        state.withLock { state in
+        artworkFiles.withLock { _ in
             // Worked out again now, under the lock that ``saveArtwork(_:for:)`` saves with, so an image saved for a
             // download since the removal isn't taken for an unused one.
-            let keep = Self.referencedArtwork(in: state.index).union(state.artwork)
+            let keep = state.withLock { Self.referencedArtwork(in: $0.index).union($0.artwork) }
             for file in files where !keep.contains(file.lastPathComponent) {
                 try? FileManager.default.removeItem(at: file)
             }
@@ -558,17 +570,19 @@ nonisolated final class DownloadStore: Sendable {
 
     /// Keeps where a transfer got to, so trying again carries on from there, unless its download is gone.
     ///
-    /// Under the lock, like ``remove(ids:)``: a pause's resume data arrives a moment after the pause, and if the download
-    /// was removed in between, writing it would bring back a folder that nothing points to.
+    /// Under the item-files lock, like ``remove(ids:)``'s moving of folders: a pause's resume data arrives a moment after
+    /// the pause, and if the download was removed in between, writing it would bring back a folder that nothing points to.
     ///
     /// The data repeats the transfer's request, access token and all. It's only usable with that token, so it's tagged
     /// with its fingerprint, and ``removeResumeData()`` deletes it all when the session ends.
     func saveResumeData(_ data: Data, key: String, request: URLRequest?) {
         // Without a token in the request, no session's fingerprint matches, and the data is only ever thrown away.
         let fingerprint = Self.tokenFingerprint(in: request) ?? ""
-        state.withLock { state in
-            guard state.index.records[key] != nil else { return }
-            let directory = itemDirectory(key: key, in: state)
+        itemFiles.withLock { _ in
+            let directory = state.withLock { state in
+                state.index.records[key] != nil ? itemDirectory(key: key, in: state) : nil
+            }
+            guard let directory else { return }
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 try data.write(to: directory.appending(path: Self.resumeFileName), options: .atomic)
@@ -582,8 +596,8 @@ nonisolated final class DownloadStore: Sendable {
     /// Takes a download's resume data off the disk. Returns it only if it was made with the token `fingerprint` is for:
     /// data from another session would replay a request with a token the server no longer accepts.
     func takeResumeData(key: String, tokenFingerprint fingerprint: String?) -> Data? {
-        state.withLock { state in
-            let directory = itemDirectory(key: key, in: state)
+        let directory = itemDirectory(key: key)
+        return itemFiles.withLock { _ in
             let dataFile = directory.appending(path: Self.resumeFileName)
             let tokenFile = directory.appending(path: Self.resumeTokenFileName)
             defer {
@@ -600,9 +614,11 @@ nonisolated final class DownloadStore: Sendable {
     /// Deletes the signed-in account's resume data, which holds the access token, for when the session ends. Paused
     /// downloads start again from the beginning.
     func removeResumeData() {
-        state.withLock { state in
-            for record in state.index.records.values where record.scope == state.scope {
-                let directory = itemDirectory(scope: state.scope, id: record.id)
+        let directories = state.withLock { state in
+            state.index.records.values.filter { $0.scope == state.scope }.map { itemDirectory(scope: state.scope, id: $0.id) }
+        }
+        itemFiles.withLock { _ in
+            for directory in directories {
                 try? FileManager.default.removeItem(at: directory.appending(path: Self.resumeFileName))
                 try? FileManager.default.removeItem(at: directory.appending(path: Self.resumeTokenFileName))
             }
@@ -638,9 +654,9 @@ nonisolated final class DownloadStore: Sendable {
         let name = Self.artworkName(for: url)
         try? FileManager.default.createDirectory(at: artworkDirectory, withIntermediateDirectories: true)
         // Written and listed under one lock, so ``removeUnreferencedArtworkFiles()`` never finds the file without its name.
-        state.withLock { state in
+        artworkFiles.withLock { _ in
             guard (try? data.write(to: artworkFile(named: name), options: .atomic)) != nil else { return }
-            state.artwork.insert(name)
+            _ = state.withLock { $0.artwork.insert(name) }
         }
     }
 

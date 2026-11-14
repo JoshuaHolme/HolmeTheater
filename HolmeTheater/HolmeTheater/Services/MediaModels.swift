@@ -376,7 +376,8 @@ nonisolated enum PlaybackMethod: Sendable, Codable {
 ///
 /// Printing playback info redacts its URL, which contains the access token.
 nonisolated struct PlaybackInfo: Hashable, Sendable, Codable {
-    /// A URL AVPlayer can load directly. The access token is embedded in its query.
+    /// A URL AVPlayer can load directly. The access token is embedded in its query, because AVPlayer has no way to send
+    /// it in a header with every HLS request, but it's left out whenever the info is encoded (see ``encode(to:)``).
     var url: URL
 
     /// Where to start playing, in seconds.
@@ -418,6 +419,47 @@ nonisolated struct PlaybackInfo: Hashable, Sendable, Codable {
     /// How many bytes the file is expected to be, for showing a download's progress when the server doesn't say how big
     /// the transfer is. The original file's size, or a guess for one the server converts as it sends. Nil if unknown.
     var expectedBytes: Int64?
+}
+
+extension PlaybackInfo {
+    /// Encodes the info with the access token taken out of ``url``, so whatever saves it (a download's record, say) can
+    /// never write the token to disk. Decoding is the synthesized one, and the keys are the same, so saved data reads as
+    /// before.
+    ///
+    /// Written out because a property wrapper can't do it in a `nonisolated` struct. A new property has to be added here
+    /// too, or it won't be saved.
+    nonisolated func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(url.removingAccessToken(), forKey: .url)
+        try container.encode(resumePosition, forKey: .resumePosition)
+        try container.encodeIfPresent(playSessionID, forKey: .playSessionID)
+        try container.encodeIfPresent(mediaSourceID, forKey: .mediaSourceID)
+        try container.encode(method, forKey: .method)
+        try container.encode(audioTracks, forKey: .audioTracks)
+        try container.encode(subtitleTracks, forKey: .subtitleTracks)
+        try container.encodeIfPresent(audioIndex, forKey: .audioIndex)
+        try container.encodeIfPresent(subtitleIndex, forKey: .subtitleIndex)
+        try container.encode(subtitlesBurnedIn, forKey: .subtitlesBurnedIn)
+        try container.encodeIfPresent(sourceBitrate, forKey: .sourceBitrate)
+        try container.encodeIfPresent(sourceHeight, forKey: .sourceHeight)
+        try container.encodeIfPresent(maxBitrate, forKey: .maxBitrate)
+        try container.encodeIfPresent(expectedBytes, forKey: .expectedBytes)
+    }
+}
+
+extension URL {
+    /// The URL without the access token: an `ApiKey` query parameter, or the `api_key` older servers put in the URLs
+    /// they hand out, matched in any case. The rest of the query is kept byte for byte.
+    nonisolated func removingAccessToken() -> URL {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false),
+              let items = components.percentEncodedQueryItems else { return self }
+        let kept = items.filter { item in
+            !["ApiKey", "api_key"].contains { item.name.caseInsensitiveCompare($0) == .orderedSame }
+        }
+        guard kept.count != items.count else { return self }
+        components.percentEncodedQueryItems = kept.isEmpty ? nil : kept
+        return components.url ?? self
+    }
 }
 
 /// A stretch of a movie or episode the server knows the purpose of, which the player offers to skip.

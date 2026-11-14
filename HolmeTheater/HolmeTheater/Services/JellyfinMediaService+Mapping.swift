@@ -93,7 +93,7 @@ extension JellyfinMediaService {
                 name: chapter.name ?? "",
                 start: Double(chapter.startPositionTicks ?? 0) / ticksPerSecond,
                 imageURL: chapter.imageTag.flatMap {
-                    client.url(path: "/Items/\(id)/Images/Chapter/\(index)?maxWidth=\(backdropWidth / 4)&tag=\($0)")
+                    serverURL(client, path: ["Items", id, "Images", "Chapter", String(index)], query: ["maxWidth": String(backdropWidth / 4), "tag": $0])
                 }
             )
         }
@@ -155,6 +155,27 @@ extension JellyfinMediaService {
     /// the path or host of the link it's put into.
     static func isPlainID(_ id: String) -> Bool {
         !id.isEmpty && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+    }
+
+    /// What a query value may hold as it is. `&`, `=`, `+` and `#` are legal in a query but would change its meaning
+    /// inside a value (the server reads `+` as a space).
+    private static let queryValueAllowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=+#"))
+
+    /// A URL on the server, from its path segments and query parameters (those with a nil value are left out).
+    ///
+    /// IDs and tags come from the server, so each segment and value is percent-encoded on its own: a `/`, `?` or `&` in
+    /// one can't add a segment or a parameter. A `.` or `..` segment, which would step out of the path, gives nil.
+    /// (The SDK's `url(path:)` decodes the path before using it, which would undo the encoding, so it isn't used here.)
+    static func serverURL(_ client: JellyfinClient, path segments: [String], query: KeyValuePairs<String, String?> = [:]) -> URL? {
+        guard !segments.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else { return nil }
+        let url = segments.reduce(client.configuration.url) { $0.appending(component: $1, directoryHint: .notDirectory) }
+        let items = query.compactMap { name, value in
+            value?.addingPercentEncoding(withAllowedCharacters: queryValueAllowed).map { URLQueryItem(name: name, value: $0) }
+        }
+        guard !items.isEmpty else { return url }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        components.percentEncodedQueryItems = (components.percentEncodedQueryItems ?? []) + items
+        return components.url
     }
 
     /// e.g. "Behind the Scenes" for an extra's type, or nil if the server doesn't say.
@@ -260,7 +281,7 @@ extension JellyfinMediaService {
 
     /// An image URL on the server. The `tag` makes the URL change when the image does, so caches stay correct.
     static func imageURL(itemID: String, type: ImageType, tag: String, width: Int, client: JellyfinClient) -> URL? {
-        client.url(path: "/Items/\(itemID)/Images/\(type.rawValue)?maxWidth=\(width)&tag=\(tag)")
+        serverURL(client, path: ["Items", itemID, "Images", type.rawValue], query: ["maxWidth": String(width), "tag": tag])
     }
 
     /// The portrait poster.
@@ -287,7 +308,7 @@ extension JellyfinMediaService {
     /// to the show's poster.
     private static func seasonPosterURL(for dto: BaseItemDto, client: JellyfinClient) -> URL? {
         guard let seasonID = dto.seasonID else { return nil }
-        return client.url(path: "/Items/\(seasonID)/Images/\(ImageType.primary.rawValue)?maxWidth=\(posterWidth)")
+        return serverURL(client, path: ["Items", seasonID, "Images", ImageType.primary.rawValue], query: ["maxWidth": String(posterWidth)])
     }
 
     /// Widescreen artwork for list rows.

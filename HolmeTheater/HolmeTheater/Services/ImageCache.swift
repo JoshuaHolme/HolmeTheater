@@ -65,6 +65,10 @@ nonisolated final class ImageCache: Sendable {
 
     private let state = Mutex(State())
 
+    /// Held while writing into the folder and while ``removeAll()`` moves it aside, so disk work stays out of ``state``'s
+    /// lock, which views take on the main thread. A write checks ``State/generation`` while holding it.
+    private let disk = Mutex(())
+
     private init() {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         directory = caches.appending(path: "ImageCache", directoryHint: .isDirectory)
@@ -87,11 +91,14 @@ nonisolated final class ImageCache: Sendable {
             state.decodes = [:]
             state.downloads = [:]
             memory.removeAllObjects()
-            // Moved aside at once, under the lock, so nothing in flight can write into the folder after it's been
-            // emptied; deleting what's in it, which can take a while, happens afterwards.
+            return inFlight
+        }
+        // Moved aside at once, under the disk lock, so nothing in flight can write into the folder after it's been
+        // emptied: a write that gets the lock after this sees the new generation and skips. Deleting what's in it, which
+        // can take a while, happens afterwards.
+        disk.withLock { _ in
             try? fileManager.moveItem(at: directory, to: trash)
             try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            return inFlight
         }
         for task in decodes.values { task.cancel() }
         for task in downloads.values { task.cancel() }
@@ -136,12 +143,14 @@ nonisolated final class ImageCache: Sendable {
     /// Only the disk is filled, not memory. It runs a few downloads at a time at low priority and skips
     /// anything already cached.
     func prefetch(_ urls: [URL]) {
-        let pending = urls.filter { cachedImage(for: $0) == nil && !isOnDisk($0) }
-        guard !pending.isEmpty else { return }
+        let uncached = urls.filter { cachedImage(for: $0) == nil }
+        guard !uncached.isEmpty else { return }
         // Those not started by the time the cache is emptied are skipped.
         let generation = state.withLock { $0.generation }
 
         Task.detached(priority: .utility) {
+            // Checked here rather than by the caller, which is usually the main thread: it's a trip to the disk for each.
+            let pending = uncached.filter { !self.isOnDisk($0) }
             await withTaskGroup(of: Void.self) { group in
                 var remaining = pending.makeIterator()
                 for _ in 0..<4 {
@@ -189,7 +198,10 @@ nonisolated final class ImageCache: Sendable {
     // MARK: - Loading
 
     /// Reads the image from disk (downloading it first if needed) and decodes it into the memory cache.
-    private func decode(_ url: URL, generation: Int) async -> PlatformImage? {
+    ///
+    /// `@concurrent`, like ``data(for:generation:)``, so the file reads and decoding never run on the caller's actor,
+    /// even if a later change calls it from the main thread.
+    @concurrent private func decode(_ url: URL, generation: Int) async -> PlatformImage? {
         guard let data = await data(for: url, generation: generation) else { return nil }
 
         guard var image = PlatformImage(data: data) else {
@@ -214,7 +226,7 @@ nonisolated final class ImageCache: Sendable {
     /// The image's bytes: from disk if cached there, otherwise downloaded and saved.
     ///
     /// - Parameter generation: The ``generation`` the caller started in.
-    private func data(for url: URL, generation: Int) async -> Data? {
+    @concurrent private func data(for url: URL, generation: Int) async -> Data? {
         // Artwork saved with a download is already a file, so there's nothing to fetch or cache.
         if url.isFileURL { return try? Data(contentsOf: url) }
         if let data = try? Data(contentsOf: diskURL(for: url)) { return data }
@@ -239,11 +251,14 @@ nonisolated final class ImageCache: Sendable {
               (response as? HTTPURLResponse)?.statusCode == 200
         else { return nil }
 
+        // Written under the disk lock, so it can't land in the folder after `removeAll()` has emptied it.
+        let wrote = disk.withLock { _ -> Bool in
+            guard generation == state.withLock({ $0.generation }) else { return false }
+            return (try? data.write(to: diskURL(for: url), options: .atomic)) != nil
+        }
+
         // Keep the disk cache from growing without bound during a long session.
-        let shouldTrim = state.withLock { state -> Bool in
-            // Written under the lock, so it can't land in the folder after `removeAll()` has emptied it.
-            guard generation == state.generation else { return false }
-            try? data.write(to: diskURL(for: url), options: .atomic)
+        let shouldTrim = wrote && state.withLock { state -> Bool in
             state.bytesWrittenSinceTrim += data.count
             guard state.bytesWrittenSinceTrim >= Self.trimInterval else { return false }
             state.bytesWrittenSinceTrim = 0
