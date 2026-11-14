@@ -84,6 +84,9 @@ struct AsyncContent<Value, Content: View>: View {
                         Button("Go to Downloads") { openDownloads() }
                     }
                 }
+                // Centered in the same space the spinner is, not left at the top of a scroll view.
+                .frame(maxWidth: .infinity, maxHeight: loadingHeight == nil ? .infinity : nil)
+                .frame(height: loadingHeight)
             }
         }
         // Keyed on `reloadID`, so changing it runs the load again (and cancels one still in flight).

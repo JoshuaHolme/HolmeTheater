@@ -355,15 +355,42 @@ private struct TVPersonSheet: View {
     /// What else on the server they're credited on. Empty until it arrives, or if there's nothing.
     @State private var credits: [PersonCredit] = []
 
+    /// Whether their photo is showing full screen.
+    @State private var showsPhoto = false
+
+    /// Whether the sheet with everything about them is showing.
+    @State private var showsDetails = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 56) {
                 HStack(alignment: .top, spacing: 60) {
-                    PersonPortrait(person: person, size: 280)
+                    // Selecting the portrait opens the photo full screen, as on a person's page. It's also the one thing up
+                    // here focus can reach, which is what lets the sheet scroll back up from the posters.
+                    Button { showsPhoto = true } label: {
+                        PersonPortrait(person: person, size: 280)
+                            .hoverEffect(.highlight)
+                    }
+                    .buttonStyle(.borderless)
+                    .buttonBorderShape(.circle)
+                    .disabled(person.imageURL == nil)
+                    .accessibilityLabel("View Photo of \(person.name)")
 
                     VStack(alignment: .leading, spacing: 16) {
-                        Text(person.name)
-                            .font(.largeTitle.bold())
+                        // The info button is beside the name, and opens everything the server knows about them.
+                        HStack(spacing: 24) {
+                            Text(person.name)
+                                .font(.largeTitle.bold())
+                            if let details, !details.isEmpty {
+                                Button { showsDetails = true } label: {
+                                    Image(systemName: "info.circle")
+                                        .font(.system(size: 30, weight: .semibold))
+                                }
+                                .buttonStyle(.bordered)
+                                .buttonBorderShape(.circle)
+                                .accessibilityLabel("Details")
+                            }
+                        }
                         if let subtitle = person.subtitle {
                             Text(subtitle)
                                 .font(.title3)
@@ -386,6 +413,9 @@ private struct TVPersonSheet: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                // As wide as the sheet, so moving up from any poster reaches the portrait.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .focusSection()
 
                 shelf("Movies", credits.filter { $0.item.kind == .movie })
                 shelf("Shows", credits.filter { $0.item.kind == .series })
@@ -393,6 +423,11 @@ private struct TVPersonSheet: View {
             .padding(80)
         }
         .scrollClipDisabled()
+        .fullScreenCover(isPresented: $showsPhoto) { PhotoViewer(person: person) }
+        // The same glass sheet as on a person's page: name and role, the whole biography, then the facts.
+        .sheet(isPresented: $showsDetails) {
+            ShowDetailsSheet(title: person.name, tagline: person.subtitle, overview: details?.biography, facts: details.map(PersonDetailView.detailFacts(for:)) ?? [])
+        }
         .task { details = try? await service.details(ofPerson: person.personID) }
         .task { credits = (try? await service.items(featuring: person.personID)) ?? [] }
     }
