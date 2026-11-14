@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		03059A58308D53BD006E4D03 /* JellyfinAPI in Frameworks */ = {isa = PBXBuildFile; productRef = 03059A57308D53BD006E4D03 /* JellyfinAPI */; };
 		037B67A8309853E000C9A5BA /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 037B67A7309853E000C9A5BA /* AppIcon.icon */; };
+		03CB55B330A79E4E00287C42 /* tvOS Icon.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 03CB55B230A79E4E00287C42 /* tvOS Icon.xcassets */; };
+		03CB55B430A7A0C300287C42 /* tvOS Icon.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 03CB55B230A79E4E00287C42 /* tvOS Icon.xcassets */; };
 		03E4D7863095BC6500A761F0 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 03E4D7853095BC6500A761F0 /* WidgetKit.framework */; };
 		03E4D7883095BC6500A761F0 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 03E4D7873095BC6500A761F0 /* SwiftUI.framework */; };
 		03E4D7933095BC6500A761F0 /* DownloadActivityExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 03E4D7833095BC6500A761F0 /* DownloadActivityExtension.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -39,6 +41,7 @@
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* HolmeTheater.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HolmeTheater.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		037B67A7309853E000C9A5BA /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		03CB55B230A79E4E00287C42 /* tvOS Icon.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "tvOS Icon.xcassets"; sourceTree = "<group>"; };
 		03E4D7833095BC6500A761F0 /* DownloadActivityExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DownloadActivityExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		03E4D7853095BC6500A761F0 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = /System/Library/Frameworks/WidgetKit.framework; sourceTree = "<absolute>"; };
 		03E4D7873095BC6500A761F0 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = /System/Library/Frameworks/SwiftUI.framework; sourceTree = "<absolute>"; };
@@ -108,6 +111,7 @@
 		000000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
+				03CB55B230A79E4E00287C42 /* tvOS Icon.xcassets */,
 				037B67A7309853E000C9A5BA /* AppIcon.icon */,
 				000000000000000000000010 /* HolmeTheater */,
 				03E4D7893095BC6500A761F0 /* DownloadActivity */,
@@ -226,11 +230,13 @@
 			isa = PBXResourcesBuildPhase;
 			files = (
 				037B67A8309853E000C9A5BA /* AppIcon.icon in Resources */,
+				03CB55B330A79E4E00287C42 /* tvOS Icon.xcassets in Resources */,
 			);
 		};
 		03E4D7813095BC6500A761F0 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				03CB55B430A7A0C300287C42 /* tvOS Icon.xcassets in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */

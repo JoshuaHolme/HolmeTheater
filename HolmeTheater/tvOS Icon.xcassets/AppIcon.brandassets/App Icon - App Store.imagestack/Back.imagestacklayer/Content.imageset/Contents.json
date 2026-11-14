@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "Background.svg",
+      "idiom" : "tv"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
