@@ -276,7 +276,7 @@ struct SignInView: View {
             Button {
                 Task { await signIn(using: .quickConnect) }
             } label: {
-                Label("Use Quick Connect", systemImage: "qrcode")
+                Label("Use Quick Connect", systemImage: "ellipsis.rectangle")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }

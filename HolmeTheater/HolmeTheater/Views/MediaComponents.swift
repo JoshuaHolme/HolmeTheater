@@ -1105,17 +1105,17 @@ extension ItemRowActions {
         // Selecting a card already opens the item, so the menu leads with Play instead of "Go to …". Where selecting
         // plays it, it's the other way round.
         if tapPlays, let goTo {
-            entries.append(ItemMenuEntry(id: .goTo, title: item.goToMenuTitle, systemImage: "info.circle", perform: goTo))
+            entries.append(ItemMenuEntry(id: .goTo, title: item.goToMenuTitle, systemImage: item.kind == .series ? "tv" : "info.circle", perform: goTo))
         } else if let play {
             entries.append(ItemMenuEntry(id: .play, title: item.playButtonTitle(forShow: false), systemImage: "play.fill", perform: play))
         }
         #else
         if let goTo {
-            entries.append(ItemMenuEntry(id: .goTo, title: item.goToMenuTitle, systemImage: "info.circle", perform: goTo))
+            entries.append(ItemMenuEntry(id: .goTo, title: item.goToMenuTitle, systemImage: item.kind == .series ? "tv" : "info.circle", perform: goTo))
         }
         #endif
         if let goToSeason {
-            entries.append(ItemMenuEntry(id: .goToSeason, title: String(localized: "Go to Season"), systemImage: "square.stack", perform: goToSeason))
+            entries.append(ItemMenuEntry(id: .goToSeason, title: String(localized: "Go to Season"), systemImage: "rectangle.stack.fill", perform: goToSeason))
         }
         if let goToShow {
             entries.append(ItemMenuEntry(id: .goToShow, title: String(localized: "Go to Show"), systemImage: "tv", perform: goToShow))
@@ -1134,7 +1134,7 @@ extension ItemRowActions {
                 entries.append(ItemMenuEntry(
                     id: .markWatched,
                     title: isSeason ? String(localized: "Mark Season as Watched") : String(localized: "Mark Show as Watched"),
-                    systemImage: "checkmark.circle",
+                    systemImage: "eye",
                     perform: markWatched
                 ))
             }
@@ -1142,7 +1142,7 @@ extension ItemRowActions {
                 entries.append(ItemMenuEntry(
                     id: .markUnwatched,
                     title: isSeason ? String(localized: "Mark Season as Unwatched") : String(localized: "Mark Show as Unwatched"),
-                    systemImage: "arrow.uturn.backward.circle",
+                    systemImage: "eye.slash",
                     perform: markUnwatched
                 ))
             }
@@ -1153,10 +1153,10 @@ extension ItemRowActions {
 
         // A partly watched item offers both, so the user can finish it or start it over.
         if let markWatched, !item.showsWatchedBadge {
-            entries.append(ItemMenuEntry(id: .markWatched, title: String(localized: "Mark as Watched"), systemImage: "checkmark.circle", perform: markWatched))
+            entries.append(ItemMenuEntry(id: .markWatched, title: String(localized: "Mark as Watched"), systemImage: "eye", perform: markWatched))
         }
         if let markUnwatched, item.isPlayed || item.playedFraction != nil {
-            entries.append(ItemMenuEntry(id: .markUnwatched, title: String(localized: "Mark as Unwatched"), systemImage: "arrow.uturn.backward.circle", perform: markUnwatched))
+            entries.append(ItemMenuEntry(id: .markUnwatched, title: String(localized: "Mark as Unwatched"), systemImage: "eye.slash", perform: markUnwatched))
         }
         if let remove = removeFromContinueWatching {
             entries.append(ItemMenuEntry(id: .removeFromContinueWatching, title: String(localized: "Remove from Continue Watching"), systemImage: "minus.circle", perform: remove))
@@ -1167,8 +1167,8 @@ extension ItemRowActions {
                 title: String(localized: "Remove from Up Next"),
                 systemImage: "minus.circle",
                 children: [
-                    ItemMenuEntry(id: .markAllEpisodesWatched, title: String(localized: "Mark All Episodes as Watched"), systemImage: "checkmark.circle", perform: showWatched),
-                    ItemMenuEntry(id: .markAllEpisodesUnwatched, title: String(localized: "Mark All Episodes as Unwatched"), systemImage: "arrow.uturn.backward.circle", perform: showUnwatched)
+                    ItemMenuEntry(id: .markAllEpisodesWatched, title: String(localized: "Mark All Episodes as Watched"), systemImage: "eye", perform: showWatched),
+                    ItemMenuEntry(id: .markAllEpisodesUnwatched, title: String(localized: "Mark All Episodes as Unwatched"), systemImage: "eye.slash", perform: showUnwatched)
                 ]
             ))
         }

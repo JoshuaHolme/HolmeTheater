@@ -37,7 +37,7 @@ struct ThemeSettingsView: View {
 
             VStack(alignment: .leading, spacing: 14) {
                 Button { showsPreview = true } label: {
-                    TVSettingsRow(title: "Preview Themes", showsChevron: true, systemImage: "sparkles.tv")
+                    TVSettingsRow(title: "Preview Themes", showsChevron: true, systemImage: "sparkles")
                 }
                 .buttonStyle(.card)
                 TVSettingsCaption(text: "See the Home screen in each theme, and pick one to use.")
@@ -266,7 +266,7 @@ private struct ThemePreviewView: View {
                         .frame(width: 56)
                 }
             }
-            .focusSection()
+            .tvFocusSection()
 
             #if !os(tvOS)
             HStack(spacing: 12) {

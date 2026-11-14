@@ -863,7 +863,7 @@ struct TVPlayerController: UIViewControllerRepresentable {
                     self?.showTimingPanel()
                 }
 
-                menus.append(UIMenu(title: String(localized: "Subtitles"), image: UIImage(systemName: "captions.bubble"), children: [languages, timing]))
+                menus.append(UIMenu(title: String(localized: "Subtitles"), image: UIImage(systemName: session.subtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill"), children: [languages, timing]))
             }
 
             // The system's own menu offers the file's tracks too, but only this one switches the stream when it has to.
@@ -874,7 +874,7 @@ struct TVPlayerController: UIViewControllerRepresentable {
                         Task { await self?.session.selectAudio(track.index) }
                     }
                 }
-                menus.append(UIMenu(title: String(localized: "Audio"), image: UIImage(systemName: "speaker.wave.2"), children: tracks))
+                menus.append(UIMenu(title: String(localized: "Audio"), image: UIImage(systemName: "waveform"), children: tracks))
             }
 
             let qualities = StreamQuality.choices(for: session.info)
@@ -887,7 +887,7 @@ struct TVPlayerController: UIViewControllerRepresentable {
                         Task { await self?.session.selectMaxBitrate(quality.maxBitrate) }
                     }
                 }
-                menus.append(UIMenu(title: String(localized: "Quality"), image: UIImage(systemName: "slider.horizontal.3"), children: [auto] + choices))
+                menus.append(UIMenu(title: String(localized: "Quality"), image: UIImage(systemName: "sparkles.tv"), children: [auto] + choices))
             }
 
             // Autoplay: On or Off, which is the setting on the Account screen too. Always there, whatever's playing: it's a
@@ -904,7 +904,7 @@ struct TVPlayerController: UIViewControllerRepresentable {
             }
             menus.append(UIMenu(
                 title: String(localized: "Autoplay Next Episode"),
-                image: UIImage(systemName: isOn ? "play.square.stack.fill" : "play.square.stack"),
+                image: UIImage(systemName: isOn ? "rectangle.stack.badge.play.fill" : "rectangle.stack.badge.play"),
                 children: [choice(String(localized: "On"), true), choice(String(localized: "Off"), false)]
             ))
 

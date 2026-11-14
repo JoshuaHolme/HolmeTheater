@@ -336,13 +336,7 @@ struct HomeHeroCarousel<Header: View>: View {
                 }
 
                 // Just an icon, as in the Apple TV app; the label is for VoiceOver.
-                Button { open(item) } label: {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 30, weight: .semibold))
-                }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel("More Info")
+                FocusExpandingIconButton("More Info", systemImage: "info.circle", font: .system(size: 30, weight: .semibold)) { open(item) }
                 .focused($heroFocus, equals: .info)
                 // At the right edge, moving right goes to the next item rather than nowhere.
                 .onMoveCommand { direction in

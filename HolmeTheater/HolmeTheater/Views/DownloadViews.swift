@@ -159,19 +159,61 @@ enum ExperimentalDownloads {
 struct DownloadToolbarButton: View {
     let item: MediaItem
     @Binding var prompt: DownloadPrompt?
+    /// Whether the button grows into a pill with its name while it has focus, like the hero's other round buttons. tvOS only.
+    var expandsOnFocus = false
 
     @Environment(AppModel.self) private var appModel
+    #if os(tvOS)
+    @FocusState private var isFocused: Bool
+    #endif
 
     private var downloads: DownloadManager { appModel.downloads }
     private var isContainer: Bool { item.kind == .season || item.kind == .series }
 
     var body: some View {
+        #if os(tvOS)
+        if expandsOnFocus {
+            content
+                .focused($isFocused)
+                // A circle at rest, a pill once there's a name beside the icon.
+                .buttonBorderShape(isFocused ? .capsule : .circle)
+                .animation(.easeOut(duration: 0.2), value: isFocused)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+
+    /// A button's icon, with its name beside it while the button is focused and expands.
+    @ViewBuilder
+    private func label<Icon: View>(_ title: LocalizedStringKey, @ViewBuilder icon: () -> Icon) -> some View {
+        #if os(tvOS)
+        HStack(spacing: 12) {
+            icon()
+            if expandsOnFocus && isFocused {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        #else
+        icon()
+        #endif
+    }
+
+    @ViewBuilder
+    private var content: some View {
         // Where the download is, not how far along, so the menus below aren't rebuilt with every tick of progress (which
         // makes an open one flash). Only the ring, in its own view, follows the progress.
         switch downloads.stage(of: item) {
         case .none:
             Button(action: start) {
-                Image(systemName: "arrow.down.circle")
+                label(isContainer ? "Download All Episodes" : "Download") {
+                    Image(systemName: "arrow.down.circle")
+                }
             }
             .accessibilityLabel(isContainer ? "Download All Episodes" : "Download")
 
@@ -185,7 +227,9 @@ struct DownloadToolbarButton: View {
                 // Only what's unfinished: a show's or season's finished episodes stay.
                 Button("Cancel Download", systemImage: "xmark.circle", role: .destructive) { downloads.cancel(item) }
             } label: {
-                DownloadProgressLabel(item: item)
+                label("Downloading") {
+                    DownloadProgressLabel(item: item)
+                }
             }
             .accessibilityLabel("Downloading")
 
@@ -197,7 +241,9 @@ struct DownloadToolbarButton: View {
                 }
                 Button("Cancel Download", systemImage: "xmark.circle", role: .destructive) { downloads.cancel(item) }
             } label: {
-                Image(systemName: "pause.circle")
+                label("Download Paused") {
+                    Image(systemName: "pause.circle")
+                }
             }
             .accessibilityLabel("Download Paused")
 
@@ -206,7 +252,9 @@ struct DownloadToolbarButton: View {
                 Button("Download Remaining Episodes", systemImage: "arrow.down.circle", action: start)
                 Button("Remove Downloads", systemImage: "trash", role: .destructive) { prompt = .remove(item) }
             } label: {
-                Image(systemName: "arrow.down.circle.dotted")
+                label("Partly Downloaded") {
+                    Image(systemName: "arrow.down.circle.dotted")
+                }
             }
             .accessibilityLabel("Partly Downloaded")
 
@@ -216,7 +264,9 @@ struct DownloadToolbarButton: View {
                     prompt = .remove(item)
                 }
             } label: {
-                Image(systemName: "arrow.down.circle.fill")
+                label("Downloaded") {
+                    Image(systemName: "arrow.down.circle.fill")
+                }
             }
             .tint(.blue)
             .accessibilityLabel("Downloaded")

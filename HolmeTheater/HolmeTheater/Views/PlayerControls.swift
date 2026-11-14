@@ -1067,7 +1067,7 @@ struct PlayerControlsView: View {
                 }
             }
         } label: {
-            menuGlyph("captions.bubble")
+            menuGlyph(session.subtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill")
         }
         .menuOrder(.fixed)
         .accessibilityLabel("Subtitles")
@@ -1081,7 +1081,7 @@ struct PlayerControlsView: View {
         Button {
             session.autoPlaysNext.toggle()
         } label: {
-            menuGlyph(session.autoPlaysNext ? "play.square.stack.fill" : "play.square.stack")
+            menuGlyph(session.autoPlaysNext ? "rectangle.stack.badge.play.fill" : "rectangle.stack.badge.play")
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Autoplay Next Episode")
@@ -1814,7 +1814,7 @@ private struct InfoPane: View {
     private var buttons: some View {
         actionButton("From Beginning", systemImage: "play.fill", action: fromBeginning)
         if let goToShow {
-            actionButton("Go to Show", systemImage: "info.circle", action: goToShow)
+            actionButton("Go to Show", systemImage: "tv", action: goToShow)
         }
     }
 

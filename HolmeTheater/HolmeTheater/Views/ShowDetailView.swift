@@ -275,31 +275,16 @@ struct ShowDetailView: View {
     @ViewBuilder
     private var goToButtons: some View {
         if showsSeasonLink, let seasonID = item.seasonID {
-            Button { openRelated(id: seasonID) } label: {
-                Image(systemName: "square.stack")
-                    .font(Self.heroIconFont)
-            }
-            .heroCircleButton()
-            .accessibilityLabel("Go to Season")
+            FocusExpandingIconButton("Go to Season", systemImage: "rectangle.stack.fill", font: Self.heroIconFont) { openRelated(id: seasonID) }
         }
         if showsShowLink, let seriesID = item.seriesID {
-            Button { openRelated(id: seriesID) } label: {
-                Image(systemName: "tv")
-                    .font(Self.heroIconFont)
-            }
-            .heroCircleButton()
-            .accessibilityLabel("Go to Show")
+            FocusExpandingIconButton("Go to Show", systemImage: "tv", font: Self.heroIconFont) { openRelated(id: seriesID) }
         }
     }
 
     /// Opens the sheet with the full description and everything else known about the show.
     private var detailsButton: some View {
-        Button { showsDetails = true } label: {
-            Image(systemName: "info.circle")
-                .font(Self.heroIconFont)
-        }
-        .heroCircleButton()
-        .accessibilityLabel("Details")
+        FocusExpandingIconButton("Details", systemImage: "info.circle", font: Self.heroIconFont) { showsDetails = true }
     }
 
     /// The sheet's heading: the show's name, or for a season or episode what it is, under the show's.
@@ -798,7 +783,7 @@ struct ShowDetailView: View {
             // the toolbar (see `toolbarButtons`).
             favoriteButton
             watchedButton
-            DownloadToolbarButton(item: current, prompt: $watchState.downloadPrompt)
+            DownloadToolbarButton(item: current, prompt: $watchState.downloadPrompt, expandsOnFocus: true)
                 .heroCircleButton()
             #endif
         }
@@ -843,13 +828,13 @@ struct ShowDetailView: View {
     @ViewBuilder
     private var watchedButton: some View {
         if let change = watchedChange {
-            Button(action: change.perform) {
-                Image(systemName: change.wantsWatched ? "checkmark.circle" : "checkmark.circle.fill")
-                    .font(Self.heroIconFont)
-                    .foregroundStyle(change.wantsWatched ? .white : .green)
-            }
-            .heroCircleButton()
-            .accessibilityLabel(change.wantsWatched ? "Mark as Watched" : "Mark as Unwatched")
+            FocusExpandingIconButton(
+                change.wantsWatched ? "Mark as Watched" : "Mark as Unwatched",
+                systemImage: change.wantsWatched ? "eye" : "eye.slash",
+                font: Self.heroIconFont,
+                iconColor: change.wantsWatched ? .white : .green,
+                action: change.perform
+            )
         }
     }
 
@@ -862,7 +847,7 @@ struct ShowDetailView: View {
             if showsSeasonLink || showsShowLink {
                 Menu {
                     if showsSeasonLink, let seasonID = item.seasonID {
-                        Button("Go to Season", systemImage: "square.stack") { openRelated(id: seasonID) }
+                        Button("Go to Season", systemImage: "rectangle.stack.fill") { openRelated(id: seasonID) }
                     }
                     if showsShowLink, let seriesID = item.seriesID {
                         Button("Go to Show", systemImage: "tv") { openRelated(id: seriesID) }
@@ -886,7 +871,7 @@ struct ShowDetailView: View {
 
             if let change = watchedChange {
                 Button(action: change.perform) {
-                    Image(systemName: change.wantsWatched ? "checkmark.circle" : "checkmark.circle.fill")
+                    Image(systemName: change.wantsWatched ? "eye" : "eye.slash")
                 }
                 .tint(change.wantsWatched ? nil : .green)
                 .accessibilityLabel(change.wantsWatched ? "Mark as Watched" : "Mark as Unwatched")
@@ -922,15 +907,13 @@ struct ShowDetailView: View {
 
     /// Adds the show to the user's favorites, or takes it off.
     private var favoriteButton: some View {
-        Button {
-            toggleFavorite()
-        } label: {
-            Image(systemName: isFavorite ? "heart.fill" : "heart")
-                .font(Self.heroIconFont)
-                .foregroundStyle(isFavorite ? .red : .white)
-        }
-        .heroCircleButton()
-        .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+        FocusExpandingIconButton(
+            isFavorite ? "Remove from Favorites" : "Add to Favorites",
+            systemImage: isFavorite ? "heart.fill" : "heart",
+            font: Self.heroIconFont,
+            iconColor: isFavorite ? .red : .white,
+            action: toggleFavorite
+        )
     }
 
     /// Whether the show is a favorite, counting a change the server hasn't confirmed yet.
@@ -1158,6 +1141,60 @@ struct ShowDetailView: View {
         .mediaNavigationDestinations()
     }
     .environment(AppModel.preview())
+}
+
+/// One of the hero's round icon buttons. On tvOS it grows into a pill showing its name while it has focus; elsewhere it
+/// stays a round icon, with the name for VoiceOver.
+struct FocusExpandingIconButton: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    let font: Font
+    var iconColor: Color?
+    let action: () -> Void
+
+    #if os(tvOS)
+    @FocusState private var isFocused: Bool
+    #endif
+
+    init(_ title: LocalizedStringKey, systemImage: String, font: Font, iconColor: Color? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.systemImage = systemImage
+        self.font = font
+        self.iconColor = iconColor
+        self.action = action
+    }
+
+    var body: some View {
+        #if os(tvOS)
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(font)
+                    .foregroundStyle(iconColor.map(AnyShapeStyle.init) ?? AnyShapeStyle(.foreground))
+                if isFocused {
+                    Text(title)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        // A circle at rest, a pill once there's a name beside the icon.
+        .buttonBorderShape(isFocused ? .capsule : .circle)
+        .focused($isFocused)
+        .animation(.easeOut(duration: 0.2), value: isFocused)
+        .accessibilityLabel(title)
+        #else
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(font)
+                .foregroundStyle(iconColor.map(AnyShapeStyle.init) ?? AnyShapeStyle(.foreground))
+        }
+        .heroCircleButton()
+        .accessibilityLabel(title)
+        #endif
+    }
 }
 
 private extension View {
