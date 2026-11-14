@@ -136,6 +136,10 @@ struct EpisodeShelf: View {
     /// Menu links to leave out because the screen is already inside them.
     let omitting: Set<RelatedLink>
 
+    /// Whether the row scrolls to the first episode that isn't watched, and puts focus on it (tvOS). For a season's own page,
+    /// where that's the episode to carry on with.
+    var focusesFirstUnwatched = false
+
     let open: (MediaItem) -> Void
     let play: (MediaItem) -> Void
 
@@ -161,6 +165,7 @@ struct EpisodeShelf: View {
                     onHeadingTap: { showsList = true },
                     isWide: true,
                     omitting: omitting,
+                    autoFocusItemID: focusesFirstUnwatched ? episodes.first { !$0.isPlayed }?.shelfKey : nil,
                     onChange: { reloadCount += 1 },
                     // Inside the season, selecting an episode plays it; its page is "Go to Episode" in the menu.
                     navigation: ItemNavigation(open: open, play: play, playsOnTap: true)

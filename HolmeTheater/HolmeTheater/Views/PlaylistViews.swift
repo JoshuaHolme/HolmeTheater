@@ -37,7 +37,7 @@ struct CollectionDetailView: View {
                     AnyView(
                         ListHero(
                             item: collection,
-                            imageURL: collection.heroArtworkURL(among: items),
+                            style: .artwork(collection.heroArtworkURL(among: items)),
                             detailsLine: detailsLine(for: items),
                             viewport: viewport
                         ) {
@@ -211,7 +211,9 @@ private struct PlaylistPlayback: Identifiable {
     let queue: [MediaItem]
 }
 
-/// A playlist's entries in order, to play through, shuffle, reorder and take things out of.
+/// A playlist laid out like a TV season: its hero, then its entries in a row of widescreen cards that scrolls sideways. The
+/// cards have the watched badge and progress an episode has, selecting one plays from it through the rest of the playlist, and
+/// on tvOS focus starts on the first one that isn't watched.
 struct PlaylistDetailView: View {
     let playlist: MediaItem
 
@@ -228,33 +230,88 @@ struct PlaylistDetailView: View {
     @State private var playback: PlaylistPlayback?
     @State private var errorMessage: String?
 
+    /// An entry's page, which a tap on its menu's "Go to …" is opening.
+    @State private var openedItem: MediaItem?
+
     /// A question about downloading the playlist, waiting for an answer.
     @State private var downloadPrompt: DownloadPrompt?
 
-    /// The size of the list, which decides how tall the hero is.
+    /// Marking every entry watched (true) or unwatched (false), waiting for the user to confirm.
+    @State private var pendingWatchChange: Bool?
+
+    /// The size of the scroll view, which decides how tall the hero is.
     @State private var viewport: CGSize = .zero
+
+    /// Which card in the row has focus (tvOS), as ``MediaShelf`` reports it: the prefix, a bar, then the entry's key.
+    @FocusState private var focusedCard: String?
+
+    /// The picture blurred behind the page: the still of the entry that has focus, or if none has yet, the one that will.
+    @State private var backgroundURL: URL?
+
+    private static let focusPrefix = "playlist"
 
     var body: some View {
         content
-            .themeWash()
+            .themeWash(0.5)
             .downloadPrompts($downloadPrompt)
             // What the playlist holds decides how its downloads are doing, and changes as entries are added, moved or removed.
-            .onChange(of: entries.map(\.entryID)) {
+            .onChange(of: entries.map(\.shelfKey)) {
                 appModel.downloads.register(entries, asMembersOf: playlist)
             }
             #if os(tvOS)
+            // The hero names the playlist, and tvOS would double it.
             .navigationTitle("")
             #else
             .navigationTitle(playlist.title)
+            .navigationBarTitleDisplayMode(.inline)
+            // The hero already names the playlist.
+            .toolbar(removing: .title)
+            .toolbar {
+                if !entries.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        DownloadToolbarButton(item: playlist, prompt: $downloadPrompt)
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            pendingWatchChange = wantsMarkWatched
+                        } label: {
+                            Image(systemName: wantsMarkWatched ? "eye" : "eye.slash")
+                        }
+                        .tint(wantsMarkWatched ? nil : .green)
+                        .accessibilityLabel(wantsMarkWatched ? "Mark as Watched" : "Mark as Unwatched")
+                        // VoiceOver would otherwise announce a checkmark image as "selected", which this is not.
+                        .accessibilityRemoveTraits(.isSelected)
+                    }
+                }
+            }
             #endif
             .task { await load() }
             .fullScreenCover(item: $playback) { request in
                 PlayerView(item: request.item, queue: request.queue, onStop: { Task { await load() } })
             }
-            .alert("Couldn't Change the Playlist", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            .navigationDestination(item: $openedItem) { ItemDetailView(item: $0) }
+            .alert("Couldn't Change the Playlist", isPresented: $errorMessage.isPresent()) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(errorMessage ?? "")
+            }
+            .alert(
+                pendingWatchChange == false ? "Mark Playlist as Unwatched?" : "Mark Playlist as Watched?",
+                isPresented: $pendingWatchChange.isPresent(),
+                presenting: pendingWatchChange
+            ) { watched in
+                if watched {
+                    Button("Mark as Watched") { setWatched(true) }
+                } else {
+                    Button("Mark as Unwatched", role: .destructive) { setWatched(false) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { watched in
+                if watched {
+                    Text("Everything in \(playlist.title) will be marked as watched, in all your Jellyfin apps. Their watched dates will be set to now.")
+                } else {
+                    Text("Everything in \(playlist.title) will be marked as unwatched, in all your Jellyfin apps. This resets their play counts and watch dates, and can't be undone.")
+                }
             }
     }
 
@@ -272,108 +329,132 @@ struct PlaylistDetailView: View {
                 Button("Retry") { Task { await load() } }
             }
         default:
-            list
+            page
         }
     }
 
-    private var list: some View {
-        #if os(tvOS)
-        tvList
-        #else
-        iosList
-        #endif
-    }
-
-    #if os(tvOS)
-    /// The hero over the entries in a scroll view, as the show page has, so the hero fills the screen and scrolls away the same
-    /// way. (A list's rows are inset, and can't have a hero that runs edge to edge.)
-    private var tvList: some View {
+    /// The hero, then the entries, in a scroll view like a season's page has, so the hero fills the screen and scrolls away
+    /// the same way.
+    private var page: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Layout.shelfSpacing) {
+            VStack(alignment: .leading, spacing: Self.rowSpacing) {
                 ListHero(
                     item: playlist,
-                    imageURL: playlist.heroArtworkURL(among: entries),
+                    // As on a season's page: no artwork behind the details, a sharp poster in the top right.
+                    style: .poster(playlist.posterURL ?? entries.first?.posterURL),
                     detailsLine: entries.isEmpty ? nil : summary,
                     viewport: viewport
                 ) {
                     heroButtons
                 }
 
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    ForEach(entries, id: \.entryID) { entry in
-                        row(for: entry)
-                    }
-
-                    if entries.isEmpty, case .loaded = phase {
-                        ContentUnavailableView("Empty Playlist", systemImage: "list.bullet.rectangle", description: Text("Add movies and episodes from their pages."))
-                    }
+                if entries.isEmpty {
+                    ContentUnavailableView("Empty Playlist", systemImage: "list.bullet.rectangle", description: Text("Add movies and episodes from their pages."))
+                        .frame(maxWidth: .infinity)
+                } else {
+                    MediaShelf(
+                        title: entries.count == 1 ? String(localized: "1 Item") : String(localized: "\(entries.count) Items"),
+                        items: entries,
+                        isWide: true,
+                        hasMore: false,
+                        // Reports which card has focus, so the page's background can follow it.
+                        focus: $focusedCard,
+                        focusPrefix: Self.focusPrefix,
+                        autoFocusItemID: firstUnwatched?.shelfKey,
+                        extraMenuEntries: menuEntries(for:),
+                        onChange: { Task { await load() } },
+                        // Selecting an entry plays it and the ones after it; its page is "Go to …" in the menu.
+                        navigation: ItemNavigation(open: { openedItem = $0 }, play: { play(from: $0) }, playsOnTap: true)
+                    )
                 }
-                .buttonStyle(.card)
-                .padding(.horizontal, Layout.contentInset)
-                .padding(.bottom)
             }
+            .padding(.bottom)
+            // The entry that has focus, blurred, fills the whole page behind the hero and the row, and moves with the page.
+            .background(alignment: .top) { BlurredPageBackground(url: backgroundURL) }
         }
+        .task(id: "\(focusedCard ?? "")|\(entries.isEmpty)") { await updateBackground() }
+        #if os(tvOS)
         // Measured before the safe area is ignored, so the hero can be as tall as the whole screen, as Home's is.
         .onGeometryChange(for: CGSize.self) { proxy in
             CGSize(width: proxy.size.width, height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
         } action: { viewport = $0 }
-        .ignoresSafeArea(edges: .top)
-    }
-    #else
-    private var iosList: some View {
-        List {
-            ListHero(
-                item: playlist,
-                imageURL: playlist.heroArtworkURL(among: entries),
-                detailsLine: entries.isEmpty ? nil : summary,
-                viewport: viewport
-            ) {
-                heroButtons
-            }
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-
-            Section {
-                ForEach(entries, id: \.entryID) { entry in
-                    row(for: entry)
-                }
-                .onMove(perform: move)
-                .onDelete(perform: delete)
-
-                if entries.isEmpty, case .loaded = phase {
-                    ContentUnavailableView("Empty Playlist", systemImage: "list.bullet.rectangle", description: Text("Add movies and episodes from their pages."))
-                        .listRowBackground(Color.clear)
-                }
-            }
-        }
+        #else
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
+        #endif
         // The hero runs under the status and navigation bars, up to the top edge of the screen.
         .ignoresSafeArea(edges: .top)
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
-        .navigationBarTitleDisplayMode(.inline)
-        // The hero already names the playlist.
-        .toolbar(removing: .title)
-        .toolbar {
-            if !entries.isEmpty {
-                ToolbarItem(placement: .primaryAction) {
-                    DownloadToolbarButton(item: playlist, prompt: $downloadPrompt)
-                }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                EditButton()
-            }
-        }
     }
-    #endif
 
-    /// Play and Shuffle, styled like the show page's buttons, and on tvOS, which has no toolbar, the download button.
+    /// Space between the hero and the row beneath it.
+    private static var rowSpacing: CGFloat {
+        #if os(tvOS)
+        Layout.shelfSpacing
+        #else
+        24
+        #endif
+    }
+
+    // MARK: Background
+
+    /// Changes the blurred background to the still of the entry that has focus.
+    ///
+    /// Only that one picture is ever loaded, and it's the still the card is already showing, so it's in the image cache. Focus has
+    /// to rest on a card for a moment first, so moving quickly along the row doesn't change it on every card. When focus is
+    /// somewhere else (on Play, say) the background stays as it was. Before focus has been anywhere, it's the still of the entry
+    /// that's about to get it, or on iOS, which has no focus, the one it stays on.
+    private func updateBackground() async {
+        let target: URL?
+        if let key = focusedCard, key.hasPrefix(Self.focusPrefix + "|") {
+            let entryKey = String(key.dropFirst(Self.focusPrefix.count + 1))
+            target = entries.first { $0.shelfKey == entryKey }?.gridArtworkURL
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+        } else if backgroundURL == nil {
+            target = (firstUnwatched ?? entries.first)?.gridArtworkURL ?? playlist.posterURL
+        } else {
+            return
+        }
+        guard let target, target != backgroundURL else { return }
+        // In memory before the fade starts, so it fades in from the old picture rather than from nothing.
+        await ImageCache.shared.preload([target], timeout: .milliseconds(800))
+        guard !Task.isCancelled else { return }
+        backgroundURL = target
+    }
+
+    // MARK: Hero
+
+    /// The first entry that isn't watched, which Play starts from and focus lands on. Nil if everything is.
+    private var firstUnwatched: MediaItem? { entries.first { !$0.isPlayed } }
+
+    /// Whether the watched button marks everything watched, rather than unwatched: unless everything already is.
+    private var wantsMarkWatched: Bool { !entries.allSatisfy(\.showsWatchedBadge) }
+
+    /// What Play says: "Play" or, for one that's partly watched, "Resume", then the name of the entry it starts from.
+    private var playTitle: String {
+        guard let start = firstUnwatched ?? entries.first else { return String(localized: "Play") }
+        return start.playedFraction == nil ? String(localized: "Play \(start.title)") : String(localized: "Resume \(start.title)")
+    }
+
+    /// "12 items · 18h 40m".
+    private var summary: String {
+        let count = String(localized: "\(entries.count) items")
+        let total = entries.compactMap(\.runtime).reduce(0, +)
+        guard total > 0 else { return count }
+        let time = Duration.seconds(total).formatted(.units(allowed: [.hours, .minutes], width: .narrow))
+        return "\(count) · \(time)"
+    }
+
+    /// Play and Shuffle, styled like the show page's buttons, and on tvOS, which has no toolbar, the watched and download buttons.
     private var heroButtons: some View {
         #if os(tvOS)
         HStack(spacing: 24) {
             // The same bordered capsules as the show page's, so they take the theme's color when focused.
-            Button(action: play) {
-                Label("Play", systemImage: "play.fill")
+            Button(action: playNext) {
+                Label(playTitle, systemImage: "play.fill")
                     .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                    .frame(maxWidth: 640)
+                    .fixedSize()
             }
             .buttonStyle(.bordered)
             .buttonBorderShape(.capsule)
@@ -388,6 +469,13 @@ struct PlaylistDetailView: View {
             .disabled(entries.isEmpty)
 
             if !entries.isEmpty {
+                FocusExpandingIconButton(
+                    wantsMarkWatched ? "Mark as Watched" : "Mark as Unwatched",
+                    systemImage: wantsMarkWatched ? "eye" : "eye.slash",
+                    font: .system(size: 30, weight: .semibold),
+                    iconColor: wantsMarkWatched ? .white : .green,
+                    action: { pendingWatchChange = wantsMarkWatched }
+                )
                 DownloadToolbarButton(item: playlist, prompt: $downloadPrompt, expandsOnFocus: true)
                     .buttonStyle(.bordered)
                     .buttonBorderShape(.circle)
@@ -396,10 +484,13 @@ struct PlaylistDetailView: View {
         #else
         HStack(spacing: 12) {
             // Dark on white, like the TV app's Play button; the hero's text is white otherwise.
-            Button(action: play) {
-                Label("Play", systemImage: "play.fill")
+            Button(action: playNext) {
+                Label(playTitle, systemImage: "play.fill")
                     .font(.headline)
                     .foregroundStyle(.black)
+                    .lineLimit(1)
+                    .frame(maxWidth: 240)
+                    .fixedSize()
             }
             .buttonStyle(.glassProminent)
             .tint(.white)
@@ -417,9 +508,18 @@ struct PlaylistDetailView: View {
         #endif
     }
 
-    private func play() {
-        guard let first = entries.first else { return }
-        playback = PlaylistPlayback(item: first, queue: entries)
+    // MARK: Playing
+
+    /// Plays from the first entry that isn't watched, or the start if everything is, through to the end.
+    private func playNext() {
+        guard let start = firstUnwatched ?? entries.first else { return }
+        play(from: start)
+    }
+
+    /// Plays an entry and the ones after it.
+    private func play(from entry: MediaItem) {
+        guard let index = entries.firstIndex(where: { $0.shelfKey == entry.shelfKey }) else { return }
+        playback = PlaylistPlayback(item: entries[index], queue: Array(entries[index...]))
     }
 
     private func shuffle() {
@@ -428,79 +528,32 @@ struct PlaylistDetailView: View {
         playback = PlaylistPlayback(item: first, queue: shuffled)
     }
 
-    /// "12 items · 18h 40m".
-    private var summary: String {
-        let count = String(localized: "\(entries.count) items")
-        let total = entries.compactMap(\.runtime).reduce(0, +)
-        guard total > 0 else { return count }
-        let time = Duration.seconds(total).formatted(.units(allowed: [.hours, .minutes], width: .narrow))
-        return "\(count) · \(time)"
-    }
-
-    private func row(for entry: MediaItem) -> some View {
-        Button {
-            guard let index = entries.firstIndex(where: { $0.entryID == entry.entryID }) else { return }
-            playback = PlaylistPlayback(item: entry, queue: Array(entries[index...]))
-        } label: {
-            HStack(spacing: 16) {
-                ArtworkView(url: entry.rowArtworkURL, aspectRatio: entry.hasWidescreenRowArtwork ? 16.0 / 9.0 : 2.0 / 3.0)
-                    .frame(width: entry.hasWidescreenRowArtwork ? rowArtworkWidth : rowArtworkWidth / 2)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(entry.captionLines.enumerated()), id: \.offset) { index, line in
-                        Text(line)
-                            .font(index == 0 ? .body : .subheadline)
-                            .foregroundStyle(index == 0 ? .primary : .secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .contextMenu {
-            if let index = entries.firstIndex(where: { $0.entryID == entry.entryID }) {
-                if index > 0 {
-                    Button("Move Up", systemImage: "arrow.up") { moveEntry(at: index, to: index - 1) }
-                }
-                if index < entries.count - 1 {
-                    Button("Move Down", systemImage: "arrow.down") { moveEntry(at: index, to: index + 1) }
-                }
-                Button("Remove from Playlist", systemImage: "minus.circle", role: .destructive) { remove(at: [index]) }
-            }
-        }
-    }
-
-    private var rowArtworkWidth: CGFloat {
-        #if os(tvOS)
-        return 240
-        #else
-        return 112
-        #endif
-    }
-
     // MARK: Loading and editing
 
     private func load() async {
         do {
-            entries = try await appModel.service.children(of: playlist)
+            let latest = try await appModel.service.children(of: playlist)
+            await ImageCache.shared.preload(latest.prefix(4).compactMap(\.gridArtworkURL))
+            entries = latest
             phase = .loaded
         } catch {
             phase = .failed(error.localizedDescription)
         }
     }
 
-    #if os(iOS)
-    private func move(from source: IndexSet, to destination: Int) {
-        guard let from = source.first else { return }
-        // `move(toOffset:)` counts the gap the item leaves, which the server's index doesn't.
-        moveEntry(at: from, to: destination > from ? destination - 1 : destination)
+    /// The entries of an entry's long-press menu that belong to a playlist: move it, or take it out.
+    private func menuEntries(for entry: MediaItem) -> [ItemMenuEntry] {
+        guard let index = entries.firstIndex(where: { $0.shelfKey == entry.shelfKey }) else { return [] }
+        var result: [ItemMenuEntry] = []
+        if index > 0 {
+            result.append(ItemMenuEntry(id: .moveEarlier, title: String(localized: "Move Earlier"), systemImage: "arrow.left", perform: { moveEntry(at: index, to: index - 1) }))
+        }
+        if index < entries.count - 1 {
+            result.append(ItemMenuEntry(id: .moveLater, title: String(localized: "Move Later"), systemImage: "arrow.right", perform: { moveEntry(at: index, to: index + 1) }))
+        }
+        result.append(ItemMenuEntry(id: .removeFromPlaylist, title: String(localized: "Remove from Playlist"), systemImage: "minus.circle", perform: { remove(at: index) }))
+        return result
     }
-
-    private func delete(at offsets: IndexSet) {
-        remove(at: Array(offsets))
-    }
-    #endif
 
     /// Moves an entry at once, then tells the server. If that fails, the playlist is fetched again to show what's really there.
     private func moveEntry(at from: Int, to index: Int) {
@@ -519,25 +572,52 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// Takes entries out at once, then tells the server. If that fails, the playlist is fetched again to show what's really there.
-    private func remove(at indices: [Int]) {
-        let removed = indices.filter(entries.indices.contains).map { entries[$0] }
-        entries.remove(atOffsets: IndexSet(indices))
-        let entryIDs = removed.compactMap(\.playlistEntryID)
-        guard !entryIDs.isEmpty else { return }
+    /// Takes an entry out at once, then tells the server. If that fails, the playlist is fetched again to show what's really there.
+    private func remove(at index: Int) {
+        guard entries.indices.contains(index) else { return }
+        let removed = entries.remove(at: index)
+        guard let entryID = removed.playlistEntryID else { return }
         let (service, playlistID) = (appModel.service, playlist.id)
         Task {
             do {
-                try await service.removeEntries(withIDs: entryIDs, fromPlaylist: playlistID)
+                try await service.removeEntries(withIDs: [entryID], fromPlaylist: playlistID)
             } catch {
                 errorMessage = error.localizedDescription
                 await load()
             }
         }
     }
-}
 
-private extension MediaItem {
-    /// Identifies an entry in a playlist, which can hold the same item more than once.
-    var entryID: String { playlistEntryID ?? id }
+    /// Marks every entry watched or unwatched, once the user has confirmed. They show it at once; if the server refuses any,
+    /// the playlist is fetched again to show what's really so, with the reason.
+    private func setWatched(_ watched: Bool) {
+        entries = entries.map { entry in
+            var entry = entry
+            entry.isPlayed = watched
+            entry.playedFraction = nil
+            return entry
+        }
+        let service = appModel.service
+        // The same movie twice in a playlist is still one thing to mark.
+        let ids = Array(Set(entries.map(\.id)))
+        Task {
+            do {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for id in ids {
+                        group.addTask {
+                            if watched {
+                                try await service.markWatched(itemID: id)
+                            } else {
+                                try await service.markUnwatched(itemID: id)
+                            }
+                        }
+                    }
+                    try await group.waitForAll()
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            await load()
+        }
+    }
 }

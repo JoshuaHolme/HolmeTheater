@@ -141,7 +141,7 @@ struct ShowDetailView: View {
                     // An episode or movie has no rows of episodes or seasons beneath it.
                 } else if isSeason {
                     // Already inside the season, so its episodes have no "Go to Season".
-                    EpisodeShelf(season: item, reloadID: reloadCount, omitting: [.season], open: { openedShow = $0 }, play: { playingItem = $0 })
+                    EpisodeShelf(season: item, reloadID: reloadCount, omitting: [.season], focusesFirstUnwatched: true, open: { openedShow = $0 }, play: { playingItem = $0 })
                 } else {
                     SeasonsSection(item: item, reloadID: reloadCount, open: { openedShow = $0 }, play: { playingItem = $0 }) { watchActions.actions(for: $0) }
                 }
@@ -203,13 +203,21 @@ struct ShowDetailView: View {
         #if os(tvOS)
         .focusScope(focusNamespace)
         // Play appears once its episode has loaded, after focus has already settled somewhere else.
-        .onChange(of: nextEpisode?.id) { resetFocus(in: focusNamespace) }
+        // A season's focus goes to its first unwatched episode, which its shelf asks for, so Play doesn't take it back.
+        .onChange(of: nextEpisode?.id) { if !isSeason { resetFocus(in: focusNamespace) } }
         // An episode or movie has its Play button from the first frame, and the focus engine settles on whatever
         // comes first on the page (the description) before the preference is read. Ask again once it has settled,
         // only the first time so coming back to the page doesn't take focus from where the user was.
         .task {
             guard !didSettleFocus else { return }
             didSettleFocus = true
+            if isSeason {
+                // Focus goes to the first unwatched episode (see `EpisodeShelf`), not Play; the description can take it
+                // from there on.
+                try? await Task.sleep(for: .milliseconds(150))
+                overviewIsFocusable = true
+                return
+            }
             try? await Task.sleep(for: .milliseconds(250))
             resetFocus(in: focusNamespace)
             // The preference above is only a hint to the focus engine, so also ask for Play outright, once the page
@@ -1007,7 +1015,8 @@ struct ShowDetailView: View {
             .buttonStyle(.bordered)
             // A pill, as on Home.
             .buttonBorderShape(.capsule)
-            .prefersDefaultFocus(true, in: focusNamespace)
+            // Not on a season's page, where the first unwatched episode is what's focused first.
+            .prefersDefaultFocus(!isSeason, in: focusNamespace)
             .focused($focusedControl, equals: .play)
             #else
             .buttonStyle(.glassProminent)

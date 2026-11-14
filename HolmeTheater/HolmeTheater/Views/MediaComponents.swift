@@ -112,6 +112,10 @@ extension MediaItem {
     /// Whether the item can be played directly (as opposed to being a container like a series).
     var isPlayable: Bool { kind == .movie || kind == .episode || kind == .extra }
 
+    /// What tells it apart from the others in a shelf. A playlist can hold the same movie twice, so there it's the entry's
+    /// own ID rather than the item's.
+    var shelfKey: String { playlistEntryID ?? id }
+
     /// e.g. "Show Name · S1E3" for episodes; nil for everything else.
     var subtitle: String? {
         guard kind == .episode else { return nil }
@@ -816,6 +820,13 @@ struct MediaShelf: View {
     /// Menu links to leave out, for a shelf that's inside the screen they lead to.
     var omitting: Set<RelatedLink> = []
 
+    /// The ``MediaItem/shelfKey`` of a card to scroll to and, on tvOS, put focus on once the shelf first shows, e.g. the first
+    /// episode that isn't watched. Nil leaves focus to the system.
+    var autoFocusItemID: String?
+
+    /// Extra entries for an item's long-press menu, after the usual ones.
+    var extraMenuEntries: (MediaItem) -> [ItemMenuEntry] = { _ in [] }
+
     /// Called after a long-press action has changed the server, so the shelf's owner can reload.
     var onChange: () -> Void = {}
 
@@ -831,6 +842,15 @@ struct MediaShelf: View {
     /// Changes made since `items` last updated, shown at once while the owner reloads. Cleared when the
     /// reload arrives.
     @State private var effects: [WatchEffect] = []
+
+    /// The shelf's own record of which card has focus, used when its owner gave nowhere to report it, so the shelf can still
+    /// move focus to a card.
+    @FocusState private var ownFocus: String?
+
+    /// Whether focus has been moved to ``autoFocusItemID``, which only happens once.
+    @State private var didAutoFocus = false
+
+    private var focusBinding: FocusState<String?>.Binding { focus ?? $ownFocus }
 
     /// `items` with the user's latest changes applied.
     private var shownItems: [MediaItem] {
@@ -849,22 +869,25 @@ struct MediaShelf: View {
             heading
                 .padding(.horizontal, Layout.contentInset)
 
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: Layout.cardSpacing) {
-                    ForEach(shownItems) { item in
-                        card(for: item)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: Layout.cardSpacing) {
+                        ForEach(shownItems, id: \.shelfKey) { item in
+                            card(for: item)
+                        }
+                        #if os(tvOS)
+                        seeAllCard
+                        #endif
                     }
-                    #if os(tvOS)
-                    seeAllCard
-                    #endif
+                    .padding(.horizontal, Layout.contentInset)
+                    .padding(.horizontal, bleed)
                 }
-                .padding(.horizontal, Layout.contentInset)
-                .padding(.horizontal, bleed)
+                .padding(.horizontal, -bleed)
+                .scrollIndicators(.hidden)
+                // Lets a focused card lift and grow past the edge of the scroll view.
+                .scrollClipDisabled()
+                .task(id: autoFocusItemID) { await moveToAutoFocusItem(proxy) }
             }
-            .padding(.horizontal, -bleed)
-            .scrollIndicators(.hidden)
-            // Lets a focused card lift and grow past the edge of the scroll view.
-            .scrollClipDisabled()
         }
         // Focus moving up or down lands on this row from anywhere along its width.
         .tvFocusSection()
@@ -873,10 +896,30 @@ struct MediaShelf: View {
         .watchActionAlerts(watchActions)
     }
 
+    /// Scrolls to the card that's to have focus, so it's been built, then on tvOS asks for focus on it. Only the first time: it
+    /// isn't to pull focus back after the viewer has moved on, or when the shelf reloads.
+    private func moveToAutoFocusItem(_ proxy: ScrollViewProxy) async {
+        guard let id = autoFocusItemID, !didAutoFocus else { return }
+        proxy.scrollTo(id, anchor: .leading)
+        #if os(tvOS)
+        // After the page has settled and the card has been laid out, which focus can't be given to before.
+        try? await Task.sleep(for: .milliseconds(500))
+        guard !Task.isCancelled else { return }
+        focusBinding.wrappedValue = "\(focusPrefix)|\(id)"
+        #endif
+        didAutoFocus = true
+    }
+
     /// A poster that plays its item when tapped, and peeks and pops when long-pressed.
     @ViewBuilder
     private func card(for item: MediaItem) -> some View {
-        let actions = watchActions.actions(for: item, navigation: navigation, omitting: omitting)
+        var actions = watchActions.actions(for: item, navigation: navigation, omitting: omitting)
+        let extra = extraMenuEntries(item)
+        let _ = {
+            guard !extra.isEmpty else { return }
+            actions = actions ?? ItemRowActions()
+            actions?.playlistEntries = extra
+        }()
         #if os(iOS)
         // A UIKit layer over the card, so that tapping the preview can open the item. SwiftUI's preview can't.
         cardBody(for: item)
@@ -886,7 +929,7 @@ struct MediaShelf: View {
             cardBody(for: item)
         }
         .cardLinkStyle()
-        .modifier(CardFocusTracking(focus: focus, key: "\(focusPrefix)|\(item.id)"))
+        .modifier(CardFocusTracking(focus: focusBinding, key: "\(focusPrefix)|\(item.shelfKey)"))
         .contextMenu {
             ItemActionButtons(entries: actions?.menuEntries(for: item) ?? [])
         }
@@ -1018,6 +1061,9 @@ struct ItemRowActions {
     /// Opens the sheet for adding the item to a collection. Nil for anything a collection can't hold.
     var addToCollection: (() -> Void)?
 
+    /// Entries for an item that's in a playlist: move it earlier or later, or take it out. They come last in the menu.
+    var playlistEntries: [ItemMenuEntry] = []
+
     /// Plays the item. Offered first in the menu on tvOS, where selecting a card opens its detail screen rather
     /// than playing it. Nil for anything that can't be played.
     var play: (() -> Void)?
@@ -1096,6 +1142,9 @@ struct ItemMenuEntry: Identifiable {
         case removeDownload
         case addToPlaylist
         case addToCollection
+        case moveEarlier
+        case moveLater
+        case removeFromPlaylist
         case viewPhoto
         case openLink
         case copyLink
@@ -1138,7 +1187,7 @@ extension ItemRowActions {
         if let addToCollection {
             entries.append(ItemMenuEntry(id: .addToCollection, title: String(localized: "Add to Collection"), systemImage: "square.stack", perform: addToCollection))
         }
-        return entries + watchEntries(for: item) + downloadEntries
+        return entries + watchEntries(for: item) + downloadEntries + playlistEntries
     }
 
     /// The watch-state entries for an item.
