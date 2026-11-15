@@ -1,8 +1,9 @@
 {
   "images" : [
     {
-      "filename" : "Holme Logo.svg",
-      "idiom" : "tv"
+      "filename" : "Front.png",
+      "idiom" : "tv",
+      "scale" : "1x"
     }
   ],
   "info" : {
