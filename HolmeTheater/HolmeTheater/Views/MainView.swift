@@ -76,6 +76,8 @@ struct MainView: View {
         }
         #if os(tvOS)
         .tabViewStyle(.sidebarAdaptable)
+        // Over the whole tab view rather than the Support page, which disables the sidebar too until it's closed.
+        .supportCelebration()
         // The Menu button on the remote leaves the app once there's nothing left to go back to, which is easy to do by
         // accident while backing out of a page. Ask first.
         .onExitCommand { confirmsExit = true }

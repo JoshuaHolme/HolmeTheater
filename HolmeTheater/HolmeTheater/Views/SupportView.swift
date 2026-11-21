@@ -28,7 +28,10 @@ struct SupportView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .task { await support.loadProducts() }
+            #if !os(tvOS)
+            // On Apple TV, MainView shows it, so it can also hold back the sidebar.
             .supportCelebration()
+            #endif
     }
 
     @ViewBuilder
