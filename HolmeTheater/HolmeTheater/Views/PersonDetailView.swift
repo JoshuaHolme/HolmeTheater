@@ -87,7 +87,10 @@ struct PersonDetailView: View {
                     // The first posters load before the grid shows, so they don't pop in.
                     await ImageCache.shared.preload(found.prefix(9).compactMap(\.item.posterURL))
                     return found
-                }, reloadID: reloadCount, loadingHeight: Self.creditsLoadingHeight) { found in
+                }, reloadID: reloadCount, loadingHeight: Self.creditsLoadingHeight, placeholder: AnyView(
+                    // Inside the page's own scroll view, so it doesn't scroll itself.
+                    SkeletonTileGrid(columns: [GridItem(.adaptive(minimum: Layout.posterWidth), spacing: Layout.cardSpacing, alignment: .top)], count: 6)
+                )) { found in
                     credits(found)
                 }
             }

@@ -327,7 +327,9 @@ private struct HomeLibraryChoiceView: View {
                 } else if failed {
                     TVSettingsCaption(text: "Couldn't load your libraries.")
                 } else {
-                    ProgressView().frame(maxWidth: .infinity)
+                    SkeletonLines(count: 3)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Loading")
                 }
                 if let footer { Text(footer).font(.callout).foregroundStyle(.secondary).padding(.horizontal, 24) }
             }
@@ -382,7 +384,9 @@ private struct HomeLibraryChoiceView: View {
                 } else if failed {
                     Text("Couldn't load your libraries.").foregroundStyle(.secondary)
                 } else {
-                    ProgressView().frame(maxWidth: .infinity)
+                    SkeletonLines(count: 3)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Loading")
                 }
             } header: {
                 Text("Libraries")

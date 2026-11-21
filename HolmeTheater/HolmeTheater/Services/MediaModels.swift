@@ -516,6 +516,10 @@ nonisolated struct PlaybackOptions: Hashable, Sendable {
     /// The ``MediaTrack/index`` of the subtitle track to show, or ``PlaybackOptions/noSubtitles``.
     var subtitleIndex: Int?
 
+    /// Whether the server may send the file as it is. Off for a file the device couldn't show a picture from that way, so
+    /// the server remuxes or converts it into something it can. See ``DirectPlayFailures``.
+    var allowsDirectPlay = true
+
     /// The `subtitleIndex` that asks for no subtitles at all.
     static let noSubtitles = -1
 }

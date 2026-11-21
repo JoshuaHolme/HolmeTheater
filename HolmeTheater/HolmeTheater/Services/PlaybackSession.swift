@@ -498,7 +498,8 @@ final class PlaybackSession {
         // Kept, so closing the player stops them asking the server for what it no longer needs.
         lookups = [
             Task { segments = await service.segments(for: item) },
-            Task { nextEpisode = await findNextEpisode() }
+            Task { nextEpisode = await findNextEpisode() },
+            Task { await fallBackIfNoPicture() }
         ]
 
         let (service, item, info, position) = (service, item, info, position)
@@ -516,6 +517,48 @@ final class PlaybackSession {
                     isPaused: self.player.timeControlStatus == .paused
                 )
             }
+        }
+    }
+
+    /// Whether the server may send the file as it is. Turned off once a direct-played file turns out not to show a picture,
+    /// and kept off for any stream asked for after, so a change of quality or track doesn't bring the black screen back.
+    @ObservationIgnored private var allowsDirectPlay = true
+
+    /// How many half seconds a ready player may go without a picture before it's given up on: long enough for a working
+    /// file's picture to appear, which it does as soon as the player is ready.
+    private static let pictureGraceTicks = 4
+
+    /// Direct play can leave a black screen. A file the device can't decode (HEVC tagged `hev1` rather than `hvc1`, say)
+    /// plays its sound and keeps time with nothing on screen, and the player reports no error, only a picture size of zero.
+    /// So when the player is ready, the file has video, and no picture has shown within a moment, or the file fails outright,
+    /// this asks the server for a stream the device can show instead, carrying on from the same point. Whatever the file's
+    /// library, it only acts on what the player itself can't show.
+    private func fallBackIfNoPicture() async {
+        guard info.method == .directPlay, !info.url.isFileURL, let playerItem = player.currentItem else { return }
+        // Sound only is no failure.
+        guard let video = try? await playerItem.asset.loadTracks(withMediaType: .video), !video.isEmpty else { return }
+
+        var readyTicks = 0
+        // Up to half a minute, for a slow connection to get the player ready.
+        for _ in 0..<60 {
+            try? await Task.sleep(for: .milliseconds(500))
+            // Closed, or moved on to another stream by a change of quality or track, which asks for its own.
+            guard !Task.isCancelled, !isStopped, player.currentItem === playerItem else { return }
+            switch playerItem.status {
+            case .readyToPlay:
+                // A picture that's showing has a size.
+                if playerItem.presentationSize != .zero { return }
+                readyTicks += 1
+                guard readyTicks >= Self.pictureGraceTicks else { continue }
+            case .failed:
+                break
+            default:
+                continue
+            }
+            allowsDirectPlay = false
+            DirectPlayFailures.record(item)
+            await switchStream { $0.allowsDirectPlay = false }
+            return
         }
     }
 
@@ -623,7 +666,8 @@ final class PlaybackSession {
             mediaSourceID: info.mediaSourceID,
             maxBitrate: info.maxBitrate,
             audioIndex: audioIndex,
-            subtitleIndex: subtitleIndex ?? PlaybackOptions.noSubtitles
+            subtitleIndex: subtitleIndex ?? PlaybackOptions.noSubtitles,
+            allowsDirectPlay: allowsDirectPlay
         )
         change(&options)
 

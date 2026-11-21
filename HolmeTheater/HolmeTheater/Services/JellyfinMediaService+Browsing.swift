@@ -220,25 +220,86 @@ extension JellyfinMediaService {
             return cache.items
         }
 
-        // The server can't filter by month and day, only by date range, so it's asked for every movie and episode and
-        // they're filtered here. Shows and seasons are left out; only the episodes released on the day count. Only the
-        // little that cards need is requested, since there can be thousands.
-        let parentIDs: [String?] = libraryIDs ?? [nil]
-        let items = try await Self.fetchEach(parentIDs) { parentID in
-            let request = Paths.getItems(parameters: .init(
-                userID: session.userID,
-                isRecursive: true,
-                parentID: parentID,
-                fields: [.primaryImageAspectRatio, .childCount, .recursiveItemCount],
-                includeItemTypes: [.movie, .episode],
-                enableUserData: true
-            ))
-            return try await self.mapItems(self.send(request, with: client), client: client)
+        // In two passes. Finding which items fall on the day means looking at every movie and episode, so that pass asks
+        // for as little of each as it can; only the few that match are then fetched in full, for their cards.
+        let saved = SavedOnThisDay.load(userID: session.userID)
+        let ids: [String]
+        if let saved, saved.month == month, saved.day == day, saved.libraryIDs == libraryIDs {
+            // Already worked out today, perhaps by an earlier launch, so only the second pass is left.
+            ids = saved.ids
+        } else {
+            ids = try await releasedIDs(onMonth: month, day: day, libraryIDs: libraryIDs, client: client, userID: session.userID)
+            SavedOnThisDay(month: month, day: day, libraryIDs: libraryIDs, ids: ids).save(userID: session.userID)
+        }
+
+        // In batches, so the request's address doesn't grow without limit on a day with a lot of releases.
+        let batches = stride(from: 0, to: ids.count, by: Self.onThisDayBatchSize).map {
+            Array(ids[$0..<min($0 + Self.onThisDayBatchSize, ids.count)])
+        }
+        let items = try await Self.fetchEach(batches) { batch in
+            try await self.items(withIDs: batch)
         }.flatMap { $0 }
 
         let matches = Self.itemsReleased(onMonth: month, day: day, among: items)
         onThisDayCache = (month, day, libraryIDs, matches)
         return matches
+    }
+
+    /// How many items one request fetches in full for On This Day.
+    private static let onThisDayBatchSize = 100
+
+    /// The first pass of On This Day: the IDs of the movies and episodes released on a month and day in any year.
+    ///
+    /// The server can't filter by month and day, only by date range, so every movie and episode is asked for and they're
+    /// filtered here. Shows and seasons are left out; only the episodes released on the day count. Nothing but what the
+    /// server sends by default is requested (the release date is part of it): no artwork, no watch state, no total.
+    private func releasedIDs(onMonth month: Int, day: Int, libraryIDs: [String]?, client: JellyfinClient, userID: String) async throws -> [String] {
+        let parentIDs: [String?] = libraryIDs ?? [nil]
+        let results = try await Self.fetchEach(parentIDs) { parentID in
+            let request = Paths.getItems(parameters: .init(
+                userID: userID,
+                isRecursive: true,
+                parentID: parentID,
+                includeItemTypes: [.movie, .episode],
+                enableUserData: false,
+                enableTotalRecordCount: false,
+                enableImages: false
+            ))
+            return try await self.send(request, with: client)
+        }
+
+        // Premiere dates are calendar dates stored at midnight UTC, so they're read as UTC, as in `itemsReleased`.
+        let calendar = Calendar.utc
+        var seen = Set<String>()
+        return results
+            .flatMap { $0.items ?? [] }
+            .compactMap { dto -> String? in
+                guard let id = dto.id, let date = dto.premiereDate else { return nil }
+                let components = calendar.dateComponents([.month, .day], from: date)
+                guard components.month == month, components.day == day, seen.insert(id).inserted else { return nil }
+                return id
+            }
+    }
+
+    /// What the first pass of On This Day found, kept on the device so a later launch the same day skips it. One for each
+    /// account, since each can see different items.
+    private struct SavedOnThisDay: Codable {
+        let month: Int
+        let day: Int
+        let libraryIDs: [String]?
+        let ids: [String]
+
+        private static func key(userID: String) -> String { "onThisDay.\(userID)" }
+
+        static func load(userID: String) -> SavedOnThisDay? {
+            UserDefaults.standard.data(forKey: key(userID: userID))
+                .flatMap { try? JSONDecoder().decode(SavedOnThisDay.self, from: $0) }
+        }
+
+        func save(userID: String) {
+            guard let data = try? JSONEncoder().encode(self) else { return }
+            UserDefaults.standard.set(data, forKey: Self.key(userID: userID))
+        }
     }
 
     /// The items whose release date falls on a month and day in any year, newest first.

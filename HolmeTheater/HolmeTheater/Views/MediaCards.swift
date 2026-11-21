@@ -27,7 +27,8 @@ struct ArtworkView: View {
                     case .success(let image):
                         image.resizable().scaledToFill()
                     case .empty where url != nil:
-                        ProgressView()
+                        // Still arriving: the same sweeping light the loading screens have.
+                        SkeletonBlock(cornerRadius: 0)
                     default:
                         Image(systemName: "film")
                             .font(.largeTitle)

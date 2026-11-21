@@ -219,8 +219,9 @@ struct ShelfListView: View {
             }
             .frame(maxWidth: .infinity)
         } else if hasMore {
-            ProgressView()
-                .frame(maxWidth: .infinity)
+            SkeletonRows(count: 2)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Loading")
                 #if !os(tvOS)
                 .listRowSeparator(.hidden)
                 #endif

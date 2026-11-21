@@ -51,8 +51,10 @@ final class HomeSettings {
         }
     }
 
-    /// Everything that's saved.
-    private struct Stored: Codable, Hashable {
+    /// Everything that's saved. File-private so its saving and loading can sit in an extension below.
+    fileprivate struct Stored: Hashable {
+        /// The shape of the saved data, so a later version can tell what it's reading and migrate it.
+        static let currentVersion = 1
         /// The sections, top to bottom.
         var order: [Section] = Section.allCases
         var hidden: Set<Section> = []
@@ -83,10 +85,20 @@ final class HomeSettings {
 
     @ObservationIgnored private let defaults: UserDefaults
     private static let key = "homeSettings"
+    /// Where saved settings that couldn't be read are kept, rather than being written over with the defaults.
+    private static let backupKey = "homeSettings.unreadable"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        var loaded = defaults.data(forKey: Self.key).flatMap { try? JSONDecoder().decode(Stored.self, from: $0) } ?? Stored()
+        let data = defaults.data(forKey: Self.key)
+        var loaded = Stored()
+        if let data {
+            if let decoded = try? JSONDecoder().decode(Stored.self, from: data) {
+                loaded = decoded
+            } else {
+                defaults.set(data, forKey: Self.backupKey)
+            }
+        }
         // A section added by a later version goes at the end rather than being missing, and a repeat is dropped.
         var seen = Set<Section>()
         loaded.order = loaded.order.filter { seen.insert($0).inserted }
@@ -237,4 +249,47 @@ final class HomeSettings {
     }
 
     var isDefault: Bool { stored == Stored() }
+}
+
+/// Saved settings load field by field, each falling back to its default. A field added by a later version, or a section
+/// that's since been renamed or removed, then costs only that one setting rather than all of them.
+extension HomeSettings.Stored: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case version, order, hidden, combinesUpNext, excludedLibraries, libraryOrder
+        case showsHero, heroOrder, heroExcludedLibraries, heroHidesWatched
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        // Sections by name, so one this version doesn't know is skipped rather than failing the lot.
+        let orderNames = (try? container.decodeIfPresent([String].self, forKey: .order)) ?? nil
+        order = orderNames.map { $0.compactMap(HomeSettings.Section.init(rawValue:)) } ?? defaults.order
+        let hiddenNames = (try? container.decodeIfPresent([String].self, forKey: .hidden)) ?? nil
+        hidden = Set((hiddenNames ?? []).compactMap(HomeSettings.Section.init(rawValue:)))
+        combinesUpNext = (try? container.decodeIfPresent(Bool.self, forKey: .combinesUpNext)) ?? defaults.combinesUpNext
+        excludedLibraries = (try? container.decodeIfPresent([String: Set<String>].self, forKey: .excludedLibraries))
+            .flatMap { $0 } ?? defaults.excludedLibraries
+        libraryOrder = (try? container.decodeIfPresent([String: [String]].self, forKey: .libraryOrder)) ?? nil
+        showsHero = (try? container.decodeIfPresent(Bool.self, forKey: .showsHero)) ?? defaults.showsHero
+        heroOrder = ((try? container.decodeIfPresent(String.self, forKey: .heroOrder)) ?? nil)
+            .flatMap(HomeSettings.HeroOrder.init(rawValue:))
+        heroExcludedLibraries = (try? container.decodeIfPresent(Set<String>.self, forKey: .heroExcludedLibraries))
+            .flatMap { $0 } ?? defaults.heroExcludedLibraries
+        heroHidesWatched = (try? container.decodeIfPresent(Bool.self, forKey: .heroHidesWatched)) ?? nil
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.currentVersion, forKey: .version)
+        try container.encode(order.map(\.rawValue), forKey: .order)
+        try container.encode(hidden.map(\.rawValue).sorted(), forKey: .hidden)
+        try container.encode(combinesUpNext, forKey: .combinesUpNext)
+        try container.encode(excludedLibraries, forKey: .excludedLibraries)
+        try container.encodeIfPresent(libraryOrder, forKey: .libraryOrder)
+        try container.encode(showsHero, forKey: .showsHero)
+        try container.encodeIfPresent(heroOrder?.rawValue, forKey: .heroOrder)
+        try container.encode(heroExcludedLibraries, forKey: .heroExcludedLibraries)
+        try container.encodeIfPresent(heroHidesWatched, forKey: .heroHidesWatched)
+    }
 }

@@ -30,6 +30,8 @@ struct SearchView: View {
                 GenreBrowser()
             } else if results.isEmpty && !isSearching {
                 ContentUnavailableView.search(text: query)
+            } else if results.isEmpty {
+                searchingPlaceholder
             } else {
                 resultsList
             }
@@ -41,7 +43,12 @@ struct SearchView: View {
         #else
         .navigationTitle("Search")
         #endif
+        #if os(iOS)
+        // Always showing, rather than tucked away until the page is pulled down.
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always))
+        #else
         .searchable(text: $query)
+        #endif
         .watchActionAlerts(watchActions)
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: { Task { await refreshResults() } }) }
@@ -57,6 +64,22 @@ struct SearchView: View {
 
     private var navigation: ItemNavigation {
         ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
+    }
+
+    /// What shows while the first results are on their way, laid out like them: a grid of landscape cards on tvOS, otherwise a
+    /// row each.
+    private var searchingPlaceholder: some View {
+        SkeletonScroll {
+            #if os(tvOS)
+            SkeletonTileGrid(columns: [GridItem(.adaptive(minimum: 360), spacing: Layout.cardSpacing, alignment: .top)], aspectRatio: 16.0 / 9.0, count: 6)
+                .padding()
+            #else
+            SkeletonRows(count: 8)
+                .padding(.horizontal)
+            #endif
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Searching")
     }
 
     /// One row per result: poster, title and a line of details, with a menu of actions on the right.
@@ -217,7 +240,18 @@ private struct GenreBrowser: View {
     private static let columnWidth: CGFloat = 250
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.genres() }) { genres in
+        AsyncContent(load: { try await appModel.service.genres() }, placeholder: AnyView(
+            // The same columns the genres will have, found the same way.
+            GeometryReader { proxy in
+                SkeletonScroll {
+                    SkeletonTileGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: Layout.cardSpacing, alignment: .top), count: Self.columnCount(for: proxy.size)),
+                        count: 8
+                    )
+                    .padding()
+                }
+            }
+        )) { genres in
             // A GeometryReader, rather than measuring after layout, so the first frame already has the right columns.
             GeometryReader { proxy in
             ScrollView {
@@ -246,7 +280,7 @@ struct GenreView: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.items(in: genre) }) { items in
+        AsyncContent(load: { try await appModel.service.items(in: genre) }, placeholder: AnyView(SkeletonPosterGrid())) { items in
             PosterBrowser(items: items, title: genre.name, offersGenreFilter: false)
         }
         #if os(tvOS)

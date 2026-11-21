@@ -42,6 +42,10 @@ struct AsyncContent<Value, Content: View>: View {
     /// Whether the error page, when the device is offline, links to the Downloads tab.
     var offersDownloads = false
 
+    /// Shown in place of the spinner while the first load runs, laid out like the content so it can take its place. Nil
+    /// shows the spinner.
+    var placeholder: AnyView?
+
     /// Builds the loaded UI from the fetched value.
     @ViewBuilder let content: (Value) -> Content
 
@@ -57,7 +61,12 @@ struct AsyncContent<Value, Content: View>: View {
         Group {
             switch phase {
             case .loading:
-                if let loadingHeight {
+                if let placeholder {
+                    // One "Loading" for the lot, not each placeholder block.
+                    placeholder
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Loading")
+                } else if let loadingHeight {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                         .frame(height: loadingHeight)

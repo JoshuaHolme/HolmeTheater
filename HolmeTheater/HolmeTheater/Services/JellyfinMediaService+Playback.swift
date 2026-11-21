@@ -23,7 +23,9 @@ extension JellyfinMediaService {
             // re-encodes its video, and a 4K re-encode can't keep up with playback, so the buffer drains and the
             // picture freezes. (The player waiting to minimise stalling, set in `PlaybackSession`, is what keeps a
             // direct-play file from freezing the picture while the audio carries on.)
-            enableDirectPlay: true,
+            // Off only for a file this device has been found unable to show a picture from as it is (see
+            // `DirectPlayFailures`), which the server then remuxes or converts instead.
+            enableDirectPlay: options.allowsDirectPlay && !DirectPlayFailures.contains(item),
             enableDirectStream: true,
             enableTranscoding: true,
             maxStreamingBitrate: options.maxBitrate ?? Self.deviceProfile.maxStreamingBitrate,

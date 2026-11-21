@@ -29,7 +29,7 @@ struct CollectionDetailView: View {
     private var canEdit: Bool { hasMembers && appModel.canManageCollections }
 
     var body: some View {
-        AsyncContent(load: loadItems, reloadID: reloadID) { items in
+        AsyncContent(load: loadItems, reloadID: reloadID, placeholder: AnyView(SkeletonPosterGrid())) { items in
             if items.isEmpty {
                 ContentUnavailableView("Empty Collection", systemImage: "square.stack", description: Text("There's nothing in this collection yet."))
             } else {
@@ -317,7 +317,9 @@ struct PlaylistDetailView: View {
     private var content: some View {
         switch phase {
         case .loading where entries.isEmpty:
-            ProgressView()
+            SkeletonScroll { SkeletonRows(count: 8, aspectRatio: 16.0 / 9.0).padding(.horizontal) }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Loading")
         case .failed(let message) where entries.isEmpty:
             ContentUnavailableView {
                 Label("Couldn't Load", systemImage: "exclamationmark.triangle")

@@ -31,6 +31,7 @@ nonisolated final class ImageCache: Sendable {
     static let shared = ImageCache()
 
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "ImageCache")
+    private static let diagQueue = DispatchQueue(label: "ImageCache.diag") // TEMP-DIAGNOSTIC
 
     /// Decoded images are kept up to roughly this many bytes. NSCache treats it as a hint, and the system
     /// also evicts under memory pressure.
@@ -211,8 +212,26 @@ nonisolated final class ImageCache: Sendable {
         }
 
         #if canImport(UIKit)
+        // TEMP-DIAGNOSTIC: remove after finding which image logs the Decompressor error.
+        let diagPath = url.isFileURL ? url.lastPathComponent : url.path()
+        let diagImage = image
+        let diagBytes = data.count
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Self.diagQueue.async {
+                Self.logger.error("DIAG begin \(diagPath, privacy: .public) bytes=\(diagBytes)")
+                _ = diagImage.preparingForDisplay()
+                Self.logger.error("DIAG end \(diagPath, privacy: .public)")
+                continuation.resume()
+            }
+        }
         // Decode now, off the main thread, so drawing the image later doesn't hitch scrolling.
-        image = await image.byPreparingForDisplay() ?? image
+        if let prepared = await image.byPreparingForDisplay() {
+            image = prepared
+        } else {
+            // Shown as it is, which may come out wrong. Logged by path, which names the item and kind of image, so a bad file on
+            // the server can be found; the query, where a token could be, is left out.
+            Self.logger.error("Couldn't decode image \(url.isFileURL ? url.lastPathComponent : url.path(), privacy: .public) (\(data.count) bytes)")
+        }
         #endif
 
         // Checked and stored under one lock, so `removeAll()` can't empty the cache between the two.
