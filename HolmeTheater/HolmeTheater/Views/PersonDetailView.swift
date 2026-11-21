@@ -129,15 +129,10 @@ struct PersonDetailView: View {
         #endif
     }
 
-    /// The height of the spinner while their credits load. On tvOS it's fixed: filling the scroll view's visible area
-    /// (the default) makes the layout loop forever there. Nil elsewhere, where filling it works.
-    private static var creditsLoadingHeight: CGFloat? {
-        #if os(tvOS)
-        300
-        #else
-        nil
-        #endif
-    }
+    /// The height of the spinner while their credits load. Fixed: filling the scroll view's visible area (the default)
+    /// makes the layout loop forever, hanging the app as the page is pushed. The spinner would be as wide as the scroll
+    /// view, inside this page's padding, so the content never settles on a width.
+    private static var creditsLoadingHeight: CGFloat? { 300 }
 
     /// Space between a credit's caption and the role under it: the caption's own line spacing on tvOS, where the
     /// artwork's gap is much larger.

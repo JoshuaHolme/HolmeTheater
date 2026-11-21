@@ -7,7 +7,7 @@ import AVKit
 import SwiftUI
 
 // The pieces of the iOS player's controls that stand on their own: the transport button style, the progress and
-// scrub bars, the end-time label, and the preview host.
+// scrub bars, the end-time label, the scrolling title, and the preview host.
 
 /// A button that shrinks and dims while pressed.
 struct TransportButtonStyle: ButtonStyle {
@@ -64,6 +64,105 @@ struct PlayerEndTime: View {
             .secondaryPlayerText()
             .lineLimit(1)
             .fixedSize()
+    }
+}
+
+/// One line of text that, when it's too long for its space, scrolls sideways to show the rest, as a song's title does in
+/// Music: it waits at its start, scrolls until its start comes round again, and repeats. It takes no more room than the
+/// line cut off would, so the views beside it stay put. With Reduce Motion on, it's cut off instead.
+struct MarqueeText: View {
+    let text: String
+
+    /// Whether it scrolls. Off while it can't be seen; turned back on, it carries on from where it stopped, so text
+    /// that's only briefly on screen at a time (the player's controls hide after a few seconds) still gets through.
+    var isAnimating = true
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The width of the line as laid out (cut off, if it's too long), and of all of it.
+    @State private var shownWidth: CGFloat = 0
+    @State private var fullWidth: CGFloat = 0
+
+    /// How long it had been animating when it last stopped, and when it started again since.
+    @State private var elapsedBeforePause: TimeInterval = 0
+    @State private var resumedAt = Date.now
+
+    /// The space between the end of the text and its start coming round again.
+    private static let gap: CGFloat = 40
+    /// Points a second.
+    private static let speed: CGFloat = 30
+    /// How long it rests at its start before each scroll.
+    private static let pause: TimeInterval = 1.5
+    /// How far the edges fade out, so the text doesn't stop at a hard line.
+    private static let fadeWidth: CGFloat = 12
+
+    /// Half a point of slack absorbs rounding.
+    private var scrolls: Bool { !reduceMotion && shownWidth > 0 && fullWidth > shownWidth + 0.5 }
+
+    var body: some View {
+        Text(text)
+            .lineLimit(1)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { shownWidth = $0 }
+            .background(alignment: .leading) {
+                // All of it on one line, only to measure it.
+                Text(text)
+                    .fixedSize()
+                    .hidden()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fullWidth = $0 }
+            }
+            // The cut-off line still sets the size; when it scrolls, the moving copy shows in its place.
+            .opacity(scrolls ? 0 : 1)
+            .overlay(alignment: .leading) {
+                if scrolls {
+                    TimelineView(.animation(paused: !isAnimating)) { context in
+                        let offset = offset(at: context.date)
+                        HStack(spacing: Self.gap) {
+                            Text(text)
+                            Text(text)
+                        }
+                        .fixedSize()
+                        .offset(x: offset)
+                        .frame(width: shownWidth, alignment: .leading)
+                        .mask { fadeMask(isMoving: offset < 0) }
+                    }
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(text))
+            // A new title starts from the beginning.
+            .onChange(of: text) {
+                elapsedBeforePause = 0
+                resumedAt = .now
+            }
+            .onChange(of: isAnimating) {
+                if isAnimating {
+                    resumedAt = .now
+                } else {
+                    elapsedBeforePause += Date.now.timeIntervalSince(resumedAt)
+                }
+            }
+    }
+
+    /// How far left the text is at `date`: still for the pause, then moving until the second copy is where the first
+    /// began, which looks the same as the start, so it starts again from there.
+    private func offset(at date: Date) -> CGFloat {
+        let distance = fullWidth + Self.gap
+        let period = Self.pause + distance / Self.speed
+        let animated = elapsedBeforePause + max(0, date.timeIntervalSince(resumedAt))
+        let elapsed = animated.truncatingRemainder(dividingBy: period)
+        return elapsed < Self.pause ? 0 : -CGFloat(elapsed - Self.pause) * Self.speed
+    }
+
+    /// The trailing edge always fades, where the text runs on; the leading edge only while it moves, so the first
+    /// letters are whole while it rests.
+    private func fadeMask(isMoving: Bool) -> some View {
+        HStack(spacing: 0) {
+            LinearGradient(colors: [isMoving ? .clear : .black, .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: Self.fadeWidth)
+            Rectangle()
+            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: Self.fadeWidth)
+        }
     }
 }
 

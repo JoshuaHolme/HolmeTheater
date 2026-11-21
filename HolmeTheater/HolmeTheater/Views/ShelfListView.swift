@@ -77,12 +77,17 @@ struct ShelfListView: View {
 
     private static let pageSize = 30
 
+    /// The width at which a portrait screen gets the grid rather than the list: an iPad's, but not a phone's, including
+    /// iPhone Duo's open inner display (about 670 points across).
+    private static let gridMinimumWidth: CGFloat = 700
+
     var body: some View {
-        // A grid of widescreen cards when the screen is wider than it is tall (landscape iPhone or iPad),
-        // otherwise a list of compact rows. A GeometryReader, rather than measuring after layout, so the
-        // first frame is already the right one and its footer doesn't start a page load that gets cancelled.
+        // A grid of widescreen cards when the screen is wider than it is tall (landscape iPhone or iPad), or wide
+        // enough for several across anyway (iPad in portrait), otherwise a list of compact rows. A GeometryReader,
+        // rather than measuring after layout, so the first frame is already the right one and its footer doesn't
+        // start a page load that gets cancelled.
         GeometryReader { proxy in
-            if proxy.size.width > proxy.size.height {
+            if proxy.size.width > proxy.size.height || proxy.size.width >= Self.gridMinimumWidth {
                 grid
             } else {
                 list

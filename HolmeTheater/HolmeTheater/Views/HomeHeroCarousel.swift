@@ -178,15 +178,21 @@ struct HomeHeroCarousel<Header: View>: View {
     private var dotColor: Color { accent.map { $0.mix(with: .white, by: 0.25) } ?? .white }
 
     /// The carousel's height: tall and nearly poster-shaped on a narrow screen, and no more than most of the screen's
-    /// height on a wide one. Like the artwork, it runs up under the status bar.
+    /// height on a wide one, but never too short for the heading at the top and the details at the bottom to fit
+    /// without overlapping (an iPhone on its side, where most of the screen would be only about 240 points). Like the
+    /// artwork, it runs up under the status bar.
     private var height: CGFloat {
         #if os(tvOS)
         // The whole screen, like the Apple TV app's. The first shelf rises over its bottom edge (see `HeroLayout`).
         return screenSize.height
         #else
-        return min(width * 1.25, screenSize.height * 0.82)
+        return max(min(width * 1.25, screenSize.height * 0.82), safeArea.top + Self.minimumHeightBelowBar)
         #endif
     }
+
+    /// How much of the carousel there is at least below the navigation bar: room for the heading, then the title, its
+    /// details, the buttons and the page dots.
+    private static var minimumHeightBelowBar: CGFloat { 290 }
 
     /// How many pages each side of the one showing exist. Enough that, however fast the remote turns pages, the page that's
     /// leaving is still there, in view, while the ones after it slide in.

@@ -361,9 +361,17 @@ struct PlayerControlsView: View {
                     .secondaryPlayerText()
                     .lineLimit(lines)
             }
-            Text(item.title)
-                .font(.headline)
-                .lineLimit(lines)
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    Text(item.title)
+                        .lineLimit(lines)
+                } else {
+                    // Beside the stream controls on a narrow screen it's often too long for its line, so it scrolls
+                    // to show the rest, while the controls are showing.
+                    MarqueeText(text: item.title, isAnimating: controlsAreShown && !model.showsTiming)
+                }
+            }
+            .font(.headline)
         }
     }
 
@@ -524,13 +532,20 @@ struct PlayerControlsView: View {
     @ViewBuilder
     private var panelBar: some View {
         if showsExpandedPanelBar {
-            HStack(spacing: 8) {
-                ForEach(availablePanels) { panel in
-                    pill(panel)
+            // On a narrow screen, such as an iPhone in portrait with all three pills, the end time doesn't fit beside them,
+            // and the row would push the controls past the screen's edges. It goes then: the progress row still shows the
+            // time left.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    pills
+                    Spacer(minLength: 8)
+                    if panel == nil {
+                        PlayerEndTime(model: model, scrubFraction: scrubFraction)
+                    }
                 }
-                Spacer(minLength: 8)
-                if panel == nil {
-                    PlayerEndTime(model: model, scrubFraction: scrubFraction)
+                HStack(spacing: 8) {
+                    pills
+                    Spacer(minLength: 0)
                 }
             }
         } else {
@@ -544,6 +559,13 @@ struct PlayerControlsView: View {
             }
             .scrollIndicators(.hidden)
             .scrollClipDisabled()
+        }
+    }
+
+    @ViewBuilder
+    private var pills: some View {
+        ForEach(availablePanels) { panel in
+            pill(panel)
         }
     }
 
