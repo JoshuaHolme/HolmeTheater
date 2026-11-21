@@ -31,7 +31,6 @@ nonisolated final class ImageCache: Sendable {
     static let shared = ImageCache()
 
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "ImageCache")
-    private static let diagQueue = DispatchQueue(label: "ImageCache.diag") // TEMP-DIAGNOSTIC
 
     /// Decoded images are kept up to roughly this many bytes. NSCache treats it as a hint, and the system
     /// also evicts under memory pressure.
@@ -212,18 +211,6 @@ nonisolated final class ImageCache: Sendable {
         }
 
         #if canImport(UIKit)
-        // TEMP-DIAGNOSTIC: remove after finding which image logs the Decompressor error.
-        let diagPath = url.isFileURL ? url.lastPathComponent : url.path()
-        let diagImage = image
-        let diagBytes = data.count
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            Self.diagQueue.async {
-                Self.logger.error("DIAG begin \(diagPath, privacy: .public) bytes=\(diagBytes)")
-                _ = diagImage.preparingForDisplay()
-                Self.logger.error("DIAG end \(diagPath, privacy: .public)")
-                continuation.resume()
-            }
-        }
         // Decode now, off the main thread, so drawing the image later doesn't hitch scrolling.
         if let prepared = await image.byPreparingForDisplay() {
             image = prepared
