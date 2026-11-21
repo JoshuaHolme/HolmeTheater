@@ -124,11 +124,11 @@ struct AccountView: View {
 
             VStack(alignment: .leading, spacing: 16) {
                 NavigationLink { HomeSettingsView() } label: {
-                    TVSettingsRow(title: "Home Screen", showsChevron: true)
+                    TVSettingsRow(title: "Home Screen", showsChevron: true, systemImage: "house")
                 }
                 .buttonStyle(.card)
                 NavigationLink { ThemeSettingsView() } label: {
-                    TVSettingsRow(title: "Themes", showsChevron: true)
+                    TVSettingsRow(title: "Themes", showsChevron: true, systemImage: "paintpalette")
                 }
                 .buttonStyle(.card)
                 NavigationLink { SupportView() } label: {
@@ -181,8 +181,12 @@ struct AccountView: View {
         }
 
         Section {
-            NavigationLink("Home Screen") { HomeSettingsView() }
-            NavigationLink("Themes") { ThemeSettingsView() }
+            NavigationLink { HomeSettingsView() } label: {
+                Label("Home Screen", systemImage: "house")
+            }
+            NavigationLink { ThemeSettingsView() } label: {
+                Label("Themes", systemImage: "paintpalette")
+            }
             NavigationLink { SupportView() } label: {
                 Label("Support Holme Theater", systemImage: "popcorn")
             }

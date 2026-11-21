@@ -16,7 +16,7 @@ struct SupportView: View {
 
     private var support: SupportStore { appModel.support }
 
-    private static let pitch: LocalizedStringKey = "Holme Theater is free and open source, with no ads, no tracking, and nothing locked. If it's become part of your movie nights, you can buy the projectionist a snack. Tip as often as you like, or never."
+    private static let pitch: LocalizedStringKey = "Holme Theater is free and open source, with no ads, no tracking, and nothing locked. If it has become part of your movie nights, you can buy the projectionist a snack. Tip as often as you like, or never."
 
     var body: some View {
         content
@@ -72,6 +72,8 @@ struct SupportView: View {
         List {
             Section {
                 Text(Self.pitch)
+                    // Plain text under its heading, not a row in a box.
+                    .listRowBackground(Color.clear)
             } header: {
                 Text("Buy the projectionist a snack")
             }
@@ -84,7 +86,10 @@ struct SupportView: View {
                 ForEach(support.products) { product in
                     Button { buy(product) } label: {
                         LabeledContent(title(for: product), value: product.displayPrice)
+                            .contentShape(Rectangle())
                     }
+                    // The default button style tints the title with the theme's color, so use the plain one.
+                    .buttonStyle(.plain)
                     .disabled(buying != nil)
                 }
             } footer: {

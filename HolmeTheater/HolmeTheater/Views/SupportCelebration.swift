@@ -5,14 +5,24 @@
 import SwiftUI
 
 /// The thank-you after a tip: popcorn raining down over a popcorn bucket and a message naming the snack. It stays until
-/// the user closes it with Done (or Menu, on Apple TV), so it can't be missed. A stray tap elsewhere does nothing.
+/// the user closes it with the X button (or Menu, on Apple TV), so it can't be missed. A stray tap elsewhere does nothing.
 ///
 /// The particles draw nothing with Reduce Motion on, which leaves the bucket and the message.
 struct SupportCelebration: View {
     let tip: SupportStore.Tip
     let dismiss: () -> Void
 
+    /// About what a system alert's corners are on iOS (Apple doesn't publish it), and larger for the bigger Apple TV screen.
+    #if os(tvOS)
+    private static let cornerRadius: CGFloat = 36
+    #else
+    private static let cornerRadius: CGFloat = 26
+    #endif
+
     @State private var isShowing = false
+    #if os(tvOS)
+    @FocusState private var isFocused: Bool
+    #endif
 
     var body: some View {
         ZStack {
@@ -30,12 +40,21 @@ struct SupportCelebration: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button("Done", action: dismiss)
-                    .buttonStyle(.glassProminent)
-                    .padding(.top, 8)
             }
             .padding(36)
-            .glassEffect(.regular, in: .rect(cornerRadius: 36))
+            .glassEffect(.regular, in: .rect(cornerRadius: Self.cornerRadius, style: .continuous))
+            #if !os(tvOS)
+            .overlay(alignment: .topTrailing) {
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .padding(12)
+                .accessibilityLabel("Close")
+            }
+            #endif
             .padding(40)
             ThemeParticles(effect: .concessions, layer: .front)
         }
@@ -44,6 +63,9 @@ struct SupportCelebration: View {
         .contentShape(Rectangle())
         .onTapGesture {}
         #if os(tvOS)
+        // Takes focus so nothing underneath can have it, and so Menu reaches onExitCommand instead of leaving the page.
+        .focusable()
+        .focused($isFocused)
         .onExitCommand(perform: dismiss)
         #else
         .sensoryFeedback(.success, trigger: isShowing)
@@ -51,6 +73,9 @@ struct SupportCelebration: View {
         .accessibilityAddTraits(.isModal)
         .onAppear {
             withAnimation(.spring(duration: 0.5)) { isShowing = true }
+            #if os(tvOS)
+            isFocused = true
+            #endif
         }
     }
 }
@@ -66,7 +91,10 @@ private struct SupportCelebrationModifier: ViewModifier {
     @Environment(AppModel.self) private var appModel
 
     func body(content: Content) -> some View {
-        content.overlay {
+        content
+            // Nothing underneath can be used (or focused, on Apple TV) until the thank-you is closed.
+            .disabled(appModel.support.celebratedTip != nil)
+            .overlay {
             if let tip = appModel.support.celebratedTip {
                 SupportCelebration(tip: tip) {
                     withAnimation { appModel.support.celebratedTip = nil }
