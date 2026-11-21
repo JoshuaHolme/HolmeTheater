@@ -34,6 +34,7 @@ struct PlayerControlsView: View {
     /// Side of the round and capsule controls, sized to match the Apple TV app.
     static let buttonSize: CGFloat = 48
 
+    /// The panels that open over the video, one at a time.
     enum Panel: String, Identifiable, CaseIterable {
         case info, cast, chapters
         var id: String { rawValue }

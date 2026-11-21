@@ -433,6 +433,8 @@ struct WebPagePreview: View {
     }
 }
 
+/// A `WKWebView` that loads one page and is otherwise left alone. Used only for link peeks; opening a link goes to the
+/// browser.
 struct WebPageView: UIViewRepresentable {
     let url: URL
 

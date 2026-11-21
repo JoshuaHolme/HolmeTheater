@@ -1,6 +1,6 @@
 # Holme Theater Privacy Policy
 
-Last updated: November 20, 2026
+Last updated: November 21, 2026
 
 Holme Theater is a client for Jellyfin, media server software that you or someone you know runs. This policy explains what the app does with your information. The short version: the developer of Holme Theater doesn't collect any of it.
 
@@ -30,7 +30,11 @@ Signing out removes your session, cached artwork, and your downloads. Deleting t
 
 ## Links to other websites
 
-Some pages link to websites such as IMDb and The Movie Database. They open in your browser and are covered by those sites' own privacy policies.
+Some pages link to websites such as IMDb and The Movie Database. Opening a link takes you to your browser. On iPhone and iPad, touching and holding a link shows a preview of the page, which loads it inside the app. Either way, those sites are covered by their own privacy policies.
+
+## Tips
+
+If you leave a tip in the Concession Stand, the purchase is handled by Apple through the App Store, under Apple's privacy policy. The app only checks with the App Store whether you've tipped, so it can thank you. The developer doesn't receive your name, email address, or payment details.
 
 ## Children
 

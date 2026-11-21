@@ -9,6 +9,7 @@ import Foundation
 /// What the downloads Live Activity shows. Shared by the app, which updates it, and the widget extension, which draws it:
 /// this one file is a member of both targets.
 nonisolated struct DownloadActivityAttributes: ActivityAttributes {
+    /// The part that changes as downloads progress, sent with each update.
     nonisolated struct ContentState: Codable, Hashable {
         /// The one download's name, or e.g. "3 Downloads".
         var title: String

@@ -48,6 +48,8 @@ struct TVPlayerController: UIViewControllerRepresentable {
         context.coordinator.close = close
     }
 
+    /// Owns the additions to the system player: its delegate callbacks, the transport bar menus, and the remote's
+    /// gestures.
     @MainActor
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         let session: PlaybackSession

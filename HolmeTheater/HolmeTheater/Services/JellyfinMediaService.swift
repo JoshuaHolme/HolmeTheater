@@ -27,12 +27,15 @@ actor JellyfinMediaService: MediaService {
     /// Posters are shown at about 130 pt wide (220 pt on tvOS), so 450 px is sharp on a 3× phone screen.
     /// Asking for more only costs memory (a decoded image takes width × height × 4 bytes) and bandwidth.
     static let posterWidth = 450
+    /// For the wide artwork behind heroes and detail pages.
     static let backdropWidth = 1280
+    /// For the title logos drawn over heroes.
     static let logoWidth = 800
 
     /// How wide a person's portrait is asked for when it fills the screen.
     static let largePortraitWidth = 1200
 
+    /// How the app names itself and this device in every request, so the server can list it among the user's devices.
     let identity: ClientIdentity
 
     /// Set by `connect(to:)` or `restore(_:)`; nil until then.
@@ -317,10 +320,13 @@ actor JellyfinMediaService: MediaService {
         }
     }
 
+    /// The app's items for a page of the server's, leaving out any that ``makeItem(from:client:isExtra:)`` can't
+    /// represent.
     func mapItems(_ result: BaseItemDtoQueryResult, client: JellyfinClient) -> [MediaItem] {
         (result.items ?? []).compactMap { Self.makeItem(from: $0, client: client) }
     }
 
+    /// Turns an SDK or networking error into one the UI knows how to explain, so no SDK error type leaves this service.
     static func mapError(_ error: Error) -> MediaServiceError {
         switch error {
         case let error as MediaServiceError:

@@ -449,6 +449,7 @@ extension PlaybackInfo {
 
 /// A stretch of a movie or episode the server knows the purpose of, which the player offers to skip.
 nonisolated struct MediaSegment: Hashable, Sendable, Codable {
+    /// What the stretch is, which decides the skip button's label.
     nonisolated enum Kind: Hashable, Sendable, Codable {
         case intro, outro, recap, preview, commercial
         /// Something the server found but couldn't name.

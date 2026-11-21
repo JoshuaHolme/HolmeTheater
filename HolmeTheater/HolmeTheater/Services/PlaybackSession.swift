@@ -10,11 +10,14 @@ import UIKit
 
 /// A bitrate cap offered in the quality menu.
 struct StreamQuality: Identifiable, Hashable {
+    /// The most the server may send, in bits per second.
     let maxBitrate: Int
+    /// The tallest picture that bitrate is meant for, in pixels, for the label.
     let height: Int
 
     var id: Int { maxBitrate }
 
+    /// The label in the menu, e.g. "1080p · 8 Mbps".
     var title: String {
         let resolution = height >= 2160 ? "4K" : "\(height)p"
         let rate = maxBitrate >= 1_000_000
@@ -219,8 +222,11 @@ final class PlaybackSession {
         setSubtitleOffset(subtitleOffset + seconds)
     }
 
+    /// Puts the subtitles back in time with the file, and forgets the adjustment for this item.
     func resetSubtitleOffset() { setSubtitleOffset(0) }
 
+    /// Shows the subtitles `offset` seconds later than the file says (earlier if negative), rounded to hundredths, and
+    /// remembers it for this item.
     func setSubtitleOffset(_ offset: TimeInterval) {
         subtitles.offset = (offset * 100).rounded() / 100
         settings.setSubtitleOffset(subtitles.offset, for: item.id)
@@ -474,6 +480,8 @@ final class PlaybackSession {
         await switchStream { $0.maxBitrate = bitrate }
     }
 
+    /// Switches to the audio track with stream index `index`: in the player when the file is played directly, otherwise
+    /// by asking the server for a new stream with that track.
     func selectAudio(_ index: Int) async {
         guard index != audioIndex else { return }
         // A direct-played file carries all its audio tracks, so the player can switch on its own.

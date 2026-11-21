@@ -99,6 +99,7 @@ struct ShowDetailView: View {
     /// Which of the hero's controls has focus, if it's one that's tracked. Setting it moves focus there.
     @FocusState var focusedControl: HeroControl?
 
+    /// The hero controls focus can be sent to. Only Play, so far.
     enum HeroControl { case play }
     #endif
 

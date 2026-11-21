@@ -9,6 +9,7 @@ nonisolated struct SubtitleCue: Hashable, Sendable {
     /// When it appears and disappears, in seconds from the start of the video.
     let start: TimeInterval
     let end: TimeInterval
+    /// What it says, as plain text with markup removed. May span several lines.
     let text: String
     /// Where the track puts it, or nil for the usual place along the bottom.
     var placement: SubtitlePlacement? = nil
@@ -23,8 +24,10 @@ nonisolated struct SubtitleCueIndex: Sendable {
     /// The longest any line shows for. No line that starts more than this before a moment can still be showing then.
     private let longest: TimeInterval
 
+    /// An index with no lines, for when no subtitles are showing.
     static let empty = SubtitleCueIndex([])
 
+    /// - Parameter cues: A track's lines in the order the file has them, which is kept for drawing.
     init(_ cues: [SubtitleCue]) {
         entries = cues.enumerated().map { (cue: $1, order: $0) }.sorted { $0.cue.start < $1.cue.start }
         longest = max(0, cues.map { $0.end - $0.start }.max() ?? 0)

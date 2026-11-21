@@ -25,9 +25,11 @@ struct PlayerSurface: UIViewRepresentable {
     /// Zooming to fill scales this view (see `CustomPlayer`), so the layer always just fits the video to its bounds.
     func updateUIView(_ view: SurfaceView, context: Context) {}
 
+    /// A view whose own layer is the player layer, so it resizes with the view, animations included.
     final class SurfaceView: UIView {
         override static var layerClass: AnyClass { AVPlayerLayer.self }
-        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer } // swiftlint:disable:this force_cast
+        // Can't fail: `layerClass` makes UIKit create the layer as an `AVPlayerLayer`.
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
     }
 }
 

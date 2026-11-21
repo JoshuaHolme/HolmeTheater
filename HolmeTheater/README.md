@@ -54,7 +54,7 @@ Holme Theater doesn't collect any data. It only talks to the Jellyfin server you
 ## Building from Source
 
 1. Install Xcode 27 or later.
-2. Clone this repository and open `HolmeTheater.xcodeproj`.
+2. Clone this repository and open `HolmeTheater/HolmeTheater.xcodeproj`.
 3. Xcode fetches the Swift package dependencies, including the [Jellyfin Swift SDK](https://github.com/jellyfin/jellyfin-sdk-swift), on first open.
 4. Choose the **HolmeTheater** scheme and an iPhone, iPad, or Apple TV destination, then build and run.
 

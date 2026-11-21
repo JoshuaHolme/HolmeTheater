@@ -6,6 +6,7 @@ import SwiftUI
 
 /// What drifts across the Home screen for a theme: which pieces, in which colors, and how they move.
 struct ThemeEffect: Hashable {
+    /// How a piece moves across the screen.
     enum Motion: Hashable {
         /// Falls gently and turns over, side to side, like a leaf.
         case flutter
@@ -31,6 +32,7 @@ struct ThemeEffect: Hashable {
         case popcorn
     }
 
+    /// The pattern painted on an Easter egg.
     enum EggPattern: Hashable {
         case stripes, zigzag
     }

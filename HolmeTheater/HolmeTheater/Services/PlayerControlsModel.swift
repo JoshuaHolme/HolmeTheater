@@ -78,6 +78,7 @@ final class PlayerControlsModel {
     /// it measures its corners, to tell the status bar from a camera.
     @ObservationIgnored var statusBarShown = false
 
+    /// Passes a tap on the picture on to the controls. See ``pictureTaps``.
     func tapPicture() { pictureTaps += 1 }
 
     @ObservationIgnored private var timeObserver: Any?
@@ -127,6 +128,7 @@ final class PlayerControlsModel {
         }
     }
 
+    /// Stops watching the player. Call when the controls go away; the player itself is left as it is.
     func stop() {
         backgroundTask?.cancel()
         backgroundTask = nil
@@ -165,6 +167,7 @@ final class PlayerControlsModel {
         isPlaying = player.timeControlStatus != .paused
     }
 
+    /// Jumps to `seconds`, kept within the video. The position shown moves at once, without waiting for the seek.
     func seek(to seconds: TimeInterval) {
         let target = clamped(seconds)
         currentTime = target
@@ -255,6 +258,7 @@ final class PlayerControlsModel {
         chapters = found
     }
 
+    /// Zooms the video to fill the screen, or back to fitting it, with a tap of haptic feedback when it changes.
     func setFillsScreen(_ fills: Bool) {
         guard fills != fillsScreen else { return }
         fillsScreen = fills
@@ -278,6 +282,7 @@ final class PlayerControlsModel {
     /// redraw the controls and then appeared in the middle of playback.
     var supportsPictureInPicture: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
 
+    /// Starts or stops Picture in Picture. Does nothing until the video's layer has been attached.
     func togglePictureInPicture() {
         guard let pip else { return }
         if pip.isPictureInPictureActive { pip.stopPictureInPicture() } else { pip.startPictureInPicture() }

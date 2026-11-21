@@ -77,7 +77,9 @@ final class NetworkStatus {
 /// Everything else goes to `base`. Because the detail screens, the player and the cast pages already talk to the
 /// service, wrapping it is all it takes for a downloaded item to look the same offline as online.
 nonisolated struct OfflineFallbackMediaService: MediaService {
+    /// The service for the server, which answers whenever there's a network and it can.
     let base: any MediaService
+    /// Where the downloads that answer for it are kept.
     let store: DownloadStore
 
     /// Runs `call` against the server, or `offline` when there's no network or the call fails. If there's nothing saved
