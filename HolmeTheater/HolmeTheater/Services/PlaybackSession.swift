@@ -136,6 +136,9 @@ final class PlaybackSession {
     #if os(iOS)
     /// Keeps the screen from locking while the video plays, as the system player does.
     @ObservationIgnored private var keepAwake: NSKeyValueObservation?
+
+    /// Shows the item on the Lock Screen and in other "now playing" cards, so it can be resumed from them.
+    @ObservationIgnored private var nowPlaying: NowPlayingPublisher?
     #endif
 
     /// Where playback goes next when it's part of a list, such as a playlist, rather than one show's episodes.
@@ -489,6 +492,10 @@ final class PlaybackSession {
         // Closed while seeking: don't start playing with nothing on screen.
         guard !isStopped else { return }
         player.play()
+        #if os(iOS)
+        nowPlaying = NowPlayingPublisher(player: player, item: item)
+        nowPlaying?.start()
+        #endif
         await applyTrackSelection()
         // Closed while the tracks were being chosen: `stop()` has already run and found nothing to cancel, so
         // starting the reports now would leave them running with no one to stop them.
@@ -577,6 +584,8 @@ final class PlaybackSession {
         #if os(iOS)
         keepAwake = nil
         UIApplication.shared.isIdleTimerDisabled = false
+        nowPlaying?.stop()
+        nowPlaying = nil
         #endif
 
         let (service, item, info, position) = (service, item, info, position)
@@ -705,6 +714,9 @@ final class PlaybackSession {
         await player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
         guard !isStopped else { return }
         if wasPlaying { player.play() }
+        #if os(iOS)
+        nowPlaying?.refresh()
+        #endif
         await applyTrackSelection()
         loadSubtitleCues()
     }

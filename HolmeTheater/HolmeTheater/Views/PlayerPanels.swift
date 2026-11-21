@@ -33,8 +33,9 @@ struct PanelPager: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .frame(height: height)
-        // A scroll view's clip reaches into the safe area, which the controls ignore, so keep it to this frame.
-        .clipShape(.rect)
+        // A scroll view's clip reaches into the safe area, which the controls ignore, so keep it to this frame, but
+        // leave room above it for a pressed card's glass to grow into rather than being cut flat along the top.
+        .mask { Rectangle().padding(.top, -12) }
     }
 
     @ViewBuilder

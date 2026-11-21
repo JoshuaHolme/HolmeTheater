@@ -58,6 +58,12 @@ struct HomeView: View {
     /// that are showing, so it always matches what's on screen, not from a load that may yet be thrown away.
     @State private var showsHero = false
 
+    /// Whether the loading placeholder is showing, which stands in for the carousel (and its heading) if there's to be one.
+    @State private var showsPlaceholder = false
+
+    /// Whether the placeholder takes the carousel's place, rather than the heading's: the carousel is on and hasn't shown yet.
+    private var placeholderHasHero: Bool { showsPlaceholder && !showsHero && appModel.homeSettings.showsHero }
+
     /// The seasonal theme showing, if any.
     private var theme: AppTheme? { appModel.themeSettings.activeTheme }
 
@@ -123,7 +129,7 @@ struct HomeView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if !showsHero && showsHeader {
+                    if !showsHero && showsHeader && !placeholderHasHero {
                         header
                             .padding(.top, safeArea.top)
                             .padding(.top)
@@ -131,7 +137,7 @@ struct HomeView: View {
 
                     // Loads inside the scroll view, below the header, so the profile button in the bar stays
                     // reachable (e.g. to sign out) even if loading fails.
-                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, loadingHeight: loadingHeight(proxy), offersDownloads: true, placeholder: AnyView(HomeSkeleton())) { data in
+                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, loadingHeight: loadingHeight(proxy), offersDownloads: true, placeholder: AnyView(placeholder(proxy))) { data in
                         HomeColumn {
                             if !data.hero.isEmpty {
                                 HomeHeroCarousel(
@@ -269,6 +275,23 @@ struct HomeView: View {
     /// The height to center the loading spinner in. On tvOS the page starts at the top edge of the screen with nothing
     /// above it, so the whole screen's height puts the spinner in the middle. Elsewhere the header sits above it, so the
     /// spinner fills what's left of the container.
+    /// The loading screen: a block where the carousel will be, under the heading it carries, if the carousel is on.
+    @ViewBuilder
+    private func placeholder(_ proxy: GeometryProxy) -> some View {
+        let safeArea = proxy.safeAreaInsets
+        let screenSize = CGSize(width: proxy.size.width + safeArea.leading + safeArea.trailing, height: screenHeight(proxy))
+        let hasHero = appModel.homeSettings.showsHero
+        HomeSkeleton(heroHeight: hasHero ? HomeHeroCarousel<EmptyView>.height(screenSize: screenSize, safeAreaTop: safeArea.top) : nil)
+            .overlay(alignment: .topLeading) {
+                if hasHero && showsHeader {
+                    header
+                        .padding(.top, safeArea.top + 8)
+                }
+            }
+            .onAppear { showsPlaceholder = true }
+            .onDisappear { showsPlaceholder = false }
+    }
+
     private func loadingHeight(_ proxy: GeometryProxy) -> CGFloat? {
         #if os(tvOS)
         screenHeight(proxy)

@@ -181,12 +181,15 @@ struct HomeHeroCarousel<Header: View>: View {
     /// height on a wide one, but never too short for the heading at the top and the details at the bottom to fit
     /// without overlapping (an iPhone on its side, where most of the screen would be only about 240 points). Like the
     /// artwork, it runs up under the status bar.
-    private var height: CGFloat {
+    private var height: CGFloat { Self.height(screenSize: screenSize, safeAreaTop: safeArea.top) }
+
+    /// The carousel's height for a screen, which the loading placeholder shares so the two match.
+    static func height(screenSize: CGSize, safeAreaTop: CGFloat) -> CGFloat {
         #if os(tvOS)
         // The whole screen, like the Apple TV app's. The first shelf rises over its bottom edge (see `HeroLayout`).
         return screenSize.height
         #else
-        return max(min(width * 1.25, screenSize.height * 0.82), safeArea.top + Self.minimumHeightBelowBar)
+        return max(min(screenSize.width * 1.25, screenSize.height * 0.82), safeAreaTop + minimumHeightBelowBar)
         #endif
     }
 

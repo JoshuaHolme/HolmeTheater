@@ -18,6 +18,25 @@ struct PlayerChapter: Identifiable, Hashable {
     var imageURL: URL?
 }
 
+/// Tells whether Picture in Picture is starting or running. The controller's own `isPictureInPictureActive` stays false
+/// for a moment after the window has started to appear.
+@MainActor
+private final class PictureInPictureWatcher: NSObject, AVPictureInPictureControllerDelegate {
+    private(set) var isEngaged = false
+
+    nonisolated func pictureInPictureControllerWillStartPictureInPicture(_ controller: AVPictureInPictureController) {
+        MainActor.assumeIsolated { isEngaged = true }
+    }
+
+    nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ controller: AVPictureInPictureController) {
+        MainActor.assumeIsolated { isEngaged = false }
+    }
+
+    nonisolated func pictureInPictureController(_ controller: AVPictureInPictureController, failedToStartPictureInPictureWithError error: any Error) {
+        MainActor.assumeIsolated { isEngaged = false }
+    }
+}
+
 /// What the on-screen controls need from the player: position, state, chapters and Picture in Picture.
 @MainActor @Observable
 final class PlayerControlsModel {
@@ -64,6 +83,8 @@ final class PlayerControlsModel {
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
     @ObservationIgnored private var hasServerChapters = false
     @ObservationIgnored private var pip: AVPictureInPictureController?
+    @ObservationIgnored private let pipWatcher = PictureInPictureWatcher()
+    @ObservationIgnored private var backgroundTask: Task<Void, Never>?
 
     /// While scrubbing: whether to resume playing afterwards.
     @ObservationIgnored private var resumesAfterScrub = false
@@ -90,9 +111,23 @@ final class PlayerControlsModel {
             Task { @MainActor in self?.tick() }
         }
         Task { await loadChapters() }
+
+        // Locking the device, or leaving for another app, pauses the video unless Picture in Picture carries it on.
+        // It's left for the Lock Screen's or Control Center's "now playing" card to resume.
+        backgroundTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: UIApplication.didEnterBackgroundNotification) {
+                // Picture in Picture starts a moment after the app goes to the background.
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled, !pipWatcher.isEngaged, pip?.isPictureInPictureActive != true,
+                      player.timeControlStatus != .paused else { continue }
+                player.pause()
+            }
+        }
     }
 
     func stop() {
+        backgroundTask?.cancel()
+        backgroundTask = nil
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
         statusObservation = nil
@@ -226,6 +261,7 @@ final class PlayerControlsModel {
         guard AVPictureInPictureController.isPictureInPictureSupported(), pip?.playerLayer !== layer else { return }
         let controller = AVPictureInPictureController(playerLayer: layer)
         controller?.canStartPictureInPictureAutomaticallyFromInline = true
+        controller?.delegate = pipWatcher
         pip = controller
     }
 
