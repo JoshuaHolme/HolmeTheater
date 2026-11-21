@@ -196,7 +196,9 @@ struct DownloadToolbarButton: View {
                     Image(systemName: "arrow.down.circle.fill")
                 }
             }
+            #if os(tvOS)
             .tint(.blue)
+            #endif
             .accessibilityLabel("Downloaded")
         }
     }

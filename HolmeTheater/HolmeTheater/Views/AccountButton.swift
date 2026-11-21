@@ -85,9 +85,9 @@ private struct AccountToolbarModifier: ViewModifier {
                         isPresented = true
                     } label: {
                         // The user's profile picture, or a generic person icon if they have none. The bar draws the
-                        // glass around it.
-                        AvatarView(url: appModel.session?.avatarURL, size: 30)
-                            .supporterBadge(size: 30)
+                        // glass around it, and the picture nearly fills it, as in the App Store.
+                        AvatarView(url: appModel.session?.avatarURL, size: 40)
+                            .supporterBadge(size: 40)
                     }
                     .accessibilityLabel("Account")
                 }

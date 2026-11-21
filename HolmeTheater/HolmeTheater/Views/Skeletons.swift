@@ -196,9 +196,10 @@ struct SkeletonShelf: View {
 
 /// The Home screen while it loads: the carousel's place, then a few shelves.
 struct HomeSkeleton: View {
-    /// The carousel's height, where the screen shows one: its place is a block that fills the width and runs up under the
-    /// status bar, as the carousel does. Nil where there's none, and the screen's heading sits above the shelves.
-    var heroHeight: CGFloat?
+    /// The carousel's size, where the screen shows one: its place is a block that runs up under the status bar and out under
+    /// the side safe areas (a sidebar, on a foldable), as the carousel does. Nil where there's none, and the screen's
+    /// heading sits above the shelves.
+    var heroSize: CGSize?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Layout.shelfSpacing) {
@@ -206,9 +207,9 @@ struct HomeSkeleton: View {
             // The carousel fills the top of the screen on tvOS; the shelves sit below where it ends.
             Color.clear.frame(height: 480)
             #else
-            if let heroHeight {
+            if let heroSize {
                 SkeletonBlock(cornerRadius: 0)
-                    .frame(height: heroHeight)
+                    .frame(width: heroSize.width, height: heroSize.height)
             }
             #endif
             SkeletonShelf(isWide: true, cardCount: 4)

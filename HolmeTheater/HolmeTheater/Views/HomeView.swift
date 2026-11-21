@@ -281,7 +281,8 @@ struct HomeView: View {
         let safeArea = proxy.safeAreaInsets
         let screenSize = CGSize(width: proxy.size.width + safeArea.leading + safeArea.trailing, height: screenHeight(proxy))
         let hasHero = appModel.homeSettings.showsHero
-        HomeSkeleton(heroHeight: hasHero ? HomeHeroCarousel<EmptyView>.height(screenSize: screenSize, safeAreaTop: safeArea.top) : nil)
+        let heroHeight = HomeHeroCarousel<EmptyView>.height(screenSize: screenSize, safeAreaTop: safeArea.top)
+        HomeSkeleton(heroSize: hasHero ? CGSize(width: screenSize.width, height: heroHeight) : nil)
             .overlay(alignment: .topLeading) {
                 if hasHero && showsHeader {
                     header
