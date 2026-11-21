@@ -38,13 +38,17 @@ struct SkeletonBlock: View {
                         .frame(width: proxy.size.width * 0.6)
                         // From just off the leading edge to just past the trailing one.
                         .offset(x: sweeping ? proxy.size.width : -proxy.size.width * 0.6)
+                        // Only the sweep itself repeats. Started with `withAnimation`, the repeating animation was on the
+                        // whole transaction and also carried the block's own position, so when the layout changed (turning
+                        // the device) the placeholders slid and looped back instead of moving once.
+                        .animation(.linear(duration: 1.4).repeatForever(autoreverses: false), value: sweeping)
                     }
                 }
             }
             .clipShape(shape)
             .onAppear {
                 guard !reduceMotion else { return }
-                withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) { sweeping = true }
+                sweeping = true
             }
     }
 }
