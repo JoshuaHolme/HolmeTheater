@@ -77,7 +77,7 @@ struct TVSubtitleTimingPanel: View {
 }
 
 /// The subtitles, drawn over the picture. The player's own subtitles are off, because the app follows the position
-/// itself (see `PlaybackSession.subtitleText(at:)`), as it does on iOS.
+/// itself (see `SubtitleController.text(at:)`), as it does on iOS.
 struct TVSubtitleView: View {
     let model: TVSubtitleModel
 

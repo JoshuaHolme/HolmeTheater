@@ -1,0 +1,35 @@
+{
+  "configurations": [
+    {
+      "id": "96FE67A5-FAEA-4D70-857A-B4B1D0BC93F9",
+      "name": "Default",
+      "options": {}
+    }
+  ],
+  "defaultOptions": {
+    "targetForVariableExpansion": {
+      "containerPath": "container:HolmeTheater.xcodeproj",
+      "identifier": "000000000000000100000000",
+      "name": "HolmeTheater"
+    }
+  },
+  "testTargets": [
+    {
+      "parallelizable": true,
+      "target": {
+        "containerPath": "container:HolmeTheater.xcodeproj",
+        "identifier": "03CB55B830A7AAD100287C42",
+        "name": "HolmeTheaterTests"
+      }
+    },
+    {
+      "parallelizable": false,
+      "target": {
+        "containerPath": "container:HolmeTheater.xcodeproj",
+        "identifier": "03EEDB6C30B212A40037D7D5",
+        "name": "HolmeTheaterUITests"
+      }
+    }
+  ],
+  "version": 1
+}

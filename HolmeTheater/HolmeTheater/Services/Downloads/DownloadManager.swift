@@ -59,9 +59,12 @@ final class DownloadManager {
     /// older one isn't used.
     @ObservationIgnored private(set) var tokenFingerprint: String?
 
-    /// For the subtitle and artwork requests made while preparing a download. Subtitle URLs carry the access token, and
-    /// the shared session's cache would write them to disk.
-    @ObservationIgnored let detailsSession = URLSession(configuration: .ephemeral)
+    /// For the subtitle and artwork requests made while preparing a download. Subtitle requests carry the access token,
+    /// and the shared session's cache would write them to disk; the delegate keeps the token from following a redirect
+    /// to another server.
+    @ObservationIgnored let detailsSession = URLSession(
+        configuration: .ephemeral, delegate: SameOriginAuthorization.shared, delegateQueue: nil
+    )
 
     /// Items being prepared (details, artwork, the file's URL), by item ID, so they can be cancelled. Only ever the
     /// signed-in account's: changing accounts cancels them.

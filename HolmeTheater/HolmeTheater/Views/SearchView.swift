@@ -240,7 +240,7 @@ private struct GenreBrowser: View {
     private static let columnWidth: CGFloat = 250
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.genres() }, placeholder: AnyView(
+        AsyncContent(load: { try await appModel.service.genres() }, placeholder:
             // The same columns the genres will have, found the same way.
             GeometryReader { proxy in
                 SkeletonScroll {
@@ -251,7 +251,7 @@ private struct GenreBrowser: View {
                     .padding()
                 }
             }
-        )) { genres in
+        ) { genres in
             // A GeometryReader, rather than measuring after layout, so the first frame already has the right columns.
             GeometryReader { proxy in
             ScrollView {
@@ -280,7 +280,7 @@ struct GenreView: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.items(in: genre) }, placeholder: AnyView(SkeletonPosterGrid())) { items in
+        AsyncContent(load: { try await appModel.service.items(in: genre) }, placeholder: SkeletonPosterGrid()) { items in
             PosterBrowser(items: items, title: genre.name, offersGenreFilter: false)
         }
         #if os(tvOS)

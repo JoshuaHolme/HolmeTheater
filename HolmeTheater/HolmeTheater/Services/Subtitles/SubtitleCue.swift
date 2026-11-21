@@ -14,6 +14,47 @@ nonisolated struct SubtitleCue: Hashable, Sendable {
     var placement: SubtitlePlacement? = nil
 }
 
+/// A track's lines, kept so the ones showing at a moment are found without going through them all. The player asks
+/// several times a second, and a SubStation Alpha track heavy with typesetting can have tens of thousands.
+nonisolated struct SubtitleCueIndex: Sendable {
+    /// The lines in order of their start, each with its place in the file.
+    private let entries: [(cue: SubtitleCue, order: Int)]
+
+    /// The longest any line shows for. No line that starts more than this before a moment can still be showing then.
+    private let longest: TimeInterval
+
+    static let empty = SubtitleCueIndex([])
+
+    init(_ cues: [SubtitleCue]) {
+        entries = cues.enumerated().map { (cue: $1, order: $0) }.sorted { $0.cue.start < $1.cue.start }
+        longest = max(0, cues.map { $0.end - $0.start }.max() ?? 0)
+    }
+
+    var isEmpty: Bool { entries.isEmpty }
+
+    /// The lines showing at `time`, in the order the file has them, which is the order they're drawn in.
+    func cues(at time: TimeInterval) -> [SubtitleCue] {
+        // Only lines that start between `time - longest` and `time` can be showing; the two ends are found by halving.
+        let first = boundary { $0 >= time - longest }
+        let last = boundary { $0 > time }
+        guard first < last else { return [] }
+        return entries[first..<last]
+            .filter { $0.cue.end > time }
+            .sorted { $0.order < $1.order }
+            .map(\.cue)
+    }
+
+    /// The index of the first line whose start `isPast` says yes to. `isPast` must say no to every line before it.
+    private func boundary(_ isPast: (TimeInterval) -> Bool) -> Int {
+        var low = 0, high = entries.count
+        while low < high {
+            let middle = (low + high) / 2
+            if isPast(entries[middle].cue.start) { high = middle } else { low = middle + 1 }
+        }
+        return low
+    }
+}
+
 /// Where on the picture a line of subtitles goes, for a track that puts some somewhere other than along the bottom: a
 /// sign's translation next to the sign, say, or a line moved to the top so it doesn't cover something.
 nonisolated struct SubtitlePlacement: Hashable, Sendable {

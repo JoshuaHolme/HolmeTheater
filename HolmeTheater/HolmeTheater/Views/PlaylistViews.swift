@@ -29,7 +29,7 @@ struct CollectionDetailView: View {
     private var canEdit: Bool { hasMembers && appModel.canManageCollections }
 
     var body: some View {
-        AsyncContent(load: loadItems, reloadID: reloadID, placeholder: AnyView(SkeletonPosterGrid())) { items in
+        AsyncContent(load: loadItems, reloadID: reloadID, placeholder: SkeletonPosterGrid()) { items in
             if items.isEmpty {
                 ContentUnavailableView("Empty Collection", systemImage: "square.stack", description: Text("There's nothing in this collection yet."))
             } else {

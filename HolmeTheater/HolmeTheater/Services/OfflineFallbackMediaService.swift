@@ -4,6 +4,7 @@
 
 import Foundation
 import Network
+import Observation
 import Synchronization
 
 /// Whether the device has a network at all, so offline screens can go straight to what's saved instead of waiting
@@ -16,6 +17,7 @@ nonisolated final class NetworkMonitor: Sendable {
     private struct State {
         var online = true
         var reconnectHandler: (@Sendable () -> Void)?
+        var changeHandlers: [@Sendable (Bool) -> Void] = []
     }
 
     private let state = Mutex(State())
@@ -29,17 +31,43 @@ nonisolated final class NetworkMonitor: Sendable {
         set { state.withLock { $0.reconnectHandler = newValue } }
     }
 
+    /// Calls `handler` with whether the device is online each time that changes. For ``NetworkStatus``.
+    func observe(_ handler: @escaping @Sendable (Bool) -> Void) {
+        state.withLock { $0.changeHandlers.append(handler) }
+    }
+
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             let isOnline = path.status == .satisfied
-            let reconnected = state.withLock { state -> (@Sendable () -> Void)? in
+            let (reconnected, changed) = state.withLock { state -> ((@Sendable () -> Void)?, [@Sendable (Bool) -> Void]) in
                 defer { state.online = isOnline }
-                return !state.online && isOnline ? state.reconnectHandler : nil
+                return (
+                    !state.online && isOnline ? state.reconnectHandler : nil,
+                    state.online != isOnline ? state.changeHandlers : []
+                )
             }
             reconnected?()
+            for handler in changed { handler(isOnline) }
         }
         monitor.start(queue: DispatchQueue(label: "NetworkMonitor", qos: .utility))
+    }
+}
+
+/// Whether the device has a network, for views: the same as ``NetworkMonitor/isOnline``, but observable, so a view that
+/// reads it changes when the network comes or goes.
+@Observable
+final class NetworkStatus {
+    static let shared = NetworkStatus()
+
+    private(set) var isOnline = NetworkMonitor.shared.isOnline
+
+    private init() {
+        NetworkMonitor.shared.observe { isOnline in
+            Task { @MainActor in NetworkStatus.shared.isOnline = isOnline }
+        }
+        // Read again now it's watching, in case it changed in between.
+        isOnline = NetworkMonitor.shared.isOnline
     }
 }
 

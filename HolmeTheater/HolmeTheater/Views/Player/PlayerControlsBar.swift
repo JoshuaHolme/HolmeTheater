@@ -289,7 +289,8 @@ private struct ControlsPreviewHost: View {
                 sourceBitrate: 20_000_000,
                 sourceHeight: 1080
             ),
-            service: MockMediaService()
+            service: MockMediaService(),
+            settings: .preview()
         )
         session.setPreview(nextEpisode: nextEpisode, segments: segments)
         let model = PlayerControlsModel(player: AVPlayer(), runtime: 1500)

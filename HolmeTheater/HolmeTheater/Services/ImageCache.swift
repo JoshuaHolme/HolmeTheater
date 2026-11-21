@@ -42,6 +42,10 @@ nonisolated final class ImageCache: Sendable {
     /// Trim again after this many bytes have been written since the last trim.
     private static let trimInterval = 50 * 1024 * 1024
 
+    /// The largest image file accepted. Artwork is asked for at a set width, so a real one is far smaller; anything
+    /// bigger is a mistake on the server's side, and shouldn't fill memory or the cache.
+    static let maxImageBytes = 20 * 1024 * 1024
+
     private let memory = SharedCache<NSURL, PlatformImage>(totalCostLimit: maxMemoryBytes)
 
     /// Has no cache of its own, because this type does the caching.
@@ -178,6 +182,7 @@ nonisolated final class ImageCache: Sendable {
 
         // A download can't be cancelled, so a task group can't be raced against the timeout (it waits for every
         // child). Two separate tasks do instead: whichever finishes first resumes the caller, the other is harmless.
+        var timer: Task<Void, Never>?
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let once = ResumeOnce(continuation)
             Task {
@@ -188,11 +193,13 @@ nonisolated final class ImageCache: Sendable {
                 }
                 once.resume()
             }
-            Task {
+            timer = Task {
                 try? await Task.sleep(for: timeout)
                 once.resume()
             }
         }
+        // Not left waiting out the rest of the timeout when the images came first.
+        timer?.cancel()
     }
 
     // MARK: - Loading
@@ -235,7 +242,13 @@ nonisolated final class ImageCache: Sendable {
     @concurrent private func data(for url: URL, generation: Int) async -> Data? {
         // Artwork saved with a download is already a file, so there's nothing to fetch or cache.
         if url.isFileURL { return try? Data(contentsOf: url) }
-        if let data = try? Data(contentsOf: diskURL(for: url)) { return data }
+        let file = diskURL(for: url)
+        if let data = try? Data(contentsOf: file) {
+            // Marked as used, so trimming, which goes by this date, keeps what's shown often rather than what was
+            // fetched last.
+            try? FileManager.default.setAttributes([.modificationDate: Date.now], ofItemAtPath: file.path(percentEncoded: false))
+            return data
+        }
 
         let task = state.withLock { state -> Task<Data?, Never>? in
             // Started before the cache was emptied, so there's nothing it should fetch.
@@ -253,8 +266,9 @@ nonisolated final class ImageCache: Sendable {
     }
 
     private func download(_ url: URL, generation: Int) async -> Data? {
-        guard let (data, response) = try? await session.data(from: url),
-              (response as? HTTPURLResponse)?.statusCode == 200
+        guard let (data, response) = try? await session.data(from: url, delegate: ImageResponseCheck.shared),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              Self.isAcceptable(response, size: data.count)
         else { return nil }
 
         // Written under the disk lock, so it can't land in the folder after `removeAll()` has emptied it.
@@ -273,6 +287,16 @@ nonisolated final class ImageCache: Sendable {
         if shouldTrim { trimDiskCacheInBackground() }
 
         return data
+    }
+
+    /// Whether a response is one to keep: an image (or untyped bytes, which some proxies send artwork as), and not too
+    /// big. `size` is the body's size, or nil before it has arrived, when the size the server gave, if any, is used.
+    static func isAcceptable(_ response: URLResponse, size: Int? = nil) -> Bool {
+        if let type = response.mimeType?.lowercased(), !type.hasPrefix("image/"), type != "application/octet-stream" {
+            return false
+        }
+        let length = size.map(Int64.init) ?? response.expectedContentLength
+        return length <= Int64(maxImageBytes)
     }
 
     /// Roughly how many bytes the decoded image occupies, for the memory cache's limit.
@@ -344,6 +368,21 @@ nonisolated final class SharedCache<Key: AnyObject, Value: AnyObject>: @unchecke
     func setObject(_ value: Value, forKey key: Key, cost: Int = 0) { cache.setObject(value, forKey: key, cost: cost) }
 
     func removeAllObjects() { cache.removeAllObjects() }
+}
+
+/// Stops an image download as soon as its response arrives, if it's not an image or is too big, rather than once the
+/// whole body has.
+private nonisolated final class ImageResponseCheck: NSObject, URLSessionDataDelegate, Sendable {
+    static let shared = ImageResponseCheck()
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
+    ) {
+        completionHandler(ImageCache.isAcceptable(response) ? .allow : .cancel)
+    }
 }
 
 /// Resumes a continuation the first time it's asked to, and ignores any later request.

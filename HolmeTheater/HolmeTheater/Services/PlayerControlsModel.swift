@@ -22,6 +22,7 @@ struct PlayerChapter: Identifiable, Hashable {
 /// for a moment after the window has started to appear.
 @MainActor
 private final class PictureInPictureWatcher: NSObject, AVPictureInPictureControllerDelegate {
+    // AVKit calls a Picture in Picture controller's delegate on the main thread, so these check that rather than hop to it.
     private(set) var isEngaged = false
 
     nonisolated func pictureInPictureControllerWillStartPictureInPicture(_ controller: AVPictureInPictureController) {
@@ -102,6 +103,7 @@ final class PlayerControlsModel {
     /// Starts watching the player. Pair with ``stop()``.
     func start() {
         guard timeObserver == nil else { return }
+        // On the main queue, so the observer runs on the main actor, which `assumeIsolated` checks rather than hops to.
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -133,14 +135,20 @@ final class PlayerControlsModel {
         statusObservation = nil
     }
 
+    /// Runs ten times a second. Each property is only written when it changes, so views that read one that hasn't (the
+    /// play button, say, while the clock runs) aren't drawn again.
     private func tick() {
         let seconds = player.currentTime().seconds
-        if seconds.isFinite, pendingScrub == nil, !isScrubSeeking { currentTime = max(0, seconds) }
-        if let length = player.currentItem?.duration.seconds, length.isFinite, length > 0 { duration = length }
-        isPlaying = player.timeControlStatus != .paused || resumesAfterScrub
-        isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-        videoSize = player.currentItem?.presentationSize ?? .zero
-        bufferedTime = loadedEnd(around: seconds)
+        if seconds.isFinite, pendingScrub == nil, !isScrubSeeking { update(\.currentTime, to: max(0, seconds)) }
+        if let length = player.currentItem?.duration.seconds, length.isFinite, length > 0 { update(\.duration, to: length) }
+        update(\.isPlaying, to: player.timeControlStatus != .paused || resumesAfterScrub)
+        update(\.isBuffering, to: player.timeControlStatus == .waitingToPlayAtSpecifiedRate)
+        update(\.videoSize, to: player.currentItem?.presentationSize ?? .zero)
+        update(\.bufferedTime, to: loadedEnd(around: seconds))
+    }
+
+    private func update<Value: Equatable>(_ property: ReferenceWritableKeyPath<PlayerControlsModel, Value>, to value: Value) {
+        if self[keyPath: property] != value { self[keyPath: property] = value }
     }
 
     /// The end of the loaded stretch holding `seconds`, or `seconds` itself if nothing around it is loaded.

@@ -4,7 +4,6 @@
 
 import AVKit
 import Observation
-import OSLog
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -101,17 +100,12 @@ final class PlaybackSession {
     /// Whether the player's controls are showing. Kept here so a rebuilt player view picks up where the last left off.
     @ObservationIgnored var controlsAreShowing = true
 
-    /// The lines of the subtitle track on screen, drawn by the app. Empty for none, or while they load.
-    private(set) var subtitleCues: [SubtitleCue] = []
-    /// The same for a track of pictures (PGS).
-    private(set) var pictureCues: [PictureSubtitleCue] = []
-    @ObservationIgnored private var cueTask: Task<Void, Never>?
-    /// The picture last drawn, by its index in ``pictureCues``, so it's decoded once rather than on every frame.
-    @ObservationIgnored private var shownPicture: (index: Int, picture: PictureSubtitle?)?
+    /// The subtitles the app draws for the track on screen, and for an instant replay.
+    let subtitles: SubtitleController
 
     /// How many seconds later than the file says the subtitles show, for a file whose subtitles don't line up.
     /// Negative shows them earlier. Remembered for the item.
-    private(set) var subtitleOffset: TimeInterval = 0
+    var subtitleOffset: TimeInterval { subtitles.offset }
 
     /// Why the last change of quality or track failed. The old stream carries on playing.
     var switchError: String?
@@ -151,13 +145,13 @@ final class PlaybackSession {
     @ObservationIgnored private let queue: Queue?
 
     /// - Parameters:
-    ///   - settings: How playback behaves. The default is one for previews, which doesn't touch the real settings.
+    ///   - settings: How playback behaves. Previews pass ``PlaybackSettings/preview()``, which doesn't touch the real ones.
     ///   - queue: The list this is playing from, which decides what follows it.
     init(
         item: MediaItem,
         info: PlaybackInfo,
         service: any MediaService,
-        settings: PlaybackSettings = PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard),
+        settings: PlaybackSettings,
         queue: Queue? = nil
     ) {
         self.queue = queue
@@ -167,7 +161,7 @@ final class PlaybackSession {
         self.settings = settings
         self.audioIndex = info.audioIndex
         self.subtitleIndex = info.subtitleIndex
-        self.subtitleOffset = settings.subtitleOffset(for: item.id)
+        self.subtitles = SubtitleController(service: service, offset: settings.subtitleOffset(for: item.id))
         self.player = AVPlayer(playerItem: Self.makePlayerItem(for: item, info: info))
         // Waiting lets the player hold back to build a buffer and carry on by itself after a stall. Without it, a
         // dip in the network pauses a direct-play file for good (4K files at high bitrates stall often on Wi-Fi).
@@ -228,8 +222,8 @@ final class PlaybackSession {
     func resetSubtitleOffset() { setSubtitleOffset(0) }
 
     func setSubtitleOffset(_ offset: TimeInterval) {
-        subtitleOffset = (offset * 100).rounded() / 100
-        settings.setSubtitleOffset(subtitleOffset, for: item.id)
+        subtitles.offset = (offset * 100).rounded() / 100
+        settings.setSubtitleOffset(subtitles.offset, for: item.id)
     }
 
     /// The episode after this one: the next in its season, else the first of the next season that has any.
@@ -270,56 +264,6 @@ final class PlaybackSession {
         segments.first { $0.start <= time && time < $0.end }
     }
 
-    /// The subtitle to show along the bottom at `time`, if any.
-    func subtitleText(at time: TimeInterval) -> String? {
-        Self.text(of: Self.cues(in: subtitleCues, at: time - subtitleOffset).filter { $0.placement == nil })
-    }
-
-    /// The lines at `time` the track puts somewhere other than along the bottom.
-    func placedSubtitles(at time: TimeInterval) -> [SubtitleCue] {
-        var seen = Set<SubtitleCue>()
-        // A file may draw a line twice in one place, for an outline say, and it's shown once.
-        return Self.cues(in: subtitleCues, at: time - subtitleOffset).filter {
-            $0.placement != nil && seen.insert(SubtitleCue(start: 0, end: 0, text: $0.text, placement: $0.placement)).inserted
-        }
-    }
-
-    /// The subtitle picture to show at `time`, if any, for a track of pictures.
-    func subtitlePicture(at time: TimeInterval) -> PictureSubtitle? {
-        Self.picture(in: pictureCues, at: time - subtitleOffset, shown: &shownPicture)
-    }
-
-    /// The picture showing at `shifted` among `cues`, decoded only if it isn't the one in `shown` already.
-    private static func picture(
-        in cues: [PictureSubtitleCue], at shifted: TimeInterval, shown: inout (index: Int, picture: PictureSubtitle?)?
-    ) -> PictureSubtitle? {
-        guard let index = cues.index(at: shifted) else { return nil }
-        if let shown, shown.index == index { return shown.picture }
-        let picture = cues[index].image()
-        shown = (index, picture)
-        return picture
-    }
-
-    private static func cues(in cues: [SubtitleCue], at shifted: TimeInterval) -> [SubtitleCue] {
-        cues.filter { $0.start <= shifted && shifted < $0.end }
-    }
-
-    /// The lines one under the other, each once.
-    private static func text(of cues: [SubtitleCue]) -> String? {
-        var seen = Set<String>()
-        let lines = cues.map(\.text).filter { seen.insert($0).inserted }
-        return lines.isEmpty ? nil : lines.joined(separator: "\n")
-    }
-
-    /// The lines of a track kept ready for an instant replay: a few seconds of subtitles after going back, while the
-    /// viewer has none on. Empty until fetched, or if the file has no track the app can draw.
-    @ObservationIgnored private var replayCues: [SubtitleCue] = []
-    /// The same for a track of pictures, and the one last drawn.
-    @ObservationIgnored private var replayPictureCues: [PictureSubtitleCue] = []
-    @ObservationIgnored private var shownReplayPicture: (index: Int, picture: PictureSubtitle?)?
-    @ObservationIgnored private var replayTask: Task<Void, Never>?
-    @ObservationIgnored private var didRequestReplayCues = false
-
     /// The track an instant replay shows: one the app can draw, in the language being spoken if that can be told from the
     /// audio track's name, else the first. Text rather than pictures where a language has both, as it's quicker to fetch;
     /// but pictures where they're all there is, as on most Blu-ray rips.
@@ -344,125 +288,14 @@ final class PlaybackSession {
 
     /// Fetches the lines for an instant replay, once, unless full subtitles are on already.
     func loadReplayCues() {
-        guard allowsReplaySubtitles, !didRequestReplayCues, let track = replayTrack, let url = track.url else { return }
-        didRequestReplayCues = true
-        replayTask = Task {
-            guard let data = await subtitleData(from: url), !Task.isCancelled else { return }
-            if track.format == .pgs {
-                let cues = await PGS.parse(data)
-                guard !Task.isCancelled else { return }
-                replayPictureCues = cues
-            } else {
-                let cues = await self.textCues(data, from: url, format: track.format)
-                guard !Task.isCancelled else { return }
-                replayCues = cues
-            }
-        }
+        guard allowsReplaySubtitles, !subtitles.hasRequestedReplay, let track = replayTrack else { return }
+        subtitles.loadReplay(track)
     }
-
-    /// The instant replay's subtitle at `time`, if any: every line, along the bottom, as it's only there to catch what
-    /// was said.
-    func replaySubtitleText(at time: TimeInterval) -> String? {
-        Self.text(of: Self.cues(in: replayCues, at: time - subtitleOffset))
-    }
-
-    /// The instant replay's subtitle picture at `time`, if any, for a track of pictures.
-    func replaySubtitlePicture(at time: TimeInterval) -> PictureSubtitle? {
-        Self.picture(in: replayPictureCues, at: time - subtitleOffset, shown: &shownReplayPicture)
-    }
-
-    /// The lines of a text track, fetched from `url` as `data`. One fetched as SubStation Alpha that comes to nothing
-    /// falls back to the server's WebVTT of it, which is how every text track was fetched before, so none stops showing.
-    private func textCues(_ data: Data, from url: URL, format: SubtitleFormat?) async -> [SubtitleCue] {
-        let cues = await Self.parseText(data, format: format)
-        guard cues.isEmpty, format == .ass, !url.isFileURL,
-              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return cues }
-        components.path = (components.path as NSString).deletingLastPathComponent + "/Stream.vtt"
-        guard let fallback = components.url,
-              let data = await Self.fetchSubtitles(service.authorizedRequest(for: fallback)) else { return [] }
-        return await Self.parseText(data, format: .webVTT)
-    }
-
-    /// The lines of a text subtitle file. Away from the main actor, as a file with a lot of typesetting can be big.
-    @concurrent private static func parseText(_ data: Data, format: SubtitleFormat?) async -> [SubtitleCue] {
-        let source = String(decoding: data, as: UTF8.self)
-        return format == .ass ? SubStationAlpha.parse(source) : WebVTT.parse(source)
-    }
-
-    /// The subtitle files fetched, or being fetched, by URL: the main track and an instant replay's share them, and so
-    /// does a track picked again. The first time a picture track (PGS) is asked for, the server reads through the whole
-    /// video to take it out, which can take minutes, and a second request or a cancelled one would have it start over.
-    @ObservationIgnored private var subtitleFetches: [URL: Task<Data?, Never>] = [:]
-
-    /// The file at `url`, from the one request made for it. Not cancelled with the caller, so the server finishes taking
-    /// the track out even if the viewer turns it off in the meantime; a failed one is asked for again next time.
-    private func subtitleData(from url: URL) async -> Data? {
-        let fetch = subtitleFetches[url] ?? {
-            let service = service
-            let fetch = Task { await Self.fetchSubtitles(service.authorizedRequest(for: url)) }
-            subtitleFetches[url] = fetch
-            return fetch
-        }()
-        let data = await fetch.value
-        if data == nil, subtitleFetches[url] == fetch { subtitleFetches[url] = nil }
-        return data
-    }
-
-    nonisolated private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "Subtitles")
-
-    /// Fetches a subtitle file, logging a failure by path only. Nil if it failed.
-    @concurrent private static func fetchSubtitles(_ request: URLRequest) async -> Data? {
-        let path = request.url.map { $0.isFileURL ? $0.lastPathComponent : $0.path() } ?? "?"
-        let start = ContinuousClock.now
-        do {
-            let (data, response) = try await subtitleSession.data(for: request)
-            let elapsed = ContinuousClock.now - start
-            if let status = (response as? HTTPURLResponse)?.statusCode, status != 200 {
-                logger.error("Subtitles \(path, privacy: .public) failed with status \(status) after \(elapsed)")
-                return nil
-            }
-            return data
-        } catch {
-            logger.error("Subtitles \(path, privacy: .public) failed after \(ContinuousClock.now - start): \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
-    }
-
-    /// Fetches subtitle files. Ephemeral, so nothing fetched with the access token is cached on disk.
-    nonisolated private static let subtitleSession: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        // The server reads through the whole video to take a track out of it the first time it's asked for, which can
-        // take longer than the usual minute for a big file.
-        configuration.timeoutIntervalForRequest = 300
-        return URLSession(configuration: configuration)
-    }()
 
     /// Fetches the lines of the selected subtitle track, or clears them if there's nothing for the app to draw.
     private func loadSubtitleCues() {
-        cueTask?.cancel()
-        subtitleCues = []
-        pictureCues = []
-        shownPicture = nil
-        // The tracks may have changed too, so the replay's are fetched again when they're next wanted.
-        replayTask?.cancel()
-        replayCues = []
-        replayPictureCues = []
-        shownReplayPicture = nil
-        didRequestReplayCues = false
-        guard !info.subtitlesBurnedIn, let subtitleIndex,
-              let track = info.subtitleTracks.first(where: { $0.index == subtitleIndex }), let url = track.url else { return }
-        cueTask = Task {
-            guard let data = await subtitleData(from: url), !Task.isCancelled else { return }
-            if track.format == .pgs {
-                let cues = await PGS.parse(data)
-                guard !Task.isCancelled else { return }
-                pictureCues = cues
-            } else {
-                let cues = await self.textCues(data, from: url, format: track.format)
-                guard !Task.isCancelled else { return }
-                subtitleCues = cues
-            }
-        }
+        let track = info.subtitlesBurnedIn ? nil : subtitleIndex.flatMap { index in info.subtitleTracks.first { $0.index == index } }
+        subtitles.show(track)
     }
 
     /// Current playback position in seconds (0 until the player knows it).
@@ -579,8 +412,7 @@ final class PlaybackSession {
         isStopped = true
         progressTask?.cancel()
         for lookup in lookups { lookup.cancel() }
-        cueTask?.cancel()
-        replayTask?.cancel()
+        subtitles.cancel()
         #if os(iOS)
         keepAwake = nil
         UIApplication.shared.isIdleTimerDisabled = false

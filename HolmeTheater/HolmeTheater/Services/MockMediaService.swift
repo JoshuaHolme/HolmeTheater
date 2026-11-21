@@ -21,6 +21,10 @@ nonisolated struct MockMediaService: MediaService {
     /// Pass `-MockLatencyMilliseconds 8000` at launch to stretch it, to look at loading states.
     var latency: Duration = .milliseconds(UserDefaults.standard.object(forKey: "MockLatencyMilliseconds") as? Int ?? 300)
 
+    /// What every simulated network call throws, for tests of what happens when the server can't be reached or
+    /// refuses the session. Nil, the usual, lets them succeed.
+    var failure: (any Error)? = nil
+
     /// The server every ``connect(to:)`` "succeeds" against, whatever address is typed.
     private static let server = ServerInfo(id: "mock-server", name: "Home Server", url: .exampleServer)
 
@@ -274,6 +278,7 @@ nonisolated struct MockMediaService: MediaService {
 
     private func simulateLatency() async throws {
         try await Task.sleep(for: latency)
+        if let failure { throw failure }
     }
 
     // MARK: Connection & auth

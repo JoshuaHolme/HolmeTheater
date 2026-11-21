@@ -1,0 +1,70 @@
+{
+  "configurations": [
+    {
+      "id": "4C3F43D7-5751-4950-898B-17E0904AE6A3",
+      "name": "Portrait",
+      "options": {
+        "environmentVariableEntries": [
+          {
+            "key": "UI_TEST_ORIENTATION",
+            "value": "portrait"
+          }
+        ]
+      }
+    },
+    {
+      "id": "1A39471F-DEEF-429F-828B-06983DB0C6C8",
+      "name": "Landscape Left",
+      "options": {
+        "environmentVariableEntries": [
+          {
+            "key": "UI_TEST_ORIENTATION",
+            "value": "landscapeLeft"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0E5213F0-7AAC-4A2E-87F9-B13AAD045221",
+      "name": "Landscape Right",
+      "options": {
+        "environmentVariableEntries": [
+          {
+            "key": "UI_TEST_ORIENTATION",
+            "value": "landscapeRight"
+          }
+        ]
+      }
+    },
+    {
+      "id": "B77BABFF-ADBF-4EE2-8C4F-DE6AB04C398B",
+      "name": "Portrait Upside Down",
+      "options": {
+        "environmentVariableEntries": [
+          {
+            "key": "UI_TEST_ORIENTATION",
+            "value": "portraitUpsideDown"
+          }
+        ]
+      }
+    }
+  ],
+  "defaultOptions": {
+    "targetForVariableExpansion": {
+      "containerPath": "container:HolmeTheater.xcodeproj",
+      "identifier": "000000000000000100000000",
+      "name": "HolmeTheater"
+    }
+  },
+  "testTargets": [
+    {
+      "parallelizable": false,
+      "target": {
+        "containerPath": "container:HolmeTheater.xcodeproj",
+        "identifier": "03EEDB6C30B212A40037D7D5",
+        "name": "HolmeTheaterUITests"
+      }
+    }
+  ],
+  "version": 1
+}

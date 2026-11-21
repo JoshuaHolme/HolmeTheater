@@ -137,7 +137,7 @@ struct HomeView: View {
 
                     // Loads inside the scroll view, below the header, so the profile button in the bar stays
                     // reachable (e.g. to sign out) even if loading fails.
-                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, loadingHeight: loadingHeight(proxy), offersDownloads: true, placeholder: AnyView(placeholder(proxy))) { data in
+                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, loadingHeight: loadingHeight(proxy), offersDownloads: true, placeholder: placeholder(proxy)) { data in
                         HomeColumn {
                             if !data.hero.isEmpty {
                                 HomeHeroCarousel(

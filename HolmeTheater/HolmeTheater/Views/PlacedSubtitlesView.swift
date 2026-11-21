@@ -17,9 +17,10 @@ struct PlacedSubtitlesView: View {
     var body: some View {
         Color.clear
             .overlay(alignment: .topLeading) {
-                // By position, not by value: SubStation Alpha tracks often repeat a line exactly (a layer for its
-                // outline, say), and two identical cues would share an identity.
-                ForEach(Array(cues.enumerated()), id: \.offset) { _, cue in
+                // By value, so a line keeps its identity while the ones around it come and go. Lines a SubStation Alpha
+                // track repeats in one place (a layer for its outline, say) are shown once (see
+                // `SubtitleController.placed(at:)`), so no two share it.
+                ForEach(cues, id: \.self) { cue in
                     if let placement = cue.placement { line(cue.text, at: placement) }
                 }
             }

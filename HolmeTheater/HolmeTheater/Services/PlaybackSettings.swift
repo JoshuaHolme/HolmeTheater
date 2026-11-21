@@ -47,6 +47,11 @@ final class PlaybackSettings {
         autoPlaysNext = defaults.object(forKey: Self.autoPlayKey) as? Bool ?? true
     }
 
+    /// Settings for previews and tests, kept apart from the real ones.
+    static func preview() -> PlaybackSettings {
+        PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard)
+    }
+
     // MARK: Subtitle offsets
 
     /// How many seconds later than the file says an item's subtitles show, for the signed-in account. 0 if never set.

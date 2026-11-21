@@ -34,7 +34,7 @@ struct SeasonsSection: View {
             // The seasons' posters load before the row shows, so they don't pop in.
             await ImageCache.shared.preload(children.prefix(6).compactMap(\.posterURL))
             return children
-        }, reloadID: reloadID, pullsToRefresh: false, placeholder: AnyView(SkeletonShelf(cardCount: 4))) { children in
+        }, reloadID: reloadID, pullsToRefresh: false, placeholder: SkeletonShelf(cardCount: 4)) { children in
             VStack(alignment: .leading, spacing: Layout.shelfHeadingGap) {
                 if children.count == 1, let season = children.first {
                     // A show with a single season is a mini series: its episodes stand in for the one season.
@@ -157,7 +157,7 @@ struct EpisodeShelf: View {
             // The first episodes' stills load before the row shows, so they don't pop in.
             await ImageCache.shared.preload(episodes.prefix(4).compactMap(\.gridArtworkURL))
             return episodes
-        }, reloadID: reloadID + reloadCount, pullsToRefresh: false, placeholder: AnyView(SkeletonShelf(isWide: true, cardCount: 3))) { episodes in
+        }, reloadID: reloadID + reloadCount, pullsToRefresh: false, placeholder: SkeletonShelf(isWide: true, cardCount: 3)) { episodes in
             if !episodes.isEmpty {
                 MediaShelf(
                     title: episodes.count == 1 ? String(localized: "1 Episode") : String(localized: "\(episodes.count) Episodes"),
@@ -203,9 +203,9 @@ struct SeasonListView: View {
     }
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.children(of: series) }, reloadID: reloadCount, placeholder: AnyView(
+        AsyncContent(load: { try await appModel.service.children(of: series) }, reloadID: reloadCount, placeholder:
             SkeletonScroll { SkeletonRows(count: 6).padding(.horizontal) }
-        )) { seasons in
+        ) { seasons in
             List(seasons) { season in
                 // Built once and shared by the "more" menu and the long-press menu.
                 // Already inside the show, so there's no "Go to Show".
