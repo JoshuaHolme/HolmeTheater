@@ -204,8 +204,11 @@ struct HomeSkeleton: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Layout.shelfSpacing) {
             #if os(tvOS)
-            // The carousel fills the top of the screen on tvOS; the shelves sit below where it ends.
-            Color.clear.frame(height: 480)
+            // The carousel fills the top of the screen on tvOS, and the first shelf rises over its bottom edge, with a little
+            // gap under that (see `HomeView`), so the shelves start where they do once loaded. With no carousel, they're at the top.
+            if let heroSize {
+                Color.clear.frame(height: heroSize.height - HeroLayout.bottomReserve + 12)
+            }
             #else
             if let heroSize {
                 SkeletonBlock(cornerRadius: 0)
