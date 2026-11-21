@@ -90,6 +90,12 @@ xcodebuild test -scheme HolmeTheater -destination 'platform=iOS Simulator,name=i
 - The access token is kept in the Keychain. For playback it is also appended to stream URLs as an `ApiKey` query
   parameter, because AVPlayer can't attach headers to every HLS segment request. Treat stream URLs as secrets.
 
+## Support
+
+Holme Theater is free and open source, with no ads, no tracking, and nothing locked. If it's become part of your movie
+nights, you can help keep the projector running by buying the projectionist a snack from the Concession Stand in the
+app (Account → Support Holme Theater). Tip as often as you like, or never.
+
 ## Contributing
 
 Issues and pull requests are welcome. Please keep SDK types inside `JellyfinMediaService` and document new public

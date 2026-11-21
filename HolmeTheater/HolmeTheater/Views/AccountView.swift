@@ -39,6 +39,7 @@ struct AccountView: View {
             if let session = appModel.session {
                 Section {
                     AvatarView(url: session.avatarURL, size: 96)
+                        .supporterBadge(size: 96)
                         .frame(maxWidth: .infinity)
                         .listRowBackground(Color.clear)
                 }
@@ -62,6 +63,7 @@ struct AccountView: View {
             if let session = appModel.session {
                 VStack(spacing: 20) {
                     AvatarView(url: session.avatarURL, size: 300)
+                        .supporterBadge(size: 300)
                         .padding(.bottom, 16)
 
                     Text(session.username)
@@ -129,6 +131,10 @@ struct AccountView: View {
                     TVSettingsRow(title: "Themes", showsChevron: true)
                 }
                 .buttonStyle(.card)
+                NavigationLink { SupportView() } label: {
+                    TVSettingsRow(title: "Support Holme Theater", showsChevron: true, systemImage: "popcorn")
+                }
+                .buttonStyle(.card)
             }
 
             Button(action: signOut) {
@@ -177,6 +183,9 @@ struct AccountView: View {
         Section {
             NavigationLink("Home Screen") { HomeSettingsView() }
             NavigationLink("Themes") { ThemeSettingsView() }
+            NavigationLink { SupportView() } label: {
+                Label("Support Holme Theater", systemImage: "popcorn")
+            }
         }
 
         Section {

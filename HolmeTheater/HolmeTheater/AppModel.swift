@@ -53,6 +53,9 @@ final class AppModel {
     /// How playback behaves, e.g. whether the next episode starts by itself. Shared by the settings and the player.
     let playbackSettings: PlaybackSettings
 
+    /// The optional tips, and whether the user has left one.
+    let support: SupportStore
+
     /// A short message to show over the tabs for a moment, e.g. that something worked. The main view clears it.
     var toastMessage: String?
 
@@ -80,6 +83,7 @@ final class AppModel {
         self.homeSettings = HomeSettings()
         self.themeSettings = ThemeSettings()
         self.playbackSettings = PlaybackSettings()
+        self.support = SupportStore()
         self.service = OfflineFallbackMediaService(base: service, store: store)
         self.downloads = DownloadManager(service: service, store: store)
         self.sessionStore = KeychainSessionStore(keychain: KeychainStore(service: Self.keychainNamespace(for: service)))
@@ -99,6 +103,7 @@ final class AppModel {
         self.homeSettings = HomeSettings(defaults: UserDefaults(suiteName: "HomeSettingsPreviews") ?? .standard)
         self.themeSettings = ThemeSettings(defaults: UserDefaults(suiteName: "ThemeSettingsPreviews") ?? .standard)
         self.playbackSettings = PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard)
+        self.support = SupportStore(defaults: UserDefaults(suiteName: "SupportPreviews") ?? .standard)
         self.sessionStore = sessionStore
         playbackSettings.scope = cacheScope
     }

@@ -55,6 +55,7 @@ struct AccountButton: View {
         } label: {
             // The picture sits inside a thin rim of glass.
             AvatarView(url: appModel.session?.avatarURL, size: 38)
+                .supporterBadge(size: 38)
                 // A 44pt circle is the minimum comfortable touch target.
                 .frame(width: 44, height: 44)
                 .glassEffect(.regular.interactive(), in: .circle)
@@ -86,6 +87,7 @@ private struct AccountToolbarModifier: ViewModifier {
                         // The user's profile picture, or a generic person icon if they have none. The bar draws the
                         // glass around it.
                         AvatarView(url: appModel.session?.avatarURL, size: 30)
+                            .supporterBadge(size: 30)
                     }
                     .accessibilityLabel("Account")
                 }

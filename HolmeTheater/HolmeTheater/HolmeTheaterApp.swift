@@ -20,6 +20,11 @@ import SwiftUI
                     await appModel.restoreSession()
                     await appModel.refreshProfile()
                 }
+                // Tips bought on another device, and refunds, show up while the app is running.
+                .task {
+                    guard !ProcessInfo.processInfo.arguments.contains("-UseMockService") else { return }
+                    await appModel.support.start()
+                }
                 // Midnight, a new time zone, or the clock being set: the theme may be due to change.
                 .task {
                     for await _ in NotificationCenter.default.notifications(named: UIApplication.significantTimeChangeNotification) {

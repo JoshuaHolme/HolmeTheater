@@ -28,6 +28,7 @@ struct ThemeEffect: Hashable {
         case egg(EggPattern)
         case bat
         case butterfly
+        case popcorn
     }
 
     enum EggPattern: Hashable {
@@ -39,6 +40,7 @@ struct ThemeEffect: Hashable {
         switch art {
         case .egg: 1.5
         case .butterfly: 1.3
+        case .popcorn: 1.4
         default: 1
         }
     }
@@ -186,6 +188,43 @@ struct PieceView: View {
         case .butterfly:
             Butterfly(color: piece.color)
                 .frame(width: size, height: size * 0.9)
+        case .popcorn:
+            PopcornKernel(color: piece.color)
+                .frame(width: size, height: size)
+        }
+    }
+}
+
+extension ThemeEffect {
+    /// Popcorn, with a few butter-yellow and red-striped-bucket-red pieces, for the thank-you after a tip.
+    static let concessions = ThemeEffect(motion: .confetti, pieces: [
+        Piece(art: .popcorn, color: Color(red: 1.0, green: 0.96, blue: 0.84), weight: 6),
+        Piece(art: .popcorn, color: Color(red: 0.98, green: 0.88, blue: 0.55), weight: 2),
+        Piece(art: .confetti, color: Color(red: 0.85, green: 0.15, blue: 0.18))
+    ])
+}
+
+/// A piece of popcorn: a puffy cluster of overlapping circles with a small hull at the base.
+private struct PopcornKernel: View {
+    let color: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            let s = min(proxy.size.width, proxy.size.height)
+            ZStack {
+                ForEach(Array([(0.32, 0.4, 0.46), (0.66, 0.38, 0.44), (0.5, 0.2, 0.4), (0.5, 0.58, 0.46)].enumerated()), id: \.offset) { _, puff in
+                    Circle()
+                        .fill(color)
+                        .overlay { Circle().strokeBorder(.black.opacity(0.12), lineWidth: s * 0.03) }
+                        .frame(width: s * puff.2, height: s * puff.2)
+                        .position(x: s * puff.0, y: s * puff.1)
+                }
+                Capsule()
+                    .fill(Color(red: 0.55, green: 0.36, blue: 0.16))
+                    .frame(width: s * 0.2, height: s * 0.12)
+                    .position(x: s * 0.5, y: s * 0.86)
+            }
+            .frame(width: s, height: s)
         }
     }
 }
