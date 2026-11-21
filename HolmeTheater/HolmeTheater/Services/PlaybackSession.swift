@@ -476,7 +476,11 @@ final class PlaybackSession {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         // Active, so the volume slider hears about changes made with the hardware buttons. Asynchronously, as
         // activating can block the calling thread for a noticeable time.
-        AVAudioSession.sharedInstance().activate { _, _ in }
+        if #available(iOS 27.0, tvOS 27.0, *) {
+            AVAudioSession.sharedInstance().activate { _, _ in }
+        } else {
+            Task.detached { try? AVAudioSession.sharedInstance().setActive(true) }
+        }
         #endif
 
         if info.resumePosition > 1 {
@@ -538,7 +542,11 @@ final class PlaybackSession {
         player.replaceCurrentItem(with: nil)
         #if os(iOS) || os(tvOS)
         // Let whatever was playing before (music, a podcast) carry on.
-        AVAudioSession.sharedInstance().deactivate(options: .notifyOthersOnDeactivation) { _, _ in }
+        if #available(iOS 27.0, tvOS 27.0, *) {
+            AVAudioSession.sharedInstance().deactivate(options: .notifyOthersOnDeactivation) { _, _ in }
+        } else {
+            Task.detached { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
+        }
         #endif
 
         guard let startReport else {
