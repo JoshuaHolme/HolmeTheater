@@ -48,6 +48,8 @@ struct TVPlayerController: UIViewControllerRepresentable {
         context.coordinator.close = close
     }
 
+    /// Owns the additions to the system player: its delegate callbacks, the transport bar menus, and the remote's
+    /// gestures.
     @MainActor
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         let session: PlaybackSession
@@ -141,6 +143,8 @@ struct TVPlayerController: UIViewControllerRepresentable {
                 host.didMove(toParent: controller)
             }
 
+            // Both observers are on the main queue, so they run on the main actor, which `assumeIsolated` checks rather
+            // than hops to.
             timeObserver = session.player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] time in
                 MainActor.assumeIsolated { self?.tick(time) }
             }
@@ -256,12 +260,12 @@ struct TVPlayerController: UIViewControllerRepresentable {
             session.loadReplayCues()
             // A replay's full subtitles (text or pictures) take over from a forced track's, going back to it afterwards.
             let isReplaying = isShowingReplaySubtitles(at: seconds)
-            let replayText = isReplaying ? session.replaySubtitleText(at: seconds) : nil
-            let replayPicture = isReplaying ? session.replaySubtitlePicture(at: seconds) : nil
+            let replayText = isReplaying ? session.subtitles.replayText(at: seconds) : nil
+            let replayPicture = isReplaying ? session.subtitles.replayPicture(at: seconds) : nil
             let hasReplayLine = replayText != nil || replayPicture != nil
-            subtitles.text = hasReplayLine ? replayText : session.subtitleText(at: seconds)
-            subtitles.picture = hasReplayLine ? replayPicture : session.subtitlePicture(at: seconds)
-            let placed = hasReplayLine ? [] : session.placedSubtitles(at: seconds)
+            subtitles.text = hasReplayLine ? replayText : session.subtitles.text(at: seconds)
+            subtitles.picture = hasReplayLine ? replayPicture : session.subtitles.picture(at: seconds)
+            let placed = hasReplayLine ? [] : session.subtitles.placed(at: seconds)
             if subtitles.placed != placed { subtitles.placed = placed }
             let videoSize = session.player.currentItem?.presentationSize ?? .zero
             if subtitles.videoSize != videoSize { subtitles.videoSize = videoSize }

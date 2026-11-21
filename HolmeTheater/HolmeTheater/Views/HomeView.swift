@@ -58,6 +58,12 @@ struct HomeView: View {
     /// that are showing, so it always matches what's on screen, not from a load that may yet be thrown away.
     @State private var showsHero = false
 
+    /// Whether the loading placeholder is showing, which stands in for the carousel (and its heading) if there's to be one.
+    @State private var showsPlaceholder = false
+
+    /// Whether the placeholder takes the carousel's place, rather than the heading's: the carousel is on and hasn't shown yet.
+    private var placeholderHasHero: Bool { showsPlaceholder && !showsHero && appModel.homeSettings.showsHero }
+
     /// The seasonal theme showing, if any.
     private var theme: AppTheme? { appModel.themeSettings.activeTheme }
 
@@ -80,6 +86,13 @@ struct HomeView: View {
         safeArea.top
         #endif
     }
+
+    /// The ID of the On This Day shelf, whose items load apart from the rest of the screen.
+    private static let onThisDayID = "onThisDay"
+
+    /// What On This Day has turned up, or nil while it's still loading, when its place shows a placeholder. Kept across
+    /// reloads, so a reload doesn't bring the placeholder back.
+    @State private var onThisDay: (items: [MediaItem], hasMore: Bool)?
 
     /// One shelf on the home screen.
     private struct Shelf: Identifiable {
@@ -116,7 +129,7 @@ struct HomeView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if !showsHero && showsHeader {
+                    if !showsHero && showsHeader && !placeholderHasHero {
                         header
                             .padding(.top, safeArea.top)
                             .padding(.top)
@@ -124,7 +137,7 @@ struct HomeView: View {
 
                     // Loads inside the scroll view, below the header, so the profile button in the bar stays
                     // reachable (e.g. to sign out) even if loading fails.
-                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, loadingHeight: loadingHeight(proxy), offersDownloads: true) { data in
+                    AsyncContent(load: loadHome, reloadID: reloadID, refresher: refresher, pullsToRefresh: false, loadingHeight: loadingHeight(proxy), offersDownloads: true, placeholder: placeholder(proxy)) { data in
                         HomeColumn {
                             if !data.hero.isEmpty {
                                 HomeHeroCarousel(
@@ -220,6 +233,8 @@ struct HomeView: View {
         .toolbar(removing: .title)
         #endif
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
+        // Loads with the rest of the screen, and again whenever it does, but doesn't hold it up.
+        .task(id: reloadID) { await loadOnThisDay() }
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: reload) }
         // Coming back from an item's page, the shelves are loaded again, so what was changed there (marked watched, a
         // favorite, progress made by playing from it) shows at once. The screen below a pushed page doesn't reliably load
@@ -260,6 +275,24 @@ struct HomeView: View {
     /// The height to center the loading spinner in. On tvOS the page starts at the top edge of the screen with nothing
     /// above it, so the whole screen's height puts the spinner in the middle. Elsewhere the header sits above it, so the
     /// spinner fills what's left of the container.
+    /// The loading screen: a block where the carousel will be, under the heading it carries, if the carousel is on.
+    @ViewBuilder
+    private func placeholder(_ proxy: GeometryProxy) -> some View {
+        let safeArea = proxy.safeAreaInsets
+        let screenSize = CGSize(width: proxy.size.width + safeArea.leading + safeArea.trailing, height: screenHeight(proxy))
+        let hasHero = appModel.homeSettings.showsHero
+        let heroHeight = HomeHeroCarousel<EmptyView>.height(screenSize: screenSize, safeAreaTop: safeArea.top)
+        HomeSkeleton(heroSize: hasHero ? CGSize(width: screenSize.width, height: heroHeight) : nil)
+            .overlay(alignment: .topLeading) {
+                if hasHero && showsHeader {
+                    header
+                        .padding(.top, safeArea.top + 8)
+                }
+            }
+            .onAppear { showsPlaceholder = true }
+            .onDisappear { showsPlaceholder = false }
+    }
+
     private func loadingHeight(_ proxy: GeometryProxy) -> CGFloat? {
         #if os(tvOS)
         screenHeight(proxy)
@@ -306,7 +339,21 @@ struct HomeView: View {
 
     /// A shelf whose heading opens `destination`'s full list. Its posters play here, and its watch-state
     /// actions reload the whole screen.
+    @ViewBuilder
     private func shelf(_ shelf: Shelf, bleed: CGFloat = 0) -> some View {
+        if shelf.id != Self.onThisDayID {
+            mediaShelf(shelf, bleed: bleed)
+        } else if let onThisDay {
+            // Nothing on the day, so no shelf.
+            if !onThisDay.items.isEmpty {
+                mediaShelf(Shelf(id: shelf.id, destination: shelf.destination, items: onThisDay.items, hasMore: onThisDay.hasMore), bleed: bleed)
+            }
+        } else {
+            SkeletonShelf()
+        }
+    }
+
+    private func mediaShelf(_ shelf: Shelf, bleed: CGFloat) -> some View {
         let destination = shelf.destination
         return MediaShelf(
             title: destination.title,
@@ -337,6 +384,26 @@ struct HomeView: View {
             Spacer()
         }
         .padding(.horizontal)
+    }
+
+    /// Fetches the On This Day shelf, which can be slow on a big library, while the rest of the screen is already showing.
+    /// If it fails the shelf is left out, as before; a failed reload keeps what's showing.
+    private func loadOnThisDay() async {
+        let settings = appModel.homeSettings
+        guard settings.visibleSections.contains(.onThisDay) else {
+            onThisDay = nil
+            return
+        }
+        let service = appModel.service
+        do {
+            let libraries = try await service.libraries()
+            let items = try await service.itemsOnThisDay(libraryIDs: settings.libraryIDs(for: .onThisDay, among: libraries))
+            guard !Task.isCancelled else { return }
+            onThisDay = (Array(items.prefix(Self.shelfLimit)), items.count > Self.shelfLimit)
+        } catch {
+            guard !Task.isCancelled, onThisDay == nil else { return }
+            onThisDay = ([], false)
+        }
     }
 
     /// How many posters of each shelf load before the shelves show: about what fits across a screen.
@@ -386,10 +453,8 @@ struct HomeView: View {
 
         let continueIDs = ids(.continueWatching)
         let nextUpIDs = ids(.nextUp)
-        let onThisDayIDs = ids(.onThisDay)
         let wantsResume = sections.contains(.continueWatching)
         let wantsNextUp = sections.contains(.nextUp)
-        let wantsOnThisDay = sections.contains(.onThisDay)
         let showsHero = settings.showsHero
         let heroOrder = settings.heroOrder
 
@@ -401,9 +466,6 @@ struct HomeView: View {
         async let nextUp: [MediaItem] = wantsNextUp
             ? service.nextUpItems(offset: 0, limit: Self.shelfLimit, libraryIDs: nextUpIDs)
             : []
-        // Only a shelf, so if it fails the rest of the screen still loads.
-        async let onThisDayItems: [MediaItem]? = wantsOnThisDay ? try? await service.itemsOnThisDay(libraryIDs: onThisDayIDs) : []
-
         // Fetch every library's shelves at once rather than one after another. A library is only asked for what
         // something on screen uses.
         let shelves = try await withThrowingTaskGroup(of: (Int, [MediaItem], [MediaItem]).self) { group in
@@ -429,8 +491,6 @@ struct HomeView: View {
         let fetched = shelves.sorted { $0.0 < $1.0 }
         let resumeItems = try await resume
         let nextUpItems = try await nextUp
-        let allOnThisDay = await onThisDayItems ?? []
-        let onThisDay = Array(allOnThisDay.prefix(Self.shelfLimit))
 
         let byLibrary = Dictionary(uniqueKeysWithValues: fetched.map { (libraries[$0.0].id, (added: $0.1, released: $0.2)) })
 
@@ -444,7 +504,9 @@ struct HomeView: View {
             case .nextUp:
                 homeShelves.append(Shelf(id: "nextUp", destination: .nextUp, items: nextUpItems, hasMore: nextUpItems.count >= Self.shelfLimit))
             case .onThisDay:
-                homeShelves.append(Shelf(id: "onThisDay", destination: .onThisDay, items: onThisDay, hasMore: allOnThisDay.count > Self.shelfLimit))
+                // Only holds the shelf's place: it's slow to fetch, so it loads on its own (see `loadOnThisDay`) rather
+                // than holding up the rest of the screen.
+                homeShelves.append(Shelf(id: Self.onThisDayID, destination: .onThisDay, items: [], hasMore: false))
             case .recentlyReleased:
                 for library in settings.ordered(libraries, for: .recentlyReleased) where settings.includes(library, in: .recentlyReleased) {
                     // One more than the shelf shows was asked for, to know whether there's more.
@@ -459,7 +521,8 @@ struct HomeView: View {
                 }
             }
         }
-        homeShelves.removeAll { $0.items.isEmpty }
+        // On This Day's place stays while it loads; it removes itself if it turns up nothing.
+        homeShelves.removeAll { $0.items.isEmpty && $0.id != Self.onThisDayID }
 
         // The carousel's candidates, best first, from the libraries it's set to use.
         let heroLibraries = showsHero ? libraries.enumerated().filter { settings.heroIncludes($0.element) } : []

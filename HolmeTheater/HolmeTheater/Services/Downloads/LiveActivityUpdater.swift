@@ -16,6 +16,7 @@ import Synchronization
 nonisolated final class LiveActivityUpdater: Sendable {
     typealias Content = ActivityContent<DownloadActivityAttributes.ContentState>
 
+    /// A change to send to the activity.
     enum Update: Sendable {
         /// Update the activity, or start it if there isn't one.
         case show(Content)

@@ -10,6 +10,10 @@ nonisolated enum WebVTT {
     /// the usual place along the bottom.
     private static let sideMargin = 0.08, edgeMargin = 0.06
 
+    /// Reads every cue in a WebVTT file, in order of when they start.
+    ///
+    /// Never fails: a block with no readable timing line, or with no text once markup is removed, is skipped, so a
+    /// damaged file still shows whatever lines it can.
     static func parse(_ source: String) -> [SubtitleCue] {
         let normalized = source.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         var cues: [SubtitleCue] = []

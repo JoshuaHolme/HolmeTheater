@@ -21,7 +21,12 @@ struct LibrariesView: View {
 
     var body: some View {
         // The libraries first, then the collections and playlists, each in the order the server gave them.
-        AsyncContent(load: { try await orderedLibraries() }, offersDownloads: true) { libraries in
+        AsyncContent(load: { try await orderedLibraries() }, offersDownloads: true, placeholder:
+            SkeletonScroll {
+                SkeletonTileGrid(columns: [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: Layout.cardSpacing, alignment: .top)], aspectRatio: 16.0 / 9.0, count: 6)
+                    .padding()
+            }
+        ) { libraries in
             ScrollView {
                 // As many columns as fit, so a wide screen shows several cards across instead of stretching one.
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: Layout.cardSpacing, alignment: .top)], alignment: .leading, spacing: Layout.cardSpacing) {
@@ -458,7 +463,7 @@ struct LibraryView: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        AsyncContent(load: loadItems) { items in
+        AsyncContent(load: loadItems, placeholder: SkeletonPosterGrid()) { items in
             PosterBrowser(items: items, sort: sort, title: library.name)
         }
         #if os(tvOS)

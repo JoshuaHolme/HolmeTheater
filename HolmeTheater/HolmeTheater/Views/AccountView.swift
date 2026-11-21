@@ -39,6 +39,7 @@ struct AccountView: View {
             if let session = appModel.session {
                 Section {
                     AvatarView(url: session.avatarURL, size: 96)
+                        .supporterBadge(size: 96)
                         .frame(maxWidth: .infinity)
                         .listRowBackground(Color.clear)
                 }
@@ -62,6 +63,7 @@ struct AccountView: View {
             if let session = appModel.session {
                 VStack(spacing: 20) {
                     AvatarView(url: session.avatarURL, size: 300)
+                        .supporterBadge(size: 300)
                         .padding(.bottom, 16)
 
                     Text(session.username)
@@ -122,11 +124,15 @@ struct AccountView: View {
 
             VStack(alignment: .leading, spacing: 16) {
                 NavigationLink { HomeSettingsView() } label: {
-                    TVSettingsRow(title: "Home Screen", showsChevron: true)
+                    TVSettingsRow(title: "Home Screen", showsChevron: true, systemImage: "house")
                 }
                 .buttonStyle(.card)
                 NavigationLink { ThemeSettingsView() } label: {
-                    TVSettingsRow(title: "Themes", showsChevron: true)
+                    TVSettingsRow(title: "Themes", showsChevron: true, systemImage: "paintpalette")
+                }
+                .buttonStyle(.card)
+                NavigationLink { SupportView() } label: {
+                    TVSettingsRow(title: "Support Holme Theater", showsChevron: true, systemImage: "popcorn")
                 }
                 .buttonStyle(.card)
             }
@@ -175,8 +181,15 @@ struct AccountView: View {
         }
 
         Section {
-            NavigationLink("Home Screen") { HomeSettingsView() }
-            NavigationLink("Themes") { ThemeSettingsView() }
+            NavigationLink { HomeSettingsView() } label: {
+                Label("Home Screen", systemImage: "house")
+            }
+            NavigationLink { ThemeSettingsView() } label: {
+                Label("Themes", systemImage: "paintpalette")
+            }
+            NavigationLink { SupportView() } label: {
+                Label("Support Holme Theater", systemImage: "popcorn")
+            }
         }
 
         Section {

@@ -13,6 +13,10 @@ nonisolated enum SubStationAlpha {
         var marginLeft: Double = 0, marginRight: Double = 0, marginVertical: Double = 0
     }
 
+    /// Reads every `Dialogue` line of a SubStation Alpha file, placed using its styles and the script's play resolution.
+    ///
+    /// The cues stay in the file's order, which is the order they're drawn in. Never fails: lines with unreadable or
+    /// empty timing, no text, or only a drawn shape are skipped.
     static func parse(_ source: String) -> [SubtitleCue] {
         var section = ""
         var width: Double?, height: Double?

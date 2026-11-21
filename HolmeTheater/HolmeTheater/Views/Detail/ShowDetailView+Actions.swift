@@ -110,7 +110,7 @@ extension ShowDetailView {
                 change.wantsWatched ? "Mark as Watched" : "Mark as Unwatched",
                 systemImage: change.wantsWatched ? "eye" : "eye.slash",
                 font: Self.heroIconFont,
-                iconColor: change.wantsWatched ? .white : .green,
+                iconColor: .white,
                 action: change.perform
             )
         }
@@ -133,6 +133,7 @@ extension ShowDetailView {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                .tint(.primary)
                 .accessibilityLabel("Go To")
             }
 
@@ -141,7 +142,8 @@ extension ShowDetailView {
             } label: {
                 Image(systemName: isFavorite ? "heart.fill" : "heart")
             }
-            .tint(isFavorite ? .red : nil)
+            // Plain like the other buttons, except red once it's a favorite.
+            .tint(isFavorite ? .red : .primary)
             .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
 
             if isPlayableItem || canJoinCollection {
@@ -155,17 +157,19 @@ extension ShowDetailView {
                 } label: {
                     Image(systemName: "text.badge.plus")
                 }
+                .tint(.primary)
                 .accessibilityLabel("Add To")
             }
 
             // The whole show or season, or the episode or movie itself.
             DownloadToolbarButton(item: current, prompt: $watchState.downloadPrompt)
+                .tint(.primary)
 
             if let change = watchedChange {
                 Button(action: change.perform) {
                     Image(systemName: change.wantsWatched ? "eye" : "eye.slash")
                 }
-                .tint(change.wantsWatched ? nil : .green)
+                .tint(.primary)
                 .accessibilityLabel(change.wantsWatched ? "Mark as Watched" : "Mark as Unwatched")
                 // VoiceOver would otherwise announce a checkmark image as "selected", which this is not.
                 .accessibilityRemoveTraits(.isSelected)

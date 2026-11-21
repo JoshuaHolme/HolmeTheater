@@ -449,6 +449,7 @@ extension PlaybackInfo {
 
 /// A stretch of a movie or episode the server knows the purpose of, which the player offers to skip.
 nonisolated struct MediaSegment: Hashable, Sendable, Codable {
+    /// What the stretch is, which decides the skip button's label.
     nonisolated enum Kind: Hashable, Sendable, Codable {
         case intro, outro, recap, preview, commercial
         /// Something the server found but couldn't name.
@@ -515,6 +516,10 @@ nonisolated struct PlaybackOptions: Hashable, Sendable {
 
     /// The ``MediaTrack/index`` of the subtitle track to show, or ``PlaybackOptions/noSubtitles``.
     var subtitleIndex: Int?
+
+    /// Whether the server may send the file as it is. Off for a file the device couldn't show a picture from that way, so
+    /// the server remuxes or converts it into something it can. See ``DirectPlayFailures``.
+    var allowsDirectPlay = true
 
     /// The `subtitleIndex` that asks for no subtitles at all.
     static let noSubtitles = -1

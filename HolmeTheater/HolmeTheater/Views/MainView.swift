@@ -21,6 +21,11 @@ struct MainView: View {
     @State private var searchPath = NavigationPath()
     @State private var accountPath = NavigationPath()
 
+    #if os(tvOS)
+    /// Whether the "exit the app?" prompt is up.
+    @State private var confirmsExit = false
+    #endif
+
     var body: some View {
         TabView(selection: $selection) {
             Tab("Home", systemImage: "house", value: Section.home) {
@@ -71,6 +76,15 @@ struct MainView: View {
         }
         #if os(tvOS)
         .tabViewStyle(.sidebarAdaptable)
+        // Over the whole tab view rather than the Support page, which disables the sidebar too until it's closed.
+        .supportCelebration()
+        // The Menu button on the remote leaves the app once there's nothing left to go back to, which is easy to do by
+        // accident while backing out of a page. Ask first.
+        .onExitCommand { confirmsExit = true }
+        .alert("Exit Holme Theater?", isPresented: $confirmsExit) {
+            Button("Cancel", role: .cancel) {}
+            Button("Exit", role: .destructive) { exit(0) }
+        }
         #endif
         .overlay(alignment: .top) { toast }
         .animation(.easeInOut, value: appModel.toastMessage)

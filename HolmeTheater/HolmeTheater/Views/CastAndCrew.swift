@@ -227,7 +227,9 @@ struct PhotoViewer: View {
                 case .success(let image):
                     image.resizable().scaledToFit()
                 case .empty:
-                    ProgressView().tint(.white)
+                    SkeletonBlock(cornerRadius: 16)
+                        .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                        .padding(40)
                 default:
                     Image(systemName: "person.fill")
                         .font(.system(size: 80))

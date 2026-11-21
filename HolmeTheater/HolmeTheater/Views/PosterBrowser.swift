@@ -57,6 +57,7 @@ enum PosterSort: CaseIterable, Identifiable, Hashable {
 
 /// Which items to leave out of a collection of posters.
 struct PosterFilter: Equatable {
+    /// Which items to show by whether they've been watched.
     enum Watched: CaseIterable, Identifiable {
         case all, unwatched, watched
         var id: Self { self }

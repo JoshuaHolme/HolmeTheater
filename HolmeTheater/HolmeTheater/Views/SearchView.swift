@@ -30,6 +30,8 @@ struct SearchView: View {
                 GenreBrowser()
             } else if results.isEmpty && !isSearching {
                 ContentUnavailableView.search(text: query)
+            } else if results.isEmpty {
+                searchingPlaceholder
             } else {
                 resultsList
             }
@@ -41,7 +43,12 @@ struct SearchView: View {
         #else
         .navigationTitle("Search")
         #endif
+        #if os(iOS)
+        // Always showing, rather than tucked away until the page is pulled down.
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always))
+        #else
         .searchable(text: $query)
+        #endif
         .watchActionAlerts(watchActions)
         .navigationDestination(item: $goToItem) { ItemDetailView(item: $0) }
         .fullScreenCover(item: $playingItem) { PlayerView(item: $0, onStop: { Task { await refreshResults() } }) }
@@ -57,6 +64,22 @@ struct SearchView: View {
 
     private var navigation: ItemNavigation {
         ItemNavigation(open: { goToItem = $0 }, play: { playingItem = $0 })
+    }
+
+    /// What shows while the first results are on their way, laid out like them: a grid of landscape cards on tvOS, otherwise a
+    /// row each.
+    private var searchingPlaceholder: some View {
+        SkeletonScroll {
+            #if os(tvOS)
+            SkeletonTileGrid(columns: [GridItem(.adaptive(minimum: 360), spacing: Layout.cardSpacing, alignment: .top)], aspectRatio: 16.0 / 9.0, count: 6)
+                .padding()
+            #else
+            SkeletonRows(count: 8)
+                .padding(.horizontal)
+            #endif
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Searching")
     }
 
     /// One row per result: poster, title and a line of details, with a menu of actions on the right.
@@ -194,17 +217,45 @@ private struct SearchResultRow: View {
 private struct GenreBrowser: View {
     @Environment(AppModel.self) private var appModel
 
-    #if os(tvOS)
-    private static let columnCount = 5
-    #else
-    private static let columnCount = 2
-    #endif
+    /// How many posters across for a screen of `size`: five on a TV; elsewhere at least two, and one more for each
+    /// `columnWidth` of room, then more still until a poster is a little short of the screen's height, so an iPad or a phone
+    /// on its side doesn't get posters taller than the screen, with their names out of sight below.
+    private static func columnCount(for size: CGSize) -> Int {
+        #if os(tvOS)
+        return 5
+        #else
+        var count = max(2, Int(size.width / columnWidth))
+        while count < 8 {
+            // The grid's padding is the system's 16 on each side.
+            let posterWidth = (size.width - 32 - CGFloat(count - 1) * Layout.cardSpacing) / CGFloat(count)
+            guard posterWidth * 1.5 > size.height * 0.9 else { break }
+            count += 1
+        }
+        return count
+        #endif
+    }
+
+    /// The room each poster takes before another fits: wide enough that iPhone Duo's open inner display (about 670 points
+    /// across) still has two.
+    private static let columnWidth: CGFloat = 250
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.genres() }) { genres in
+        AsyncContent(load: { try await appModel.service.genres() }, placeholder:
+            // The same columns the genres will have, found the same way.
+            GeometryReader { proxy in
+                SkeletonScroll {
+                    SkeletonTileGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: Layout.cardSpacing, alignment: .top), count: Self.columnCount(for: proxy.size)),
+                        count: 8
+                    )
+                    .padding()
+                }
+            }
+        ) { genres in
+            // A GeometryReader, rather than measuring after layout, so the first frame already has the right columns.
+            GeometryReader { proxy in
             ScrollView {
-                // Two posters across, whatever the screen width; five on a TV, where the screen is much wider.
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Layout.cardSpacing, alignment: .top), count: Self.columnCount), spacing: Layout.cardSpacing) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Layout.cardSpacing, alignment: .top), count: Self.columnCount(for: proxy.size)), spacing: Layout.cardSpacing) {
                     ForEach(genres) { genre in
                         NavigationLink(value: genre) {
                             CollageCard(title: genre.name, aspectRatio: 2.0 / 3.0, cacheKey: "\(appModel.cacheScope)|genre-\(genre.id)") {
@@ -218,6 +269,7 @@ private struct GenreBrowser: View {
                 }
                 .padding()
             }
+            }
         }
     }
 }
@@ -228,7 +280,7 @@ struct GenreView: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        AsyncContent(load: { try await appModel.service.items(in: genre) }) { items in
+        AsyncContent(load: { try await appModel.service.items(in: genre) }, placeholder: SkeletonPosterGrid()) { items in
             PosterBrowser(items: items, title: genre.name, offersGenreFilter: false)
         }
         #if os(tvOS)

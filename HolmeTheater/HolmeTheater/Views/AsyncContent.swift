@@ -14,7 +14,7 @@ import SwiftUI
 ///     List(libraries) { Text($0.name) }
 /// }
 /// ```
-struct AsyncContent<Value, Content: View>: View {
+struct AsyncContent<Value, Content: View, Placeholder: View>: View {
     private enum Phase {
         case loading
         case loaded(Value)
@@ -42,8 +42,32 @@ struct AsyncContent<Value, Content: View>: View {
     /// Whether the error page, when the device is offline, links to the Downloads tab.
     var offersDownloads = false
 
+    /// Shown in place of the spinner while the first load runs, laid out like the content so it can take its place. Nil
+    /// shows the spinner.
+    var placeholder: Placeholder?
+
     /// Builds the loaded UI from the fetched value.
     @ViewBuilder let content: (Value) -> Content
+
+    init(
+        load: @escaping () async throws -> Value,
+        reloadID: Int = 0,
+        refresher: ContentRefresher? = nil,
+        pullsToRefresh: Bool = true,
+        loadingHeight: CGFloat? = nil,
+        offersDownloads: Bool = false,
+        placeholder: Placeholder,
+        @ViewBuilder content: @escaping (Value) -> Content
+    ) {
+        self.load = load
+        self.reloadID = reloadID
+        self.refresher = refresher
+        self.pullsToRefresh = pullsToRefresh
+        self.loadingHeight = loadingHeight
+        self.offersDownloads = offersDownloads
+        self.placeholder = placeholder
+        self.content = content
+    }
 
     @Environment(\.openDownloads) private var openDownloads
 
@@ -57,7 +81,12 @@ struct AsyncContent<Value, Content: View>: View {
         Group {
             switch phase {
             case .loading:
-                if let loadingHeight {
+                if let placeholder {
+                    // One "Loading" for the lot, not each placeholder block.
+                    placeholder
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Loading")
+                } else if let loadingHeight {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                         .frame(height: loadingHeight)
@@ -80,7 +109,7 @@ struct AsyncContent<Value, Content: View>: View {
                         Task { await run() }
                     }
 
-                    if offersDownloads, !NetworkMonitor.shared.isOnline, let openDownloads {
+                    if offersDownloads, !NetworkStatus.shared.isOnline, let openDownloads {
                         Button("Go to Downloads") { openDownloads() }
                     }
                 }
@@ -113,6 +142,28 @@ struct AsyncContent<Value, Content: View>: View {
             if case .loaded = phase { return }
             phase = .failed(error.localizedDescription)
         }
+    }
+}
+
+extension AsyncContent where Placeholder == EmptyView {
+    /// With a spinner, rather than a placeholder, while the first load runs.
+    init(
+        load: @escaping () async throws -> Value,
+        reloadID: Int = 0,
+        refresher: ContentRefresher? = nil,
+        pullsToRefresh: Bool = true,
+        loadingHeight: CGFloat? = nil,
+        offersDownloads: Bool = false,
+        @ViewBuilder content: @escaping (Value) -> Content
+    ) {
+        self.load = load
+        self.reloadID = reloadID
+        self.refresher = refresher
+        self.pullsToRefresh = pullsToRefresh
+        self.loadingHeight = loadingHeight
+        self.offersDownloads = offersDownloads
+        self.placeholder = nil
+        self.content = content
     }
 }
 

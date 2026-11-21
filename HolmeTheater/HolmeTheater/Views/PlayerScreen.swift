@@ -139,7 +139,8 @@ struct PlayerScreen: Equatable {
     /// beside it, as in the Apple TV app; otherwise it goes below the status bar.
     func topPadding(isCompact: Bool) -> CGFloat {
         if Self.obstructions(in: corners).contains(where: \.isTop) { return 16 }
-        return isCompact ? safeArea.top + 12 : max(safeArea.top, 16)
+        // A little below a status bar across the top (as on iPad), rather than right against it.
+        return isCompact ? safeArea.top + 12 : max(safeArea.top + 8, 16)
     }
 
     var bottomPadding: CGFloat { max(safeArea.bottom, 12) }

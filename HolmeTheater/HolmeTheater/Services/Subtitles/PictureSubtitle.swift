@@ -4,6 +4,7 @@
 
 import CoreGraphics
 import Foundation
+import Observation
 
 /// One picture of an image-based subtitle track, and when it shows. Its pixels stay compressed until it's on screen
 /// (see ``image()``): an episode has hundreds, which decoded would take hundreds of megabytes.
@@ -52,7 +53,7 @@ nonisolated struct PictureSubtitleCue: Sendable {
 }
 
 /// A subtitle picture ready to draw, and where it goes.
-nonisolated struct PictureSubtitle {
+nonisolated struct PictureSubtitle: Sendable {
     let image: CGImage
     /// Where it goes on ``canvas``, in its pixels.
     let rect: CGRect
@@ -92,6 +93,60 @@ nonisolated struct PictureSubtitle {
         let scale = max(video.width / canvas.width, video.height / canvas.height)
         let size = CGSize(width: canvas.width * scale, height: canvas.height * scale)
         return CGRect(x: video.midX - size.width / 2, y: video.midY - size.height / 2, width: size.width, height: size.height)
+    }
+}
+
+/// Draws a track of pictures as they come due, off the main thread, and keeps the one showing and the one after it ready.
+/// Decoding one can take several milliseconds, too long for a view's body, which asks for it many times a second.
+@Observable
+final class PictureCueRenderer {
+    private(set) var cues: [PictureSubtitleCue] = []
+
+    /// Decoded pictures by their index in ``cues``, nil for one that couldn't be drawn. Only those around the one last
+    /// asked for are kept.
+    private var decoded: [Int: PictureSubtitle?] = [:]
+
+    @ObservationIgnored private var decoding: Set<Int> = []
+    /// The index last asked for, which decoded pictures are kept around.
+    @ObservationIgnored private var current = 0
+    /// Goes up with every new set of cues, so a decode of the old ones that finishes late is thrown away.
+    @ObservationIgnored private var generation = 0
+
+    /// Replaces the track's pictures, or clears them with an empty array.
+    func replace(with cues: [PictureSubtitleCue]) {
+        generation += 1
+        self.cues = cues
+        decoded = [:]
+        decoding = []
+    }
+
+    /// The picture showing at `time`, if any. Nil too while it's still being decoded; it's observable, so a view
+    /// showing this draws again once it's ready.
+    func picture(at time: TimeInterval) -> PictureSubtitle? {
+        guard let index = cues.index(at: time) else { return nil }
+        current = index
+        decode(index)
+        // The next one, so it's ready by the time it shows.
+        decode(index + 1)
+        return decoded[index] ?? nil
+    }
+
+    private func decode(_ index: Int) {
+        guard cues.indices.contains(index), decoded[index] == nil, !decoding.contains(index) else { return }
+        decoding.insert(index)
+        let (cue, generation) = (cues[index], generation)
+        Task {
+            let picture = await Self.draw(cue)
+            guard generation == self.generation else { return }
+            decoding.remove(index)
+            var kept = decoded.filter { abs($0.key - current) <= 1 }
+            kept[index] = .some(picture)
+            decoded = kept
+        }
+    }
+
+    @concurrent private static func draw(_ cue: PictureSubtitleCue) async -> PictureSubtitle? {
+        cue.image()
     }
 }
 

@@ -5,6 +5,7 @@
 import Foundation
 import Observation
 import OSLog
+import UIKit
 
 /// App-wide state: which service is in use and whether anyone is signed in.
 ///
@@ -53,6 +54,9 @@ final class AppModel {
     /// How playback behaves, e.g. whether the next episode starts by itself. Shared by the settings and the player.
     let playbackSettings: PlaybackSettings
 
+    /// The optional tips, and whether the user has left one.
+    let support: SupportStore
+
     /// A short message to show over the tabs for a moment, e.g. that something worked. The main view clears it.
     var toastMessage: String?
 
@@ -65,11 +69,18 @@ final class AppModel {
     var pendingShow: MediaItem?
 
     @ObservationIgnored private let sessionStore: any SessionStore
+
+    /// Whether ``launch(watchingPurchases:)`` has run. Every window calls it as it appears.
+    @ObservationIgnored private var hasLaunched = false
+    @ObservationIgnored private var timeChanges: Task<Void, Never>?
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "HolmeTheater", category: "Session")
 
     /// The Keychain namespace a service's saved session goes under. Mock runs (`-UseMockService`) get their own;
     /// otherwise the canned session they save would be restored against the real server on the next normal launch,
     /// which can never sign it in.
+    /// Whether this run uses canned data (`-UseMockService`) rather than a server.
+    private static var isMockRun: Bool { ProcessInfo.processInfo.arguments.contains("-UseMockService") }
+
     private static func keychainNamespace(for service: any MediaService) -> String {
         let base = Bundle.main.bundleIdentifier ?? "JellyfinClient"
         return service is MockMediaService ? base + ".mock" : base
@@ -80,6 +91,7 @@ final class AppModel {
         self.homeSettings = HomeSettings()
         self.themeSettings = ThemeSettings()
         self.playbackSettings = PlaybackSettings()
+        self.support = SupportStore()
         self.service = OfflineFallbackMediaService(base: service, store: store)
         self.downloads = DownloadManager(service: service, store: store)
         self.sessionStore = KeychainSessionStore(keychain: KeychainStore(service: Self.keychainNamespace(for: service)))
@@ -98,9 +110,39 @@ final class AppModel {
         // A preview's changes stay out of the real settings.
         self.homeSettings = HomeSettings(defaults: UserDefaults(suiteName: "HomeSettingsPreviews") ?? .standard)
         self.themeSettings = ThemeSettings(defaults: UserDefaults(suiteName: "ThemeSettingsPreviews") ?? .standard)
-        self.playbackSettings = PlaybackSettings(defaults: UserDefaults(suiteName: "PlaybackSettingsPreviews") ?? .standard)
+        self.playbackSettings = PlaybackSettings.preview()
+        self.support = SupportStore(defaults: UserDefaults(suiteName: "SupportPreviews") ?? .standard)
         self.sessionStore = sessionStore
         playbackSettings.scope = cacheScope
+    }
+
+    /// Does what the app does once at launch: picks up the saved session, starts watching for purchases and for the date
+    /// changing, and checks the profile. Call it from each window as it appears; only the first call does anything, so
+    /// a second window on iPad doesn't do it all again.
+    ///
+    /// The watching outlives the window that started it, which may be closed while others stay open.
+    ///
+    /// - Parameter watchingPurchases: Whether to watch for tips; off for runs with canned data.
+    func launch(watchingPurchases: Bool) async {
+        guard !hasLaunched else { return }
+        hasLaunched = true
+        // UI tests start each run signed out, whatever an earlier run left saved. Only ever with canned data, whose
+        // saved session is kept apart from the real one (see `keychainNamespace(for:)`).
+        if Self.isMockRun, ProcessInfo.processInfo.arguments.contains("-SignedOutAtLaunch") {
+            sessionStore.delete()
+        }
+        // Midnight, a new time zone, or the clock being set: the theme may be due to change.
+        timeChanges = Task { [themeSettings] in
+            for await _ in NotificationCenter.default.notifications(named: UIApplication.significantTimeChangeNotification) {
+                themeSettings.refreshDate()
+            }
+        }
+        // Tips bought on another device, and refunds, show up while the app is running.
+        if watchingPurchases {
+            Task { [support] in await support.start() }
+        }
+        await restoreSession()
+        await refreshProfile()
     }
 
     /// Call once at launch to pick up a saved session.

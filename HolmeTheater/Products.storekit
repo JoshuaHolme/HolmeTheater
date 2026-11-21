@@ -1,0 +1,78 @@
+{
+  "identifier" : "A7F3C2D1",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "2.99",
+      "familyShareable" : false,
+      "internalID" : "6A1B0001",
+      "localizations" : [
+        {
+          "description" : "Buy the projectionist a piece of candy.",
+          "displayName" : "Candy",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "tech.holme.theater.tip.small",
+      "referenceName" : "Tip - Candy",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "4.99",
+      "familyShareable" : false,
+      "internalID" : "6A1B0002",
+      "localizations" : [
+        {
+          "description" : "Buy the projectionist some popcorn.",
+          "displayName" : "Popcorn",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "tech.holme.theater.tip.medium",
+      "referenceName" : "Tip - Popcorn",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "9.99",
+      "familyShareable" : false,
+      "internalID" : "6A1B0003",
+      "localizations" : [
+        {
+          "description" : "Buy the projectionist a popcorn and drink combo.",
+          "displayName" : "Combo",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "tech.holme.theater.tip.large",
+      "referenceName" : "Tip - Combo",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "24.99",
+      "familyShareable" : false,
+      "internalID" : "6A1B0004",
+      "localizations" : [
+        {
+          "description" : "Put the whole snack bar on the projectionist's tab.",
+          "displayName" : "Snack Bar Tab",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "tech.holme.theater.tip.generous",
+      "referenceName" : "Tip - Snack Bar Tab",
+      "type" : "Consumable"
+    }
+  ],
+  "settings" : {
+
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

@@ -189,15 +189,30 @@ private struct ThemePreviewView: View {
     var body: some View {
         let settings = appModel.themeSettings
 
-        ZStack(alignment: .top) {
-            // The screen itself, as the example. Nothing on it can be used; it's only there to look at.
-            NavigationStack {
-                HomeView()
-            }
-            .disabled(true)
-            .accessibilityHidden(true)
+        Group {
+            #if os(tvOS)
+            ZStack(alignment: .top) {
+                // The screen itself, as the example. Nothing on it can be used; it's only there to look at.
+                NavigationStack {
+                    HomeView()
+                }
+                .disabled(true)
+                .accessibilityHidden(true)
 
-            strip(settings)
+                strip(settings)
+            }
+            #else
+            // The screen itself, as the example, below the strip rather than under it, so its heading isn't hidden. (A
+            // safe area inset doesn't reach through the navigation stack to the Home screen, which lays out by it.)
+            VStack(spacing: 0) {
+                compactStrip(settings)
+                NavigationStack {
+                    HomeView()
+                }
+                .disabled(true)
+                .accessibilityHidden(true)
+            }
+            #endif
         }
         // Not past the safe areas: the Home screen lays itself out by them, so it shows as it does in the app.
         .task {
@@ -213,6 +228,7 @@ private struct ThemePreviewView: View {
         .onDisappear { settings.previewTheme = nil }
     }
 
+    #if os(tvOS)
     /// A slab of glass across the top of the screen that the Home screen shows through, like the player's subtitle timing
     /// panel, so most of the screen is left for the example.
     private func strip(_ settings: ThemeSettings) -> some View {
@@ -228,11 +244,9 @@ private struct ThemePreviewView: View {
                     // A height of its own, so the lines above and below stay where they are whichever name is showing: a
                     // name shrunk to fit, or one with a descender, would otherwise move them.
                     .frame(height: 40, alignment: .leading)
-                #if os(tvOS)
                 Text("Select one to use it.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                #endif
             }
             // A width of its own, so the name never runs under the buttons beside it.
             .frame(width: 320, alignment: .leading)
@@ -241,11 +255,7 @@ private struct ThemePreviewView: View {
                 HStack(spacing: 16) {
                     ForEach(Self.themes) { theme in
                         Button {
-                            #if os(tvOS)
                             use(theme, settings)
-                            #else
-                            settings.previewTheme = theme
-                            #endif
                         } label: {
                             Label(theme.title, systemImage: theme.symbolName)
                         }
@@ -267,16 +277,6 @@ private struct ThemePreviewView: View {
                 }
             }
             .tvFocusSection()
-
-            #if !os(tvOS)
-            HStack(spacing: 12) {
-                Button("Cancel", role: .cancel) { dismiss() }
-                Button("Use") {
-                    if let theme = settings.previewTheme { use(theme, settings) }
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            #endif
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.capsule)
@@ -293,6 +293,73 @@ private struct ThemePreviewView: View {
         .environment(\.colorScheme, .dark)
         .animation(.smooth(duration: 0.2), value: settings.previewTheme)
     }
+    #else
+    /// The strip on iPhone and iPad: the theme's name with Cancel and Use beside it, and the themes in a row underneath,
+    /// so all of it fits across a phone. The TV's single row needs a TV's width.
+    private func compactStrip(_ settings: ThemeSettings) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Preview Theme")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text(settings.previewTheme?.title ?? "")
+                        .font(.title3.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                }
+
+                Spacer(minLength: 0)
+
+                Button(role: .cancel) { dismiss() } label: {
+                    // White, not the theme's color, which can be too dark to read on the glass.
+                    Text("Cancel").foregroundStyle(.white)
+                }
+                Button("Use") {
+                    if let theme = settings.previewTheme { use(theme, settings) }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .lineLimit(1)
+            .padding(.horizontal, 20)
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(Self.themes) { theme in
+                        Button {
+                            settings.previewTheme = theme
+                        } label: {
+                            Label(theme.title, systemImage: theme.symbolName)
+                                // White on every chip, so the selected one's label reads on its tinted glass.
+                                .foregroundStyle(.white)
+                        }
+                        // The one showing is the prominent one, as focus marks it on tvOS.
+                        .buttonStyle(.glass(settings.previewTheme == theme ? .regular.tint(theme.accent.opacity(0.6)) : .clear))
+                    }
+                }
+                .padding(.horizontal, 20)
+                // Room for the glass's shadow, since the scroll view clips what's outside it.
+                .padding(.vertical, 4)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
+        // Clear of the screen's top edge even with no status bar (an iPhone on its side).
+        .padding(.top, 14)
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity)
+        // Glass out to the top and side edges of the screen, as the subtitle timing panel is, while the strip's contents
+        // stay inside the safe areas.
+        .background {
+            Color.clear
+                .glassEffect(.regular, in: UnevenRoundedRectangle(bottomLeadingRadius: 32, bottomTrailingRadius: 32))
+                .ignoresSafeArea(edges: [.top, .horizontal])
+        }
+        .environment(\.colorScheme, .dark)
+        .animation(.smooth(duration: 0.2), value: settings.previewTheme)
+    }
+    #endif
 
     /// Makes `theme` the app's theme, and closes the preview.
     private func use(_ theme: AppTheme, _ settings: ThemeSettings) {

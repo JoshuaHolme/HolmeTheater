@@ -123,6 +123,7 @@ struct BackStandIn: UIViewRepresentable {
         var idleToken = 0
     }
 
+    /// Holds the two targets side by side, and swaps their places whenever focus lands on the left one.
     final class StandInStrip: UIView {
         private let shared = Shared()
         private let targets: [StandInView]
@@ -163,6 +164,7 @@ struct BackStandIn: UIViewRepresentable {
         }
     }
 
+    /// One invisible focus target. Landing on it turns the page back, unless a page turned just before.
     final class StandInView: UIView {
         private let shared: Shared
 

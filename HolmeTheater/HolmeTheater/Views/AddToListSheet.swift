@@ -86,7 +86,9 @@ struct AddToListSheet: View {
                             .disabled(addingTo != nil)
                         }
                     } else {
-                        ProgressView()
+                        SkeletonLines(count: 3)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Loading")
                     }
                 } header: {
                     Text(kind.sectionTitle)

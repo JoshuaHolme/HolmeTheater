@@ -6,26 +6,32 @@
     {
       "layers" : [
         {
-          "hidden" : true,
-          "image-name" : "vertical bar 2.svg",
-          "name" : "vertical bar 2",
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "automatic-gradient" : "srgb:0.00000,0.32852,0.57488,1.00000"
+              }
+            }
+          ],
+          "image-name" : "Film Strip Edges.svg",
+          "name" : "Film Strip Edges",
           "position" : {
-            "scale" : 1,
+            "scale" : 0.5,
             "translation-in-points" : [
-              763,
-              9.900000020479638e-05
+              0,
+              0
             ]
           }
         },
         {
-          "hidden" : true,
-          "image-name" : "vertical bar.svg",
-          "name" : "vertical bar",
+          "image-name" : "Holme Logo.svg",
+          "name" : "Holme Logo",
           "position" : {
             "scale" : 1,
             "translation-in-points" : [
-              -47,
-              12.000119000000268
+              0,
+              0
             ]
           }
         }
@@ -41,64 +47,7 @@
     },
     {
       "layers" : [
-        {
-          "fill-specializations" : [
-            {
-              "value" : "automatic"
-            },
-            {
-              "appearance" : "dark",
-              "value" : {
-                "automatic-gradient" : "srgb:0.00000,0.32852,0.57488,1.00000",
-                "orientation" : {
-                  "start" : {
-                    "x" : 0.5,
-                    "y" : 1
-                  },
-                  "stop" : {
-                    "x" : 0.5,
-                    "y" : 0
-                  }
-                }
-              }
-            }
-          ],
-          "glass" : true,
-          "image-name" : "Film Strip Edges.svg",
-          "name" : "Film Strip Edges",
-          "position" : {
-            "scale" : 1.03,
-            "translation-in-points" : [
-              0.0002317500000117434,
-              -4.480500001591281e-05
-            ]
-          }
-        },
-        {
-          "blend-mode" : "normal",
-          "fill" : {
-            "automatic-gradient" : "srgb:1.00000,1.00000,1.00000,1.00000",
-            "orientation" : {
-              "start" : {
-                "x" : 0,
-                "y" : 0
-              },
-              "stop" : {
-                "x" : 1,
-                "y" : 1
-              }
-            }
-          },
-          "image-name" : "Holme Logo.svg",
-          "name" : "Holme Logo",
-          "position" : {
-            "scale" : 1.05,
-            "translation-in-points" : [
-              1.819739736674819e-08,
-              -18
-            ]
-          }
-        }
+
       ],
       "shadow" : {
         "kind" : "neutral",

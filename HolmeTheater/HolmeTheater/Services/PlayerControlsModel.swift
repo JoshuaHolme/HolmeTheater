@@ -18,6 +18,26 @@ struct PlayerChapter: Identifiable, Hashable {
     var imageURL: URL?
 }
 
+/// Tells whether Picture in Picture is starting or running. The controller's own `isPictureInPictureActive` stays false
+/// for a moment after the window has started to appear.
+@MainActor
+private final class PictureInPictureWatcher: NSObject, AVPictureInPictureControllerDelegate {
+    // AVKit calls a Picture in Picture controller's delegate on the main thread, so these check that rather than hop to it.
+    private(set) var isEngaged = false
+
+    nonisolated func pictureInPictureControllerWillStartPictureInPicture(_ controller: AVPictureInPictureController) {
+        MainActor.assumeIsolated { isEngaged = true }
+    }
+
+    nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ controller: AVPictureInPictureController) {
+        MainActor.assumeIsolated { isEngaged = false }
+    }
+
+    nonisolated func pictureInPictureController(_ controller: AVPictureInPictureController, failedToStartPictureInPictureWithError error: any Error) {
+        MainActor.assumeIsolated { isEngaged = false }
+    }
+}
+
 /// What the on-screen controls need from the player: position, state, chapters and Picture in Picture.
 @MainActor @Observable
 final class PlayerControlsModel {
@@ -58,12 +78,15 @@ final class PlayerControlsModel {
     /// it measures its corners, to tell the status bar from a camera.
     @ObservationIgnored var statusBarShown = false
 
+    /// Passes a tap on the picture on to the controls. See ``pictureTaps``.
     func tapPicture() { pictureTaps += 1 }
 
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
     @ObservationIgnored private var hasServerChapters = false
     @ObservationIgnored private var pip: AVPictureInPictureController?
+    @ObservationIgnored private let pipWatcher = PictureInPictureWatcher()
+    @ObservationIgnored private var backgroundTask: Task<Void, Never>?
 
     /// While scrubbing: whether to resume playing afterwards.
     @ObservationIgnored private var resumesAfterScrub = false
@@ -81,6 +104,7 @@ final class PlayerControlsModel {
     /// Starts watching the player. Pair with ``stop()``.
     func start() {
         guard timeObserver == nil else { return }
+        // On the main queue, so the observer runs on the main actor, which `assumeIsolated` checks rather than hops to.
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -90,22 +114,43 @@ final class PlayerControlsModel {
             Task { @MainActor in self?.tick() }
         }
         Task { await loadChapters() }
+
+        // Locking the device, or leaving for another app, pauses the video unless Picture in Picture carries it on.
+        // It's left for the Lock Screen's or Control Center's "now playing" card to resume.
+        backgroundTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: UIApplication.didEnterBackgroundNotification) {
+                // Picture in Picture starts a moment after the app goes to the background.
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled, !pipWatcher.isEngaged, pip?.isPictureInPictureActive != true,
+                      player.timeControlStatus != .paused else { continue }
+                player.pause()
+            }
+        }
     }
 
+    /// Stops watching the player. Call when the controls go away; the player itself is left as it is.
     func stop() {
+        backgroundTask?.cancel()
+        backgroundTask = nil
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
         statusObservation = nil
     }
 
+    /// Runs ten times a second. Each property is only written when it changes, so views that read one that hasn't (the
+    /// play button, say, while the clock runs) aren't drawn again.
     private func tick() {
         let seconds = player.currentTime().seconds
-        if seconds.isFinite, pendingScrub == nil, !isScrubSeeking { currentTime = max(0, seconds) }
-        if let length = player.currentItem?.duration.seconds, length.isFinite, length > 0 { duration = length }
-        isPlaying = player.timeControlStatus != .paused || resumesAfterScrub
-        isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-        videoSize = player.currentItem?.presentationSize ?? .zero
-        bufferedTime = loadedEnd(around: seconds)
+        if seconds.isFinite, pendingScrub == nil, !isScrubSeeking { update(\.currentTime, to: max(0, seconds)) }
+        if let length = player.currentItem?.duration.seconds, length.isFinite, length > 0 { update(\.duration, to: length) }
+        update(\.isPlaying, to: player.timeControlStatus != .paused || resumesAfterScrub)
+        update(\.isBuffering, to: player.timeControlStatus == .waitingToPlayAtSpecifiedRate)
+        update(\.videoSize, to: player.currentItem?.presentationSize ?? .zero)
+        update(\.bufferedTime, to: loadedEnd(around: seconds))
+    }
+
+    private func update<Value: Equatable>(_ property: ReferenceWritableKeyPath<PlayerControlsModel, Value>, to value: Value) {
+        if self[keyPath: property] != value { self[keyPath: property] = value }
     }
 
     /// The end of the loaded stretch holding `seconds`, or `seconds` itself if nothing around it is loaded.
@@ -122,6 +167,7 @@ final class PlayerControlsModel {
         isPlaying = player.timeControlStatus != .paused
     }
 
+    /// Jumps to `seconds`, kept within the video. The position shown moves at once, without waiting for the seek.
     func seek(to seconds: TimeInterval) {
         let target = clamped(seconds)
         currentTime = target
@@ -212,6 +258,7 @@ final class PlayerControlsModel {
         chapters = found
     }
 
+    /// Zooms the video to fill the screen, or back to fitting it, with a tap of haptic feedback when it changes.
     func setFillsScreen(_ fills: Bool) {
         guard fills != fillsScreen else { return }
         fillsScreen = fills
@@ -226,6 +273,7 @@ final class PlayerControlsModel {
         guard AVPictureInPictureController.isPictureInPictureSupported(), pip?.playerLayer !== layer else { return }
         let controller = AVPictureInPictureController(playerLayer: layer)
         controller?.canStartPictureInPictureAutomaticallyFromInline = true
+        controller?.delegate = pipWatcher
         pip = controller
     }
 
@@ -234,6 +282,7 @@ final class PlayerControlsModel {
     /// redraw the controls and then appeared in the middle of playback.
     var supportsPictureInPicture: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
 
+    /// Starts or stops Picture in Picture. Does nothing until the video's layer has been attached.
     func togglePictureInPicture() {
         guard let pip else { return }
         if pip.isPictureInPictureActive { pip.stopPictureInPicture() } else { pip.startPictureInPicture() }

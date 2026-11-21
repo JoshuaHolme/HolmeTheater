@@ -25,9 +25,11 @@ struct PlayerSurface: UIViewRepresentable {
     /// Zooming to fill scales this view (see `CustomPlayer`), so the layer always just fits the video to its bounds.
     func updateUIView(_ view: SurfaceView, context: Context) {}
 
+    /// A view whose own layer is the player layer, so it resizes with the view, animations included.
     final class SurfaceView: UIView {
         override static var layerClass: AnyClass { AVPlayerLayer.self }
-        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer } // swiftlint:disable:this force_cast
+        // Can't fail: `layerClass` makes UIKit create the layer as an `AVPlayerLayer`.
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
     }
 }
 
@@ -68,7 +70,7 @@ struct SubtitleOverlay: View {
             .onGeometryChange(for: CGSize.self) { $0.size } action: { screenSize = $0 }
             .overlay(alignment: .topLeading) {
                 // A track of pictures is drawn where the picture says, scaled with the video.
-                if let picture = session.subtitlePicture(at: model.currentTime) {
+                if let picture = session.subtitles.picture(at: model.currentTime) {
                     let rect = picture.rect(onVideo: frame, within: CGRect(origin: .zero, size: screenSize))
                     Image(decorative: picture.image, scale: 1)
                         .resizable()
@@ -78,10 +80,10 @@ struct SubtitleOverlay: View {
             }
             // Each kind in an overlay of its own: sharing one, the placed lines stopped the others being drawn.
             .overlay(alignment: .topLeading) {
-                PlacedSubtitlesView(cues: session.placedSubtitles(at: model.currentTime), frame: frame, fontSize: fontSize, shadowRadius: 4)
+                PlacedSubtitlesView(cues: session.subtitles.placed(at: model.currentTime), frame: frame, fontSize: fontSize, shadowRadius: 4)
             }
             .overlay(alignment: .topLeading) {
-                if let text = session.subtitleText(at: model.currentTime) {
+                if let text = session.subtitles.text(at: model.currentTime) {
                     Text(text)
                         .font(.system(size: fontSize, weight: .semibold))
                         .multilineTextAlignment(.center)

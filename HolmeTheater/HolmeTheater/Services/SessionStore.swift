@@ -24,6 +24,9 @@ nonisolated struct KeychainSessionStore: SessionStore {
     private let keychain: KeychainStore
     private let account: String
 
+    /// - Parameters:
+    ///   - keychain: The namespace to save under. Mock runs use their own, so they never overwrite a real session.
+    ///   - account: The Keychain account within that namespace.
     init(keychain: KeychainStore, account: String = "session") {
         self.keychain = keychain
         self.account = account
